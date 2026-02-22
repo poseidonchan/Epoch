@@ -54,36 +54,36 @@ public final class AppStore: ObservableObject {
         }
     }
 
-    @Published public private(set) var projects: [Project] = []
-    @Published public private(set) var sessionsByProject: [UUID: [Session]] = [:]
-    @Published public private(set) var artifactsByProject: [UUID: [Artifact]] = [:]
-    @Published public private(set) var runsByProject: [UUID: [RunRecord]] = [:]
-    @Published public private(set) var messagesBySession: [UUID: [ChatMessage]] = [:]
+    @Published public internal(set) var projects: [Project] = []
+    @Published public internal(set) var sessionsByProject: [UUID: [Session]] = [:]
+    @Published public internal(set) var artifactsByProject: [UUID: [Artifact]] = [:]
+    @Published public internal(set) var runsByProject: [UUID: [RunRecord]] = [:]
+    @Published public internal(set) var messagesBySession: [UUID: [ChatMessage]] = [:]
 
-    @Published public private(set) var streamingSessions: Set<UUID> = []
-    @Published public private(set) var streamingAssistantMessageIDBySession: [UUID: UUID] = [:]
+    @Published public internal(set) var streamingSessions: Set<UUID> = []
+    @Published public internal(set) var streamingAssistantMessageIDBySession: [UUID: UUID] = [:]
 
-    @Published public private(set) var activeProvider: String?
-    @Published public private(set) var availableModels: [GatewayModelInfo] = []
-    @Published public private(set) var defaultModelId: String?
-    @Published public private(set) var availableThinkingLevels: [ThinkingLevel] = []
+    @Published public internal(set) var activeProvider: String?
+    @Published public internal(set) var availableModels: [GatewayModelInfo] = []
+    @Published public internal(set) var defaultModelId: String?
+    @Published public internal(set) var availableThinkingLevels: [ThinkingLevel] = []
 
-    @Published public private(set) var planModeEnabledBySession: [UUID: Bool] = [:]
-    @Published public private(set) var selectedModelIdBySession: [UUID: String] = [:]
-    @Published public private(set) var selectedThinkingLevelBySession: [UUID: ThinkingLevel] = [:]
-    @Published public private(set) var permissionLevelBySession: [UUID: SessionPermissionLevel] = [:]
-    @Published public private(set) var pendingComposerAttachmentsBySession: [UUID: [ComposerAttachment]] = [:]
+    @Published public internal(set) var planModeEnabledBySession: [UUID: Bool] = [:]
+    @Published public internal(set) var selectedModelIdBySession: [UUID: String] = [:]
+    @Published public internal(set) var selectedThinkingLevelBySession: [UUID: ThinkingLevel] = [:]
+    @Published public internal(set) var permissionLevelBySession: [UUID: SessionPermissionLevel] = [:]
+    @Published public internal(set) var pendingComposerAttachmentsBySession: [UUID: [ComposerAttachment]] = [:]
 
-    @Published public private(set) var livePlanBySession: [UUID: AgentPlanUpdatedPayload] = [:]
-    @Published public private(set) var liveAgentEventsBySession: [UUID: [AgentLiveEvent]] = [:]
-    @Published public private(set) var activeInlineProcessBySession: [UUID: ActiveInlineProcess] = [:]
-    @Published public private(set) var persistedProcessSummaryByMessageID: [UUID: AssistantProcessSummary] = [:]
+    @Published public internal(set) var livePlanBySession: [UUID: AgentPlanUpdatedPayload] = [:]
+    @Published public internal(set) var liveAgentEventsBySession: [UUID: [AgentLiveEvent]] = [:]
+    @Published public internal(set) var activeInlineProcessBySession: [UUID: ActiveInlineProcess] = [:]
+    @Published public internal(set) var persistedProcessSummaryByMessageID: [UUID: AssistantProcessSummary] = [:]
 
-    @Published public private(set) var sessionContextBySession: [UUID: SessionContextState] = [:]
+    @Published public internal(set) var sessionContextBySession: [UUID: SessionContextState] = [:]
 
     @Published public var resourceStatus: ResourceStatus = .placeholder
 
-    @Published public private(set) var gatewayConnectionState: GatewayConnectionState = .disconnected
+    @Published public internal(set) var gatewayConnectionState: GatewayConnectionState = .disconnected
     @Published public var gatewayWSURLString: String = ""
     @Published public var gatewayToken: String = ""
 
@@ -94,7 +94,7 @@ public final class AppStore: ObservableObject {
     @Published public var activeProjectID: UUID?
     @Published public var activeSessionID: UUID?
 
-    @Published public private(set) var lastGatewayErrorMessage: String?
+    @Published public internal(set) var lastGatewayErrorMessage: String?
 
     @Published public var isLeftPanelOpen = false
     @Published public var isRightPanelOpen = false
@@ -102,8 +102,14 @@ public final class AppStore: ObservableObject {
     @Published public var selectedArtifactPath: String?
     @Published public var highlightedArtifactPath: String?
     @Published public var selectedRunID: UUID?
-    @Published public private(set) var runCompletionNotificationsEnabled = true
-    @Published public private(set) var latestRunCompletionSignal: RunCompletionSignal?
+    @Published public internal(set) var runCompletionNotificationsEnabled = true
+    @Published public internal(set) var latestRunCompletionSignal: RunCompletionSignal?
+
+    // MARK: - Internal Services (initialized in init)
+    internal var composerService: ComposerService!
+    internal var projectService: ProjectService!
+    internal var planService: PlanApprovalService!
+    internal var chatService: ChatSessionService!
 
     private var pendingApprovalsBySession: [UUID: PendingApproval] = [:]
     private var planSessionByPlanID: [UUID: UUID] = [:]
@@ -160,15 +166,15 @@ public final class AppStore: ObservableObject {
     }
     private var pendingLocalUserEchosBySession: [UUID: [PendingLocalUserEcho]] = [:]
     private var attachmentPayloadsBySessionMessageID: [UUID: [UUID: [ComposerAttachment]]] = [:]
-    private var artifactContentCache: [String: String] = [:]
-    private var artifactDataCache: [String: Data] = [:]
+    internal var artifactContentCache: [String: String] = [:]
+    internal var artifactDataCache: [String: Data] = [:]
     private let backend: BackendClient
     private let defaults: UserDefaults
-    private var gatewayClient: GatewayClient?
+    internal var gatewayClient: GatewayClient?
     private var gatewayEventsTask: Task<Void, Never>?
     private var gatewayStateCancellable: AnyCancellable?
     private var gatewayEnsureConnectedTask: Task<Bool, Never>?
-    private var gatewayDeviceID: UUID = UUID()
+    internal var gatewayDeviceID: UUID = UUID()
     private var resourcesPollTask: Task<Void, Never>?
     private var observedTerminalRunIDs: Set<UUID> = []
     private var sessionHistoryRequestsInFlight: Set<UUID> = []
@@ -177,18 +183,18 @@ public final class AppStore: ObservableObject {
     private let sessionHistoryPrefetchCooldown: TimeInterval = 45
     private let sessionHistoryInteractiveFreshnessWindow: TimeInterval = 8
 
-    private let gatewayJSONEncoder: JSONEncoder = {
+    internal let gatewayJSONEncoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         return encoder
     }()
 
-    private let gatewayJSONDecoder: JSONDecoder = {
+    internal let gatewayJSONDecoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return decoder
     }()
-    private let durationFormatter: DateComponentsFormatter = {
+    internal let durationFormatter: DateComponentsFormatter = {
         let formatter = DateComponentsFormatter()
         formatter.unitsStyle = .abbreviated
         formatter.allowedUnits = [.hour, .minute, .second]
@@ -201,6 +207,12 @@ public final class AppStore: ObservableObject {
         loadGatewaySettings()
         loadHpcSettings()
         loadNotificationSettings()
+
+        // Initialize services after all stored properties are set
+        composerService = ComposerService(store: self)
+        projectService = ProjectService(store: self)
+        planService = PlanApprovalService(store: self)
+        chatService = ChatSessionService(store: self)
 
         if bootstrapDemo, !isGatewayConfigured {
             seedDemoData()
