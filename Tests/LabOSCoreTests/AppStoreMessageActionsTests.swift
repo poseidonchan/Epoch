@@ -39,7 +39,7 @@ final class AppStoreMessageActionsTests: XCTestCase {
         XCTAssertEqual(source, originalUser.text)
     }
 
-    func testRetryMessageResendsTextAndCanOverrideModel() async throws {
+    func testRetryMessageFromAssistantRegeneratesWithoutDuplicatingUserMessage() async throws {
         let store = AppStore(bootstrapDemo: false)
         guard let project = await store.createProject(name: "Retry Model Project") else {
             XCTFail("Project was not created")
@@ -68,10 +68,151 @@ final class AppStoreMessageActionsTests: XCTestCase {
             modelIdOverride: "openai/gpt-4o-mini"
         )
 
+        let afterRetry = store.messages(for: session.id)
+        XCTAssertEqual(afterRetry.filter { $0.role == .user }.count, before.filter { $0.role == .user }.count)
+        XCTAssertEqual(afterRetry.filter { $0.role == .assistant }.count, 0)
+        XCTAssertEqual(afterRetry.last(where: { $0.role == .user })?.text, before.first(where: { $0.role == .user })?.text)
+        XCTAssertEqual(store.selectedModelId(for: session.id), "openai/gpt-4o-mini")
+
+        try await waitUntil(timeoutSeconds: 2.0) {
+            store.messages(for: session.id).contains(where: { $0.role == .assistant })
+        }
+
+        let finalMessages = store.messages(for: session.id)
+        XCTAssertEqual(finalMessages.filter { $0.role == .user }.count, before.filter { $0.role == .user }.count)
+    }
+
+    func testRetryMessageFromAssistantPreservesOriginalAttachmentRefs() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        guard let project = await store.createProject(name: "Retry Attachment Project") else {
+            XCTFail("Project was not created")
+            return
+        }
+        guard let session = await store.createSession(projectID: project.id, title: "Retry Attachment Session") else {
+            XCTFail("Session was not created")
+            return
+        }
+
+        let attachment = ComposerAttachment(
+            displayName: "chart.png",
+            mimeType: "image/png",
+            inlineDataBase64: "ZmFrZS1pbWFnZS1kYXRh",
+            byteCount: 16
+        )
+        store.sendMessage(
+            projectID: project.id,
+            sessionID: session.id,
+            text: "What does this chart show?",
+            attachments: [attachment]
+        )
+
+        try await waitUntil(timeoutSeconds: 2.0) {
+            store.messages(for: session.id).contains(where: { $0.role == .assistant })
+        }
+
+        let beforeRetry = store.messages(for: session.id)
+        guard let assistant = beforeRetry.last(where: { $0.role == .assistant }) else {
+            XCTFail("Expected assistant message")
+            return
+        }
+        guard let sourceUser = beforeRetry.first(where: { $0.role == .user }) else {
+            XCTFail("Expected source user message")
+            return
+        }
+        XCTAssertEqual(sourceUser.artifactRefs.count, 1)
+
+        store.retryMessage(
+            projectID: project.id,
+            sessionID: session.id,
+            fromMessageID: assistant.id,
+            modelIdOverride: nil
+        )
+
+        let afterRetry = store.messages(for: session.id)
+        guard let regeneratedUser = afterRetry.first(where: { $0.id == sourceUser.id }) else {
+            XCTFail("Expected regenerated user message to keep original message ID")
+            return
+        }
+        XCTAssertEqual(regeneratedUser.artifactRefs.count, 1)
+        XCTAssertEqual(regeneratedUser.artifactRefs.first?.displayText, "chart.png")
+        XCTAssertEqual(regeneratedUser.artifactRefs.first?.mimeType, "image/png")
+        XCTAssertEqual(regeneratedUser.artifactRefs.first?.inlineDataBase64, "ZmFrZS1pbWFnZS1kYXRh")
+        XCTAssertEqual(regeneratedUser.artifactRefs.first?.byteCount, 16)
+    }
+
+    func testMergeArtifactRefsPreservesInlinePayloadFromLocalEchoWhenGatewayStripsInline() {
+        let projectID = UUID()
+        let artifactID = UUID()
+
+        let local = [
+            ChatArtifactReference(
+                displayText: "photo-1.jpeg",
+                projectID: projectID,
+                path: "session_attachments/s-1/photo-1.jpeg",
+                artifactID: artifactID,
+                scope: "session",
+                mimeType: "image/jpeg",
+                sourceName: "photo-1.jpeg",
+                inlineDataBase64: "ZmFrZS1pbWFnZS1ieXRlcw==",
+                byteCount: 16
+            ),
+        ]
+
+        let remote = [
+            ChatArtifactReference(
+                displayText: "photo-1.jpeg",
+                projectID: projectID,
+                path: "session_attachments/s-1/photo-1.jpeg",
+                artifactID: artifactID,
+                scope: "session",
+                mimeType: "image/jpeg",
+                sourceName: "photo-1.jpeg",
+                inlineDataBase64: nil,
+                byteCount: 16
+            ),
+        ]
+
+        let merged = AppStore.mergeArtifactRefsPreservingInlineForGatewayEcho(
+            remoteArtifactRefs: remote,
+            localArtifactRefs: local
+        )
+
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(merged.first?.inlineDataBase64, "ZmFrZS1pbWFnZS1ieXRlcw==")
+        XCTAssertEqual(merged.first?.byteCount, 16)
+    }
+
+    func testRetryMessageFromUserStillAppendsAnotherUserMessage() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        guard let project = await store.createProject(name: "Retry User Project") else {
+            XCTFail("Project was not created")
+            return
+        }
+        guard let session = await store.createSession(projectID: project.id, title: "Retry User Session") else {
+            XCTFail("Session was not created")
+            return
+        }
+
+        store.sendMessage(projectID: project.id, sessionID: session.id, text: "Repeat me")
+        try await waitUntil(timeoutSeconds: 2.0) {
+            store.messages(for: session.id).contains(where: { $0.role == .assistant })
+        }
+
+        let before = store.messages(for: session.id)
+        guard let user = before.first(where: { $0.role == .user }) else {
+            XCTFail("Expected user message")
+            return
+        }
+
+        store.retryMessage(
+            projectID: project.id,
+            sessionID: session.id,
+            fromMessageID: user.id,
+            modelIdOverride: nil
+        )
+
         let after = store.messages(for: session.id)
         XCTAssertEqual(after.filter { $0.role == .user }.count, before.filter { $0.role == .user }.count + 1)
-        XCTAssertEqual(after.last(where: { $0.role == .user })?.text, before.first(where: { $0.role == .user })?.text)
-        XCTAssertEqual(store.selectedModelId(for: session.id), "openai/gpt-4o-mini")
     }
 
     func testBranchFromAssistantCreatesNewSessionAndResendsPrompt() async throws {

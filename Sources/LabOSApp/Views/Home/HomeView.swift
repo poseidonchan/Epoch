@@ -31,6 +31,7 @@ struct HomeView: View {
                         .font(.headline)
                         .padding(8)
                 }
+                .accessibilityIdentifier("home.sidebar.button")
 
                 Spacer()
 
@@ -46,6 +47,7 @@ struct HomeView: View {
                         .font(.headline)
                         .padding(8)
                 }
+                .accessibilityIdentifier("home.settings.button")
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -215,12 +217,15 @@ private struct HomeSettingsSheet: View {
                     TextField("ws://host:8787/ws", text: $wsURLString)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .accessibilityIdentifier("settings.gateway.url")
 
                     SecureField("Shared token", text: $token)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .accessibilityIdentifier("settings.gateway.token")
 
                     LabeledContent("Status", value: gatewayStatusText)
+                        .accessibilityIdentifier("settings.gateway.status")
 
                     Button("Save") {
                         store.saveGatewaySettings(wsURLString: wsURLString, token: token)
@@ -228,11 +233,13 @@ private struct HomeSettingsSheet: View {
                         token = store.gatewayToken
                         showToast("Gateway saved")
                     }
+                    .accessibilityIdentifier("settings.gateway.save")
 
                     if store.isGatewayConnected {
                         Button("Disconnect", role: .destructive) {
                             store.disconnectGateway()
                         }
+                        .accessibilityIdentifier("settings.gateway.disconnect")
                     } else {
                         Button("Connect") {
                             store.saveGatewaySettings(wsURLString: wsURLString, token: token)
@@ -241,6 +248,7 @@ private struct HomeSettingsSheet: View {
                             Task { await store.connectGateway() }
                         }
                         .disabled(wsURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || token.isEmpty)
+                        .accessibilityIdentifier("settings.gateway.connect")
                     }
                 }
 
@@ -248,14 +256,17 @@ private struct HomeSettingsSheet: View {
                     TextField("Partition", text: $hpcPartition)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .accessibilityIdentifier("settings.hpc.partition")
 
                     TextField("Account", text: $hpcAccount)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .accessibilityIdentifier("settings.hpc.account")
 
                     TextField("QoS", text: $hpcQos)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .accessibilityIdentifier("settings.hpc.qos")
 
                     Button("Save") {
                         store.saveHpcSettings(partition: hpcPartition, account: hpcAccount, qos: hpcQos)
@@ -265,6 +276,7 @@ private struct HomeSettingsSheet: View {
                         store.pushHpcPreferencesToGateway()
                         showToast(store.isGatewayConnected ? "HPC saved and pushed" : "HPC saved")
                     }
+                    .accessibilityIdentifier("settings.hpc.save")
 
                     if let hpc = store.resourceStatus.hpc {
                         LabeledContent("Scope", value: hpcScopeText(hpc))
@@ -304,6 +316,7 @@ private struct HomeSettingsSheet: View {
                     Button("Done") {
                         dismiss()
                     }
+                    .accessibilityIdentifier("settings.done")
                 }
             }
             .onAppear {

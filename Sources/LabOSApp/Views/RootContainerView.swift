@@ -38,7 +38,7 @@ struct RootContainerView: View {
             }
             .animation(.spring(response: 0.28, dampingFraction: 0.88), value: isLeftPanelVisible)
             .background(Color(.systemBackground))
-            .ignoresSafeArea(edges: .bottom)
+            .ignoresSafeArea(.container, edges: .bottom)
             .onChange(of: store.context) { _, newContext in
                 guard case .session = newContext, store.isLeftPanelOpen else { return }
                 withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {

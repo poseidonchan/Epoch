@@ -21,6 +21,8 @@ struct InlineComposerView: View {
     var statusIconSystemName: String = "sparkles"
     var statusAction: (() -> Void)? = nil
     var attachmentAction: (() -> Void)? = nil
+    var pendingAttachments: [ComposerAttachment] = []
+    var onRemoveAttachment: ((UUID) -> Void)? = nil
     var showsVoiceButton = true
     var modelOptions: [GatewayModelInfo] = []
     var thinkingLevelOptions: [ThinkingLevel] = ThinkingLevel.allCases
@@ -110,13 +112,17 @@ struct InlineComposerView: View {
     }
 
     private var chatComposer: some View {
-        let hasStatusRow = statusText != nil
+        let hasStatusRow = statusText != nil || !pendingAttachments.isEmpty
 
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .bottom, spacing: 12) {
                 plusMenuButton
 
                 VStack(alignment: .leading, spacing: 10) {
+                    if !pendingAttachments.isEmpty {
+                        pendingAttachmentsRow
+                    }
+
                     if let statusText {
                         statusChip(text: statusText, iconSystemName: statusIconSystemName)
                     }
@@ -150,6 +156,7 @@ struct InlineComposerView: View {
                             .lineLimit(1...5)
                             .font(.body)
                             .textInputAutocapitalization(.sentences)
+                            .accessibilityIdentifier("composer.input")
 
                         if showsVoiceButton {
                             Button {} label: {
@@ -182,6 +189,7 @@ struct InlineComposerView: View {
                         .buttonStyle(.plain)
                         .disabled(!canSubmit)
                         .accessibilityLabel(submitLabel)
+                        .accessibilityIdentifier("composer.send")
                     }
                 }
                 .padding(.horizontal, 14)
@@ -213,11 +221,139 @@ struct InlineComposerView: View {
         .padding(.horizontal, 12)
         .padding(.top, 8)
             .padding(.bottom, 10)
-            .background(
-                Color(.systemBackground)
-                    .opacity(colorScheme == .dark ? 0.98 : 0.92)
-                    .ignoresSafeArea(edges: .bottom)
-            )
+                .background(
+                    Color(.systemBackground)
+                        .opacity(colorScheme == .dark ? 0.98 : 0.92)
+                        .ignoresSafeArea(.container, edges: .bottom)
+                )
+    }
+
+    private var imageAttachments: [ComposerAttachment] {
+        pendingAttachments.filter { ($0.mimeType ?? "").lowercased().hasPrefix("image/") }
+    }
+
+    private var fileAttachments: [ComposerAttachment] {
+        pendingAttachments.filter { !($0.mimeType ?? "").lowercased().hasPrefix("image/") }
+    }
+
+    private var pendingAttachmentsRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !imageAttachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(imageAttachments.enumerated()), id: \.element.id) { index, attachment in
+                            composerImageThumbnail(attachment)
+                                .accessibilityElement(children: .contain)
+                                .accessibilityIdentifier("composer.attachment.thumbnail.\(index)")
+                        }
+                    }
+                    .padding(.trailing, 2)
+                }
+            }
+
+            if !fileAttachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(fileAttachments.enumerated()), id: \.element.id) { index, attachment in
+                            HStack(spacing: 6) {
+                                Image(systemName: attachmentIconName(for: attachment.mimeType))
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+
+                                Text(attachment.displayName)
+                                    .font(.caption.weight(.medium))
+                                    .lineLimit(1)
+                                    .foregroundStyle(.primary)
+
+                                if let onRemoveAttachment {
+                                    Button {
+                                        onRemoveAttachment(attachment.id)
+                                    } label: {
+                                        Image(systemName: "xmark")
+                                            .font(.caption2.weight(.bold))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(
+                                Capsule()
+                                    .fill(Color(.tertiarySystemFill))
+                            )
+                            .overlay(
+                                Capsule()
+                                    .strokeBorder(Color.primary.opacity(0.08))
+                            )
+                            .accessibilityIdentifier("composer.attachment.filechip.\(index)")
+                        }
+                    }
+                    .padding(.trailing, 2)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func composerImageThumbnail(_ attachment: ComposerAttachment) -> some View {
+        ZStack(alignment: .topTrailing) {
+            Group {
+                if let preview = composerPreviewImage(for: attachment) {
+                    Image(uiImage: preview)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color(.tertiarySystemFill))
+                        Image(systemName: "photo")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .frame(width: 52, height: 52)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+            if let onRemoveAttachment {
+                Button {
+                    onRemoveAttachment(attachment.id)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 18, height: 18)
+                        .background(Circle().fill(Color.black.opacity(0.45)))
+                }
+                .buttonStyle(.plain)
+                .offset(x: 6, y: -6)
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.1))
+        )
+    }
+
+    private func composerPreviewImage(for attachment: ComposerAttachment) -> UIImage? {
+        guard let base64 = attachment.inlineDataBase64,
+              let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters),
+              let image = UIImage(data: data) else {
+            return nil
+        }
+        return image
+    }
+
+    private func attachmentIconName(for mimeType: String?) -> String {
+        let lowered = (mimeType ?? "").lowercased()
+        if lowered.hasPrefix("image/") {
+            return "photo"
+        }
+        if lowered.contains("pdf") {
+            return "doc.richtext"
+        }
+        return "doc"
     }
 
     private var chatComposerBackground: Color {
@@ -242,6 +378,7 @@ struct InlineComposerView: View {
                 )
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("composer.plus")
         .popover(isPresented: $showsPlusMenu, attachmentAnchor: .point(.top), arrowEdge: .bottom) {
             plusMenuContent
         }
@@ -259,6 +396,7 @@ struct InlineComposerView: View {
                         .foregroundStyle(.primary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("composer.plus.attachments")
             }
 
             Toggle(isOn: $isPlanModeEnabled) {
@@ -290,6 +428,7 @@ struct InlineComposerView: View {
             menuChipLabel(selectedModelLabel)
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("composer.model.menu")
     }
 
     private var thinkingMenu: some View {
@@ -312,6 +451,7 @@ struct InlineComposerView: View {
         }
         .buttonStyle(.plain)
         .disabled(!reasoning)
+        .accessibilityIdentifier("composer.thinking.menu")
     }
 
     private var permissionMenu: some View {
@@ -343,6 +483,7 @@ struct InlineComposerView: View {
             .padding(.horizontal, 4)
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("composer.permission.menu")
     }
 
     @ViewBuilder
@@ -558,6 +699,7 @@ struct InlineComposerView: View {
 	        .accessibilityElement(children: .ignore)
 	        .accessibilityLabel("Remaining context")
 	        .accessibilityValue("\(remainingPercent) percent remaining, \(remainingTokens.formatted()) tokens left")
+            .accessibilityIdentifier("composer.context.ring")
 	        .onDisappear {
 	            hideTooltipTask?.cancel()
 	        }
@@ -648,6 +790,7 @@ struct ProjectFilesSheet: View {
                         .background(Circle().fill(Color(.secondarySystemFill)))
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("project.files.close")
             }
 
             if hasFiles {
@@ -687,6 +830,7 @@ struct ProjectFilesSheet: View {
         .presentationDetents(hasFiles ? [.fraction(0.62)] : [.fraction(0.46)])
         .presentationDragIndicator(.hidden)
         .presentationBackground(.ultraThinMaterial)
+        .accessibilityIdentifier("project.files.sheet")
     }
 
     private var fileList: some View {
@@ -730,6 +874,8 @@ struct ProjectFilesSheet: View {
 
             Spacer(minLength: 0)
 
+            indexStatusBadge(for: file)
+
             if let onDeleteFile {
                 Button(role: .destructive) {
                     onDeleteFile(file.path)
@@ -751,6 +897,48 @@ struct ProjectFilesSheet: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.08))
         )
+    }
+
+    private func indexStatusBadge(for file: Artifact) -> some View {
+        let status = file.indexStatus ?? .processing
+        let label: String
+        let tint: Color
+
+        switch status {
+        case .indexed:
+            label = "Indexed"
+            tint = .green
+        case .failed:
+            label = "Failed"
+            tint = .red
+        case .processing:
+            label = "Indexing"
+            tint = .blue
+        }
+
+        return HStack(spacing: 4) {
+            if status == .processing {
+                ProgressView()
+                    .controlSize(.mini)
+                    .tint(tint)
+                    .accessibilityIdentifier("project.upload.progress")
+            }
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(tint)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            Capsule()
+                .fill(tint.opacity(0.14))
+        )
+        .overlay(
+            Capsule()
+                .strokeBorder(tint.opacity(0.3))
+        )
+        .accessibilityIdentifier("project.upload.status.\(status.rawValue)")
     }
 
     private func actionButton(title: String, systemImage: String, action: @escaping () -> Void) -> some View {
@@ -806,6 +994,312 @@ struct ProjectFilesSheet: View {
         default:
             return .secondary
         }
+    }
+}
+
+struct ComposerAttachmentsSheet: View {
+    let title: String
+    let pendingAttachments: [ComposerAttachment]
+    let onAddPhotos: () -> Void
+    let onAddFiles: () -> Void
+    let onAddTestPhoto: (() -> Void)?
+    var onDeleteAttachment: ((UUID) -> Void)? = nil
+    let onClose: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var imageAttachments: [ComposerAttachment] {
+        pendingAttachments.filter { ($0.mimeType ?? "").lowercased().hasPrefix("image/") }
+    }
+
+    private var fileAttachments: [ComposerAttachment] {
+        pendingAttachments.filter { !($0.mimeType ?? "").lowercased().hasPrefix("image/") }
+    }
+
+    private var hasAttachments: Bool {
+        !pendingAttachments.isEmpty
+    }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Capsule()
+                .fill(Color.secondary.opacity(0.35))
+                .frame(width: 46, height: 5)
+                .padding(.top, 8)
+
+            HStack(alignment: .center, spacing: 10) {
+                Text(title.isEmpty ? "Session Attachments" : title)
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(.primary)
+                    .accessibilityIdentifier("composer.attachments.title")
+
+                Spacer(minLength: 0)
+
+                Button(action: onAddPhotos) {
+                    Text("All Photos")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.blue)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("composer.attachments.allPhotos")
+
+                if let onAddTestPhoto {
+                    Button(action: onAddTestPhoto) {
+                        Text("Use Test Photo")
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(.teal)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("composer.attachments.testPhoto")
+                }
+
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.headline.weight(.semibold))
+                        .frame(width: 36, height: 36)
+                        .background(
+                            Circle()
+                                .fill(Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.08))
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("composer.attachments.close")
+            }
+
+            mediaRail
+
+            if !fileAttachments.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Attached files")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    ScrollView {
+                        LazyVStack(spacing: 8) {
+                            ForEach(fileAttachments) { attachment in
+                                fileRow(attachment)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: min(CGFloat(fileAttachments.count) * 68, 210))
+                }
+            }
+
+            Divider()
+
+            Button(action: onAddFiles) {
+                HStack(spacing: 14) {
+                    Image(systemName: "paperclip")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.primary)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Add Files")
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(.primary)
+
+                        Text("Import documents from Files")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Image(systemName: "chevron.right")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 14)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.primary.opacity(colorScheme == .dark ? 0.20 : 0.08),
+                                    Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.04),
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.12))
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("composer.attachments.addFiles")
+
+            Text("Items added here stay in this session only.")
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 2)
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 20)
+        .presentationDetents([.fraction(hasAttachments ? 0.68 : 0.52)])
+        .presentationDragIndicator(.hidden)
+        .presentationBackground(.ultraThinMaterial)
+    }
+
+    private var mediaRail: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                addPhotoTile
+
+                ForEach(imageAttachments) { attachment in
+                    imageTile(attachment)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    private var addPhotoTile: some View {
+        Button(action: onAddPhotos) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.primary.opacity(colorScheme == .dark ? 0.16 : 0.08),
+                                Color.primary.opacity(colorScheme == .dark ? 0.10 : 0.04),
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+
+                VStack(spacing: 8) {
+                    Image(systemName: "camera")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    Text("Add Photo")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 108, height: 96)
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.12))
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func imageTile(_ attachment: ComposerAttachment) -> some View {
+        ZStack(alignment: .topTrailing) {
+            Group {
+                if let preview = previewImage(for: attachment) {
+                    Image(uiImage: preview)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(Color.primary.opacity(colorScheme == .dark ? 0.16 : 0.08))
+                        Image(systemName: "photo")
+                            .font(.title2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .frame(width: 108, height: 96)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+            if let onDeleteAttachment {
+                Button {
+                    onDeleteAttachment(attachment.id)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 24, height: 24)
+                        .background(Circle().fill(Color.black.opacity(0.45)))
+                }
+                .buttonStyle(.plain)
+                .padding(6)
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.12))
+        )
+    }
+
+    private func fileRow(_ attachment: ComposerAttachment) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: iconName(for: attachment.mimeType))
+                .font(.headline)
+                .foregroundStyle(.secondary)
+                .frame(width: 26, height: 26)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08))
+                )
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(attachment.displayName)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                    .foregroundStyle(.primary)
+
+                if let mime = attachment.mimeType, !mime.isEmpty {
+                    Text(mime)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            if let onDeleteAttachment {
+                Button(role: .destructive) {
+                    onDeleteAttachment(attachment.id)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.primary.opacity(colorScheme == .dark ? 0.10 : 0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08))
+        )
+    }
+
+    private func previewImage(for attachment: ComposerAttachment) -> UIImage? {
+        guard let base64 = attachment.inlineDataBase64,
+              let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters),
+              let image = UIImage(data: data) else {
+            return nil
+        }
+        return image
+    }
+
+    private func iconName(for mimeType: String?) -> String {
+        let lowered = (mimeType ?? "").lowercased()
+        if lowered.hasPrefix("image/") {
+            return "photo"
+        }
+        if lowered.contains("pdf") {
+            return "doc.richtext"
+        }
+        return "doc"
     }
 }
 

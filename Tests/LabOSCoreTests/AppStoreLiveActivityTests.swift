@@ -20,7 +20,7 @@ final class AppStoreLiveActivityTests: XCTestCase {
         let process = store.activeInlineProcess(for: sessionID)
         XCTAssertNotNil(process)
         XCTAssertEqual(process?.phase, .thinking)
-        XCTAssertEqual(process?.activeLine, "Thinking...")
+        XCTAssertNil(process?.activeLine)
     }
 
     func testFirstAssistantDeltaClearsThinkingAndBindsMessageID() {
@@ -120,7 +120,7 @@ final class AppStoreLiveActivityTests: XCTestCase {
 
         let process = store.activeInlineProcess(for: sessionID)
         XCTAssertEqual(process?.phase, .thinking)
-        XCTAssertEqual(process?.activeLine, "Thinking...")
+        XCTAssertNil(process?.activeLine)
         XCTAssertEqual(process?.entries.last?.state, .completed)
         XCTAssertEqual(process?.entries.last?.completedText, "Searched ...")
     }
@@ -316,6 +316,233 @@ final class AppStoreLiveActivityTests: XCTestCase {
         XCTAssertNotNil(process)
         XCTAssertEqual(process?.phase, .toolCalling)
         XCTAssertEqual(process?.activeLine, "Running command...")
+    }
+
+    func testLateToolEventAfterAssistantCompletionDoesNotResurrectPendingThinking() {
+        let store = AppStore(bootstrapDemo: false)
+        let sessionID = UUID()
+        let projectID = UUID()
+        let runID = UUID()
+        let messageID = UUID()
+
+        store._receiveGatewayEventForTesting(
+            .lifecycle(
+                LifecyclePayload(
+                    agentRunId: runID,
+                    projectId: projectID,
+                    sessionId: sessionID,
+                    phase: "start",
+                    error: nil
+                )
+            )
+        )
+        store._receiveGatewayEventForTesting(
+            .assistantDelta(
+                AssistantDeltaPayload(
+                    agentRunId: runID,
+                    projectId: projectID,
+                    sessionId: sessionID,
+                    messageId: messageID,
+                    delta: "I can help with that."
+                )
+            )
+        )
+        store._receiveGatewayEventForTesting(
+            .lifecycle(
+                LifecyclePayload(
+                    agentRunId: runID,
+                    projectId: projectID,
+                    sessionId: sessionID,
+                    phase: "end",
+                    error: nil
+                )
+            )
+        )
+
+        XCTAssertNil(store.pendingInlineProcess(for: sessionID))
+        XCTAssertNil(store.activeInlineProcess(for: sessionID))
+
+        store._receiveGatewayEventForTesting(
+            .toolEvent(
+                ToolEventPayload(
+                    agentRunId: runID,
+                    projectId: projectID,
+                    sessionId: sessionID,
+                    runId: nil,
+                    toolCallId: "late-tool-1",
+                    tool: "labos_plan_propose",
+                    phase: "start",
+                    summary: "Starting labos_plan_propose",
+                    detail: [:],
+                    ts: "2026-02-22T00:00:04Z"
+                )
+            )
+        )
+
+        XCTAssertNil(store.pendingInlineProcess(for: sessionID))
+        XCTAssertNil(store.activeInlineProcess(for: sessionID))
+    }
+
+    func testHistorySnapshotClearsStalePendingProcessWhenAssistantReplyExists() {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        let runID = UUID()
+        let base = Date(timeIntervalSince1970: 1_771_781_100)
+
+        store._receiveGatewayEventForTesting(
+            .lifecycle(
+                LifecyclePayload(
+                    agentRunId: runID,
+                    projectId: projectID,
+                    sessionId: sessionID,
+                    phase: "start",
+                    error: nil
+                )
+            )
+        )
+        store._receiveGatewayEventForTesting(
+            .toolEvent(
+                ToolEventPayload(
+                    agentRunId: runID,
+                    projectId: projectID,
+                    sessionId: sessionID,
+                    runId: nil,
+                    toolCallId: "tool-ghost",
+                    tool: "labos_plan_propose",
+                    phase: "start",
+                    summary: "Thinking",
+                    detail: [:],
+                    ts: "2026-02-22T00:00:00Z"
+                )
+            )
+        )
+
+        XCTAssertEqual(store.pendingInlineProcess(for: sessionID)?.activeLine, "Thinking...")
+
+        let user = ChatMessage(
+            sessionID: sessionID,
+            role: .user,
+            text: "What is this?",
+            createdAt: base
+        )
+        let assistant = ChatMessage(
+            sessionID: sessionID,
+            role: .assistant,
+            text: "It is a flower.",
+            createdAt: base.addingTimeInterval(1)
+        )
+
+        store.applySessionHistorySnapshot(
+            projectID: projectID,
+            sessionID: sessionID,
+            messages: [user, assistant],
+            fetchedAt: base.addingTimeInterval(2)
+        )
+
+        XCTAssertNil(store.pendingInlineProcess(for: sessionID))
+        XCTAssertNil(store.activeInlineProcess(for: sessionID))
+    }
+
+    func testHistorySnapshotPreservesPendingProcessWhenLatestMessageIsUser() {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        let runID = UUID()
+        let base = Date(timeIntervalSince1970: 1_771_781_300)
+
+        store._receiveGatewayEventForTesting(
+            .lifecycle(
+                LifecyclePayload(
+                    agentRunId: runID,
+                    projectId: projectID,
+                    sessionId: sessionID,
+                    phase: "start",
+                    error: nil
+                )
+            )
+        )
+        store._receiveGatewayEventForTesting(
+            .toolEvent(
+                ToolEventPayload(
+                    agentRunId: runID,
+                    projectId: projectID,
+                    sessionId: sessionID,
+                    runId: nil,
+                    toolCallId: "tool-ghost",
+                    tool: "labos_plan_propose",
+                    phase: "start",
+                    summary: "Thinking",
+                    detail: [:],
+                    ts: "2026-02-22T00:00:00Z"
+                )
+            )
+        )
+
+        let user = ChatMessage(
+            sessionID: sessionID,
+            role: .user,
+            text: "Pending reply",
+            createdAt: base
+        )
+
+        store.applySessionHistorySnapshot(
+            projectID: projectID,
+            sessionID: sessionID,
+            messages: [user],
+            fetchedAt: base.addingTimeInterval(1)
+        )
+
+        XCTAssertNotNil(store.pendingInlineProcess(for: sessionID))
+        XCTAssertNotNil(store.activeInlineProcess(for: sessionID))
+    }
+
+    func testHistorySnapshotClearsPendingInlineProcessEvenWithStalePendingEchoWhenAssistantReplyExists() async {
+        let suiteName = "LabOS.StalePendingEcho.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Failed to create test defaults suite.")
+            return
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let store = AppStore(bootstrapDemo: false, userDefaults: defaults)
+        guard let project = await store.createProject(name: "P") else {
+            XCTFail("Failed to create project.")
+            return
+        }
+        guard let session = await store.createSession(projectID: project.id) else {
+            XCTFail("Failed to create session.")
+            return
+        }
+
+        store.saveGatewaySettings(wsURLString: "ws://127.0.0.1:8787/ws", token: "fake-token")
+        store.sendMessage(projectID: project.id, sessionID: session.id, text: "hello")
+
+        XCTAssertNotNil(store.pendingInlineProcess(for: session.id))
+
+        let base = Date(timeIntervalSince1970: 1_771_781_500)
+        let user = ChatMessage(
+            sessionID: session.id,
+            role: .user,
+            text: "hello",
+            createdAt: base
+        )
+        let assistant = ChatMessage(
+            sessionID: session.id,
+            role: .assistant,
+            text: "done",
+            createdAt: base.addingTimeInterval(1)
+        )
+
+        store.applySessionHistorySnapshot(
+            projectID: project.id,
+            sessionID: session.id,
+            messages: [user, assistant],
+            fetchedAt: base.addingTimeInterval(2)
+        )
+
+        XCTAssertNil(store.pendingInlineProcess(for: session.id))
+        XCTAssertNil(store.activeInlineProcess(for: session.id))
     }
 
     func testMessageOrderIsStableWhenTimestampsMatch() {

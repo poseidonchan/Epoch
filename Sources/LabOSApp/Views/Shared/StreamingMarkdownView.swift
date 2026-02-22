@@ -17,49 +17,73 @@ struct StreamingMarkdownView: View {
 
     private var normalizedRenderedText: String {
         let source = renderedText.isEmpty ? text : renderedText
-        return MarkdownDisplayNormalizer.normalize(source)
+        return MarkdownDisplayNormalizer.normalizeChatMessage(source)
+    }
+
+    private var shouldRenderMarkdown: Bool {
+        Self.likelyContainsMarkdownSyntax(normalizedRenderedText)
     }
 
     var body: some View {
-        Markdown(normalizedRenderedText)
-            .markdownTheme(.gitHub)
-            .markdownTextStyle(\.code) {
-                FontFamilyVariant(.monospaced)
-                FontSize(.em(0.9))
-                ForegroundColor(.primary)
-                BackgroundColor(Color.black.opacity(colorScheme == .dark ? 0.22 : 0.06))
+        Group {
+            if shouldRenderMarkdown {
+                Markdown(normalizedRenderedText)
+                    .markdownTheme(.gitHub)
+                    .markdownTextStyle(\.code) {
+                        FontFamilyVariant(.monospaced)
+                        FontSize(.em(0.9))
+                        ForegroundColor(.primary)
+                        BackgroundColor(Color.black.opacity(colorScheme == .dark ? 0.22 : 0.06))
+                    }
+                    .markdownBlockStyle(\.codeBlock) { configuration in
+                        ScrollView(.horizontal) {
+                            configuration.label
+                                .padding(12)
+                        }
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(Color(.secondarySystemBackground))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08))
+                        )
+                    }
+                    .markdownBlockStyle(\.blockquote) { configuration in
+                        HStack(alignment: .top, spacing: 10) {
+                            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                .fill(Color.primary.opacity(colorScheme == .dark ? 0.25 : 0.22))
+                                .frame(width: 3)
+                            configuration.label
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text(normalizedRenderedText)
+                    .font(.body)
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .markdownBlockStyle(\.codeBlock) { configuration in
-                ScrollView(.horizontal) {
-                    configuration.label
-                        .padding(12)
-                }
-                .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color(.secondarySystemBackground))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08))
-                )
-            }
-            .textSelection(.enabled)
-            .onAppear {
-                renderedText = text
-                pendingText = text
-                lastFlush = .distantPast
-            }
-            .onDisappear {
-                scheduledFlush?.cancel()
-                scheduledFlush = nil
-            }
-            .onChange(of: text) { _, newValue in
-                pendingText = newValue
-                flushIfNeeded()
-            }
-            .onChange(of: isStreaming) { _, _ in
-                flushIfNeeded(force: !isStreaming)
-            }
+        }
+        .onAppear {
+            renderedText = text
+            pendingText = text
+            lastFlush = .distantPast
+        }
+        .onDisappear {
+            scheduledFlush?.cancel()
+            scheduledFlush = nil
+        }
+        .onChange(of: text) { _, newValue in
+            pendingText = newValue
+            flushIfNeeded()
+        }
+        .onChange(of: isStreaming) { _, _ in
+            flushIfNeeded(force: !isStreaming)
+        }
     }
 
     private func flushIfNeeded(force: Bool = false) {
@@ -89,5 +113,36 @@ struct StreamingMarkdownView: View {
         scheduledFlush = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
+
+    private static func likelyContainsMarkdownSyntax(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        if MarkdownDisplayNormalizer.likelyContainsCodeBlock(text) { return true }
+        if text.contains("`") || text.contains("**") || text.contains("__") || text.contains("](") {
+            return true
+        }
+        if text.contains("$$") || text.contains("\\(") || text.contains("\\[") || text.contains("\\begin{") {
+            return true
+        }
+        if text.range(of: #"(?m)^\s{0,3}#{1,6}\s+\S+"#, options: .regularExpression) != nil {
+            return true
+        }
+        if text.range(of: #"(?m)^\s{0,3}[-*+]\s+\S+"#, options: .regularExpression) != nil {
+            return true
+        }
+        if text.range(of: #"(?m)^\s{0,3}\d+\.\s+\S+"#, options: .regularExpression) != nil {
+            return true
+        }
+        if text.range(of: #"(?m)^\s{0,3}>\s+\S+"#, options: .regularExpression) != nil,
+           text.contains("\n> ") {
+            return true
+        }
+        if text.range(of: #"\|.*\n\s*\|?\s*:?-{3,}"#, options: .regularExpression) != nil {
+            return true
+        }
+        return false
+    }
+
 }
 #endif

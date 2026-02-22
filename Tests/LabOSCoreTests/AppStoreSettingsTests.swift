@@ -63,6 +63,60 @@ final class AppStoreSettingsTests: XCTestCase {
         XCTAssertFalse(store2.runCompletionNotificationsEnabled)
     }
 
+    func testResourcePollingPublishesOnlyForChangedHomeContextUpdates() {
+        let baseline = ResourceStatus(
+            computeConnected: true,
+            queueDepth: 1,
+            storageUsedPercent: 22,
+            storageTotalBytes: 1000,
+            storageUsedBytes: 220,
+            storageAvailableBytes: 780,
+            cpuPercent: 10,
+            ramPercent: 30,
+            hpc: nil
+        )
+        let changed = ResourceStatus(
+            computeConnected: true,
+            queueDepth: 4,
+            storageUsedPercent: 25,
+            storageTotalBytes: 1000,
+            storageUsedBytes: 250,
+            storageAvailableBytes: 750,
+            cpuPercent: 13,
+            ramPercent: 36,
+            hpc: nil
+        )
+
+        XCTAssertFalse(
+            AppStore.shouldPublishResourceStatusUpdate(
+                context: .session(projectID: UUID(), sessionID: UUID()),
+                previous: baseline,
+                incoming: changed
+            )
+        )
+        XCTAssertFalse(
+            AppStore.shouldPublishResourceStatusUpdate(
+                context: .project(projectID: UUID()),
+                previous: baseline,
+                incoming: changed
+            )
+        )
+        XCTAssertFalse(
+            AppStore.shouldPublishResourceStatusUpdate(
+                context: .home,
+                previous: baseline,
+                incoming: baseline
+            )
+        )
+        XCTAssertTrue(
+            AppStore.shouldPublishResourceStatusUpdate(
+                context: .home,
+                previous: baseline,
+                incoming: changed
+            )
+        )
+    }
+
     func testArtifactStorageBreakdownAggregatesFromArtifacts() async {
         let store = AppStore(bootstrapDemo: false)
         guard let project = await store.createProject(name: "Storage Project") else {

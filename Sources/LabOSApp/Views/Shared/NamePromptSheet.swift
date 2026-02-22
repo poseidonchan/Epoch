@@ -47,6 +47,7 @@ struct NamePromptSheet: View {
 
                 Section {
                     TextField(placeholder, text: $value)
+                        .accessibilityIdentifier("namePrompt.field")
                 }
             }
             .navigationTitle(title)
@@ -54,12 +55,14 @@ struct NamePromptSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", role: .cancel, action: onCancel)
+                        .accessibilityIdentifier("namePrompt.cancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(confirmLabel, role: isDestructive ? .destructive : nil) {
                         onConfirm(value)
                     }
                     .disabled(value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("namePrompt.confirm")
                 }
             }
         }

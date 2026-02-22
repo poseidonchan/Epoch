@@ -2,6 +2,7 @@
 import LabOSCore
 import MarkdownUI
 import SwiftUI
+import UIKit
 import WebKit
 
 struct MarkdownMathView: View {
@@ -10,29 +11,76 @@ struct MarkdownMathView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var webHeight: CGFloat = 20
     @State private var webContentReady = false
+    @State private var cachedHeight: CGFloat?
+    @State private var cachedSnapshot: UIImage?
 
     private var normalizedMarkdown: String {
         MarkdownDisplayNormalizer.normalize(markdown)
     }
 
+    private var preparedMarkdown: String {
+        MarkdownMathPreprocessor.prepareForRendering(normalizedMarkdown)
+    }
+
+    private var renderSignature: String {
+        MarkdownMathWebView.renderSignature(markdown: preparedMarkdown, colorScheme: colorScheme)
+    }
+
+    private var likelyMath: Bool {
+        MarkdownMathPreprocessor.likelyContainsMath(normalizedMarkdown)
+    }
+
+    private var shouldUseSnapshotFallback: Bool {
+        normalizedMarkdown.contains("\\(")
+            || normalizedMarkdown.contains("\\[")
+            || normalizedMarkdown.contains("$$")
+            || normalizedMarkdown.contains("\\begin{")
+    }
+
+    private var displayHeight: CGFloat {
+        if webContentReady {
+            return max(20, webHeight)
+        }
+        if let cachedHeight {
+            return max(20, cachedHeight)
+        }
+        return max(20, webHeight)
+    }
+
     var body: some View {
         if MarkdownMathWebView.canRender {
             ZStack(alignment: .topLeading) {
-                fallbackMarkdown
-                    .opacity(webContentReady ? 0 : 1)
-                    .frame(height: webContentReady ? 0 : nil, alignment: .top)
-                    .clipped()
+                if !webContentReady {
+                    if shouldUseSnapshotFallback, let cachedSnapshot {
+                        Image(uiImage: cachedSnapshot)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .frame(height: displayHeight, alignment: .topLeading)
+                            .clipped()
+                    } else if !likelyMath {
+                        fallbackMarkdown
+                            .frame(height: displayHeight, alignment: .topLeading)
+                    }
+                }
 
-                MarkdownMathWebView(markdown: normalizedMarkdown, height: $webHeight, isReady: $webContentReady)
-                    .frame(height: max(20, webHeight))
+                MarkdownMathWebView(
+                    markdown: preparedMarkdown,
+                    renderSignature: renderSignature,
+                    captureSnapshots: shouldUseSnapshotFallback,
+                    height: $webHeight,
+                    isReady: $webContentReady
+                )
+                    .frame(height: displayHeight)
                     .opacity(webContentReady ? 1 : 0)
             }
-            .animation(.easeOut(duration: 0.16), value: webContentReady)
-            .onChange(of: normalizedMarkdown) { _, _ in
-                webContentReady = false
+            .animation(.easeOut(duration: 0.12), value: webContentReady)
+            .onAppear {
+                loadCachedState(for: renderSignature)
             }
-            .onChange(of: colorScheme) { _, _ in
+            .onChange(of: renderSignature) { _, newValue in
                 webContentReady = false
+                loadCachedState(for: newValue)
             }
         } else {
             fallbackMarkdown
@@ -40,7 +88,7 @@ struct MarkdownMathView: View {
     }
 
     private var fallbackMarkdown: some View {
-        Markdown(MarkdownMathPreprocessor.prepareForRendering(normalizedMarkdown))
+        Markdown(preparedMarkdown)
             .markdownTheme(.gitHub)
             .markdownTextStyle(\.code) {
                 FontFamilyVariant(.monospaced)
@@ -62,12 +110,37 @@ struct MarkdownMathView: View {
                         .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08))
                 )
             }
-            .textSelection(.enabled)
+            .markdownBlockStyle(\.blockquote) { configuration in
+                HStack(alignment: .top, spacing: 10) {
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(Color.primary.opacity(colorScheme == .dark ? 0.25 : 0.22))
+                        .frame(width: 3)
+                    configuration.label
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func loadCachedState(for key: String) {
+        guard let cached = MarkdownMathRenderCache.entry(for: key) else {
+            cachedHeight = nil
+            cachedSnapshot = nil
+            return
+        }
+        cachedHeight = cached.height
+        cachedSnapshot = cached.snapshot
+        if !webContentReady {
+            webHeight = max(20, cached.height)
+        }
     }
 }
 
 private struct MarkdownMathWebView: UIViewRepresentable {
     let markdown: String
+    let renderSignature: String
+    let captureSnapshots: Bool
     @Binding var height: CGFloat
     @Binding var isReady: Bool
 
@@ -99,14 +172,34 @@ private struct MarkdownMathWebView: UIViewRepresentable {
     func updateUIView(_ uiView: WKWebView, context: Context) {
         guard let urls = Self.assetURLs(bundle: Self.resourceBundle) else { return }
 
-        let prepared = MarkdownMathPreprocessor.prepareForRendering(markdown)
-        let signature = "\(colorScheme == .dark ? "dark" : "light")::\(prepared)"
-        if context.coordinator.lastSignature == signature {
+        let prepared = markdown
+        if context.coordinator.lastSignature == renderSignature {
+            if let cached = MarkdownMathRenderCache.entry(for: renderSignature) {
+                let nextHeight = max(20, cached.height)
+                if abs(height - nextHeight) > 1 {
+                    height = nextHeight
+                }
+            }
+            if !isReady {
+                isReady = true
+            }
             return
         }
-        context.coordinator.lastSignature = signature
+        context.coordinator.lastSignature = renderSignature
+        context.coordinator.cacheKey = renderSignature
+        context.coordinator.snapshotEnabled = captureSnapshots
+        context.coordinator.snapshotCapturedForKey = nil
+        context.coordinator.webView = uiView
+
+        if let cached = MarkdownMathRenderCache.entry(for: renderSignature) {
+            let nextHeight = max(20, cached.height)
+            if abs(height - nextHeight) > 1 {
+                height = nextHeight
+            }
+        } else {
+            height = 20
+        }
         isReady = false
-        height = 20
 
         let escaped = Self.escapeHTML(prepared)
         let highlightCSS = (colorScheme == .dark ? urls.highlightDarkCSS : urls.highlightLightCSS)?.absoluteString ?? ""
@@ -229,6 +322,10 @@ private struct MarkdownMathWebView: UIViewRepresentable {
         var height: Binding<CGFloat>
         var isReady: Binding<Bool>
         var lastSignature: String?
+        var cacheKey: String?
+        var snapshotEnabled = true
+        var snapshotCapturedForKey: String?
+        weak var webView: WKWebView?
 
         init(height: Binding<CGFloat>, isReady: Binding<Bool>) {
             self.height = height
@@ -236,12 +333,15 @@ private struct MarkdownMathWebView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            self.webView = webView
             updateHeight(webView)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
                 self?.updateHeight(webView)
+                self?.captureSnapshotIfNeeded()
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
                 self?.updateHeight(webView)
+                self?.captureSnapshotIfNeeded()
             }
         }
 
@@ -264,7 +364,9 @@ private struct MarkdownMathWebView: UIViewRepresentable {
             if abs(height.wrappedValue - next) > 1 {
                 height.wrappedValue = next
             }
+            cacheHeight(next)
             isReady.wrappedValue = true
+            captureSnapshotIfNeeded()
         }
 
         func webView(
@@ -305,6 +407,7 @@ private struct MarkdownMathWebView: UIViewRepresentable {
                     if abs(self.height.wrappedValue - next) > 1 {
                         self.height.wrappedValue = next
                     }
+                    self.cacheHeight(next)
                     isReady.wrappedValue = true
                 } else {
                     // If we can't measure for some reason, at least show the web content.
@@ -312,6 +415,35 @@ private struct MarkdownMathWebView: UIViewRepresentable {
                 }
             }
         }
+
+        private func cacheHeight(_ value: CGFloat) {
+            guard let cacheKey else { return }
+            MarkdownMathRenderCache.updateHeight(max(20, value), for: cacheKey)
+        }
+
+        private func captureSnapshotIfNeeded() {
+            guard snapshotEnabled else { return }
+            guard let webView, let cacheKey else { return }
+            guard snapshotCapturedForKey != cacheKey else { return }
+
+            let width = webView.bounds.width
+            let height = self.height.wrappedValue
+            guard width > 10, height > 10, height <= 2200 else { return }
+
+            let config = WKSnapshotConfiguration()
+            config.rect = CGRect(x: 0, y: 0, width: width, height: height)
+            webView.takeSnapshot(with: config) { image, _ in
+                guard let image else { return }
+                Task { @MainActor in
+                    MarkdownMathRenderCache.updateSnapshot(image, for: cacheKey)
+                }
+            }
+            snapshotCapturedForKey = cacheKey
+        }
+    }
+
+    static func renderSignature(markdown: String, colorScheme: ColorScheme) -> String {
+        "\(colorScheme == .dark ? "dark" : "light")::\(markdown)"
     }
 
     private struct AssetURLs: Sendable {
@@ -388,6 +520,48 @@ private struct MarkdownMathWebView: UIViewRepresentable {
         s = s.replacingOccurrences(of: "\"", with: "&quot;")
         s = s.replacingOccurrences(of: "'", with: "&#39;")
         return s
+    }
+}
+
+private enum MarkdownMathRenderCache {
+    struct Entry {
+        var height: CGFloat
+        var snapshot: UIImage?
+        var timestamp: TimeInterval
+    }
+
+    nonisolated(unsafe) private static var entries: [String: Entry] = [:]
+    private static let maxEntries = 96
+
+    static func entry(for key: String) -> Entry? {
+        entries[key]
+    }
+
+    static func updateHeight(_ height: CGFloat, for key: String) {
+        let time = Date().timeIntervalSince1970
+        var next = entries[key] ?? Entry(height: max(20, height), snapshot: nil, timestamp: time)
+        next.height = max(20, height)
+        next.timestamp = time
+        entries[key] = next
+        trimIfNeeded()
+    }
+
+    static func updateSnapshot(_ snapshot: UIImage, for key: String) {
+        let time = Date().timeIntervalSince1970
+        var next = entries[key] ?? Entry(height: 20, snapshot: nil, timestamp: time)
+        next.snapshot = snapshot
+        next.timestamp = time
+        entries[key] = next
+        trimIfNeeded()
+    }
+
+    private static func trimIfNeeded() {
+        guard entries.count > maxEntries else { return }
+        let overflow = entries.count - maxEntries
+        let oldest = entries.sorted { $0.value.timestamp < $1.value.timestamp }.prefix(overflow)
+        for (key, _) in oldest {
+            entries.removeValue(forKey: key)
+        }
     }
 }
 #endif

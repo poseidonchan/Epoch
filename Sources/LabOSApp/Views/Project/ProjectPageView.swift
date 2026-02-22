@@ -2,6 +2,7 @@
 import LabOSCore
 import PhotosUI
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct ProjectPageView: View {
@@ -11,7 +12,8 @@ struct ProjectPageView: View {
 
     @State private var seedPrompt = ""
     @State private var showArchived = false
-    @State private var showFileSheet = false
+    @State private var showProjectFilesSheet = false
+    @State private var showComposerAttachmentSheet = false
     @State private var showPhotoPicker = false
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var showFileImporter = false
@@ -19,10 +21,19 @@ struct ProjectPageView: View {
     @State private var sendErrorMessage: String?
     @State private var composerHeight: CGFloat = 0
     @State private var composerDraftSessionID = UUID()
+    private let maxInlineAttachmentBytes = 900 * 1024
+    private let maxInlinePhotoDimension: CGFloat = 1_536
 
     @State private var renameProjectPresented = false
     @State private var renameSession: Session?
     @State private var deleteSession: Session?
+
+    private enum ImportTarget {
+        case projectFiles
+        case composer
+    }
+
+    @State private var importTarget: ImportTarget = .projectFiles
 
     private var project: Project? {
         store.projects.first(where: { $0.id == projectID })
@@ -126,25 +137,57 @@ struct ProjectPageView: View {
                 deleteSession = nil
             }
         }
-        .sheet(isPresented: $showFileSheet) {
+        .sheet(isPresented: $showProjectFilesSheet) {
             ProjectFilesSheet(
                 title: "Project Files",
                 uploadedFiles: store.uploadedArtifacts(for: projectID),
                 onAddPhotos: {
-                    showFileSheet = false
+                    importTarget = .projectFiles
+                    showProjectFilesSheet = false
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                         showPhotoPicker = true
                     }
                 },
                 onAddFiles: {
-                    showFileSheet = false
+                    importTarget = .projectFiles
+                    showProjectFilesSheet = false
                     showFileImporter = true
                 },
                 onDeleteFile: { path in
                     store.removeUploadedFile(projectID: projectID, path: path)
                 },
                 onClose: {
-                    showFileSheet = false
+                    showProjectFilesSheet = false
+                }
+            )
+        }
+        .sheet(isPresented: $showComposerAttachmentSheet) {
+            ComposerAttachmentsSheet(
+                title: "Session Attachments",
+                pendingAttachments: store.pendingComposerAttachments(for: composerDraftSessionID),
+                onAddPhotos: {
+                    importTarget = .composer
+                    showComposerAttachmentSheet = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        showPhotoPicker = true
+                    }
+                },
+                onAddFiles: {
+                    importTarget = .composer
+                    showComposerAttachmentSheet = false
+                    showFileImporter = true
+                },
+                onAddTestPhoto: E2ETestAttachmentFactory.isEnabled ? {
+                    if let attachment = E2ETestAttachmentFactory.makeFixturePhotoAttachment() {
+                        store.addPendingComposerAttachments(sessionID: composerDraftSessionID, attachments: [attachment])
+                    }
+                    showComposerAttachmentSheet = false
+                } : nil,
+                onDeleteAttachment: { id in
+                    store.removePendingComposerAttachment(sessionID: composerDraftSessionID, attachmentID: id)
+                },
+                onClose: {
+                    showComposerAttachmentSheet = false
                 }
             )
         }
@@ -156,13 +199,31 @@ struct ProjectPageView: View {
         )
         .onChange(of: selectedPhotoItems) { _, items in
             guard !items.isEmpty else { return }
-            let timestamp = Int(Date().timeIntervalSince1970)
-            let fileNames = items.enumerated().map { index, item in
-                let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
-                return "photo-\(timestamp)-\(index + 1).\(ext)"
-            }
-            store.addUploadedFiles(projectID: projectID, fileNames: fileNames, createdBySessionID: nil)
+            let selected = items
             selectedPhotoItems = []
+            switch importTarget {
+            case .projectFiles:
+                Task {
+                    let uploads = await makePhotoProjectUploads(from: selected)
+                    guard !uploads.isEmpty else { return }
+                    await store.uploadProjectFiles(
+                        projectID: projectID,
+                        files: uploads,
+                        createdBySessionID: nil
+                    )
+                }
+            case .composer:
+                Task {
+                    let attachments = await makePhotoAttachments(from: selected)
+                    await MainActor.run {
+                        if attachments.count < selected.count {
+                            importErrorMessage = "Some photos were skipped because they were too large to send inline."
+                        }
+                        guard !attachments.isEmpty else { return }
+                        store.addPendingComposerAttachments(sessionID: composerDraftSessionID, attachments: attachments)
+                    }
+                }
+            }
         }
         .fileImporter(
             isPresented: $showFileImporter,
@@ -205,7 +266,7 @@ struct ProjectPageView: View {
             }
 
             Button {
-                showFileSheet = true
+                showProjectFilesSheet = true
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: projectFileCount == 0 ? "plus.circle.fill" : "doc.on.doc.fill")
@@ -226,6 +287,7 @@ struct ProjectPageView: View {
                 )
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("project.files.badge")
         }
         .padding(.horizontal, 18)
         .padding(.top, 12)
@@ -255,16 +317,22 @@ struct ProjectPageView: View {
             ),
             submitLabel: "Send",
             style: .chatGPT,
-	            attachmentAction: {
-	                showFileSheet = true
-	            },
-	            modelOptions: store.availableModels,
-	            thinkingLevelOptions: store.availableThinkingLevels.isEmpty ? ThinkingLevel.allCases : store.availableThinkingLevels,
-	            contextRemainingFraction: store.contextRemainingFraction(for: composerDraftSessionID),
-	            contextWindowTokens: store.contextWindowTokens(for: composerDraftSessionID) ?? 258_000
-	        ) {
-	            let message = seedPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-	            guard !message.isEmpty else { return }
+            attachmentAction: {
+                showComposerAttachmentSheet = true
+            },
+            pendingAttachments: store.pendingComposerAttachments(for: composerDraftSessionID),
+            onRemoveAttachment: { attachmentID in
+                store.removePendingComposerAttachment(sessionID: composerDraftSessionID, attachmentID: attachmentID)
+            },
+            modelOptions: store.availableModels,
+            thinkingLevelOptions: store.availableThinkingLevels.isEmpty ? ThinkingLevel.allCases : store.availableThinkingLevels,
+            contextRemainingFraction: store.contextRemainingFraction(for: composerDraftSessionID),
+            contextWindowTokens: store.contextWindowTokens(for: composerDraftSessionID) ?? 258_000
+        ) {
+            let message = seedPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !message.isEmpty else { return }
+            let pendingDraftAttachments = store.pendingComposerAttachments(for: composerDraftSessionID)
+            store.clearPendingComposerAttachments(sessionID: composerDraftSessionID)
 
             let planModeEnabled = store.planModeEnabled(for: composerDraftSessionID)
             let modelId = store.selectedModelId(for: composerDraftSessionID)
@@ -277,6 +345,7 @@ struct ProjectPageView: View {
             Task { @MainActor in
                 guard let session = await store.createSession(projectID: projectID, title: nil) else {
                     seedPrompt = message
+                    store.addPendingComposerAttachments(sessionID: composerDraftSessionID, attachments: pendingDraftAttachments)
                     sendErrorMessage = store.lastGatewayErrorMessage ?? "Failed to create a session on the Hub."
                     return
                 }
@@ -286,7 +355,12 @@ struct ProjectPageView: View {
                 }
                 store.setSelectedThinkingLevel(for: session.id, level: thinkingLevel)
                 store.setPermissionLevel(projectID: session.projectID, sessionID: session.id, level: permissionLevel)
-                store.sendMessage(projectID: session.projectID, sessionID: session.id, text: message)
+                store.sendMessage(
+                    projectID: session.projectID,
+                    sessionID: session.id,
+                    text: message,
+                    attachments: pendingDraftAttachments
+                )
             }
         }
         .background(
@@ -299,10 +373,168 @@ struct ProjectPageView: View {
     private func handleImportResult(_ result: Result<[URL], Error>) {
         switch result {
         case let .success(urls):
-            let fileNames = urls.map(\.lastPathComponent)
-            store.addUploadedFiles(projectID: projectID, fileNames: fileNames, createdBySessionID: nil)
+            switch importTarget {
+            case .projectFiles:
+                let uploads = urls.compactMap(makeProjectUploadFile(from:))
+                guard !uploads.isEmpty else { return }
+                Task {
+                    await store.uploadProjectFiles(
+                        projectID: projectID,
+                        files: uploads,
+                        createdBySessionID: nil
+                    )
+                }
+            case .composer:
+                let valid = urls.compactMap(makeFileAttachment(from:))
+                    .filter { !$0.displayName.isEmpty }
+                if valid.count < urls.count {
+                    importErrorMessage = "Some files were skipped because they were too large to send inline."
+                }
+                guard !valid.isEmpty else { return }
+                store.addPendingComposerAttachments(sessionID: composerDraftSessionID, attachments: valid)
+            }
         case let .failure(error):
             importErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func makePhotoAttachments(from items: [PhotosPickerItem]) async -> [ComposerAttachment] {
+        let timestamp = Int(Date().timeIntervalSince1970)
+        var results: [ComposerAttachment] = []
+        results.reserveCapacity(items.count)
+        for (index, item) in items.enumerated() {
+            let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
+            let mimeType = item.supportedContentTypes.first?.preferredMIMEType
+            let data = try? await item.loadTransferable(type: Data.self)
+            guard let normalizedData = normalizedInlineData(from: data, mimeType: mimeType) else { continue }
+            results.append(
+                ComposerAttachment(
+                    displayName: "photo-\(timestamp)-\(index + 1).\(ext)",
+                    mimeType: "image/jpeg",
+                    inlineDataBase64: normalizedData.base64EncodedString(),
+                    byteCount: normalizedData.count
+                )
+            )
+        }
+        return results
+    }
+
+    private func makePhotoProjectUploads(from items: [PhotosPickerItem]) async -> [AppStore.ProjectUploadFile] {
+        let timestamp = Int(Date().timeIntervalSince1970)
+        var results: [AppStore.ProjectUploadFile] = []
+        results.reserveCapacity(items.count)
+
+        for (index, item) in items.enumerated() {
+            guard let data = try? await item.loadTransferable(type: Data.self),
+                  !data.isEmpty else { continue }
+
+            let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
+            let mimeType = item.supportedContentTypes.first?.preferredMIMEType
+            results.append(
+                AppStore.ProjectUploadFile(
+                    fileName: "photo-\(timestamp)-\(index + 1).\(ext)",
+                    data: data,
+                    mimeType: mimeType
+                )
+            )
+        }
+
+        return results
+    }
+
+    private func makeProjectUploadFile(from url: URL) -> AppStore.ProjectUploadFile? {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessed {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
+        let mimeType = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+        return AppStore.ProjectUploadFile(
+            fileName: url.lastPathComponent,
+            data: data,
+            mimeType: mimeType
+        )
+    }
+
+    private func makeFileAttachment(from url: URL) -> ComposerAttachment? {
+        let mimeType = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessed {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+        let data = try? Data(contentsOf: url)
+        guard let normalizedData = normalizedInlineData(from: data, mimeType: mimeType) else { return nil }
+        return ComposerAttachment(
+            displayName: url.lastPathComponent,
+            mimeType: mimeType,
+            inlineDataBase64: normalizedData.base64EncodedString(),
+            byteCount: normalizedData.count
+        )
+    }
+
+    private func normalizedInlineData(from data: Data?, mimeType: String?) -> Data? {
+        guard let data, !data.isEmpty else { return nil }
+        if data.count <= maxInlineAttachmentBytes {
+            return data
+        }
+
+        guard (mimeType ?? "").lowercased().hasPrefix("image/"),
+              let image = UIImage(data: data) else {
+            return nil
+        }
+
+        return compressedImageDataForInlineSend(image)
+    }
+
+    private func compressedImageDataForInlineSend(_ image: UIImage) -> Data? {
+        var working = resizedImageIfNeeded(image, maxDimension: maxInlinePhotoDimension)
+        var compression: CGFloat = 0.82
+
+        while compression >= 0.24 {
+            if let encoded = working.jpegData(compressionQuality: compression),
+               encoded.count <= maxInlineAttachmentBytes {
+                return encoded
+            }
+            compression -= 0.12
+        }
+
+        while max(working.size.width, working.size.height) > 320 {
+            let nextSize = CGSize(width: max(320, floor(working.size.width * 0.8)),
+                                  height: max(320, floor(working.size.height * 0.8)))
+            working = resizedImage(working, targetSize: nextSize)
+            compression = 0.72
+            while compression >= 0.2 {
+                if let encoded = working.jpegData(compressionQuality: compression),
+                   encoded.count <= maxInlineAttachmentBytes {
+                    return encoded
+                }
+                compression -= 0.12
+            }
+        }
+
+        return nil
+    }
+
+    private func resizedImageIfNeeded(_ image: UIImage, maxDimension: CGFloat) -> UIImage {
+        let longest = max(image.size.width, image.size.height)
+        guard longest > maxDimension, longest > 0 else { return image }
+        let scale = maxDimension / longest
+        let target = CGSize(width: max(1, floor(image.size.width * scale)),
+                            height: max(1, floor(image.size.height * scale)))
+        return resizedImage(image, targetSize: target)
+    }
+
+    private func resizedImage(_ image: UIImage, targetSize: CGSize) -> UIImage {
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
         }
     }
 
@@ -324,6 +556,7 @@ struct ProjectPageView: View {
                     )
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("project.sidebar.button")
 
             HStack(spacing: 6) {
                 Text(project?.name ?? "Project")
@@ -409,8 +642,10 @@ struct ProjectPageView: View {
                 }
             }
             .padding(.vertical, 2)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("project.session.row.\(session.id.uuidString.lowercased())")
         .contextMenu {
             Button("Rename") {
                 renameSession = session

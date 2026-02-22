@@ -106,6 +106,8 @@ public struct RunLogDeltaPayload: Hashable, Codable, Sendable {
 public final class GatewayClient: ObservableObject {
     @Published public private(set) var connectionState: GatewayConnectionState = .disconnected
 
+    private static let maxOutgoingFrameBytes = 4 * 1024 * 1024
+
     private let wsURL: URL
     private let token: String
     private let deviceID: UUID
@@ -148,7 +150,21 @@ public final class GatewayClient: ObservableObject {
     }
 
     public func connect(scopes: [String] = ["operator.read", "operator.write", "operator.approvals"]) async {
-        guard case .disconnected = connectionState else { return }
+        switch connectionState {
+        case .connecting, .connected:
+            return
+        case .disconnected, .failed:
+            break
+        }
+
+        if case .failed = connectionState {
+            receiveTask?.cancel()
+            receiveTask = nil
+            webSocketTask?.cancel(with: .goingAway, reason: nil)
+            webSocketTask = nil
+            urlSession?.invalidateAndCancel()
+            urlSession = nil
+        }
 
         // URLSessionWebSocketTask throws an Objective-C exception (crash) if the URL scheme
         // is not ws/wss. Validate before calling into CFNetwork.
@@ -209,8 +225,11 @@ public final class GatewayClient: ObservableObject {
             startReceiveLoop(task)
         } catch {
             connectionState = .failed(message: String(describing: error))
+            failPendingRequests(error)
             webSocketTask?.cancel(with: .goingAway, reason: nil)
             webSocketTask = nil
+            urlSession?.invalidateAndCancel()
+            urlSession = nil
         }
     }
 
@@ -221,7 +240,7 @@ public final class GatewayClient: ObservableObject {
         webSocketTask = nil
         urlSession?.invalidateAndCancel()
         urlSession = nil
-        pending.removeAll()
+        failPendingRequests(GatewayClientError.connectionClosed("Disconnected"))
         connectionState = .disconnected
     }
 
@@ -261,6 +280,11 @@ public final class GatewayClient: ObservableObject {
                 } catch {
                     await MainActor.run {
                         self.connectionState = .failed(message: String(describing: error))
+                        self.failPendingRequests(GatewayClientError.connectionClosed(String(describing: error)))
+                        self.webSocketTask?.cancel(with: .goingAway, reason: nil)
+                        self.webSocketTask = nil
+                        self.urlSession?.invalidateAndCancel()
+                        self.urlSession = nil
                     }
                     return
                 }
@@ -377,7 +401,44 @@ public final class GatewayClient: ObservableObject {
     ) async throws {
         let frame = GatewayOutgoingRequest(id: id, method: method, params: params)
         let data = try encoder.encode(frame)
+        try Self.validateOutgoingFrameSize(bytes: data.count)
         try await task.send(.data(data))
+    }
+
+    private func failPendingRequests(_ error: Error) {
+        let active = pending
+        pending.removeAll()
+        for (_, continuation) in active {
+            continuation.resume(throwing: error)
+        }
+    }
+
+    static func validateOutgoingFrameSize(bytes: Int) throws {
+        guard bytes <= maxOutgoingFrameBytes else {
+            throw GatewayClientError.requestTooLarge(bytes: bytes, maxBytes: maxOutgoingFrameBytes)
+        }
+    }
+
+    var pendingRequestCountForTesting: Int {
+        pending.count
+    }
+
+    func registerPendingRequestForTesting(id: String) async throws -> GatewayResponseFrame {
+        try await withCheckedThrowingContinuation { continuation in
+            pending[id] = continuation
+        }
+    }
+
+    func failPendingRequestsForTesting(_ error: Error) {
+        failPendingRequests(error)
+    }
+
+    static var maxOutgoingFrameBytesForTesting: Int {
+        maxOutgoingFrameBytes
+    }
+
+    static func validateOutgoingFrameSizeForTesting(bytes: Int) throws {
+        try validateOutgoingFrameSize(bytes: bytes)
     }
 
     private func decodeEventPayload<T: Decodable>(_ payload: [String: JSONValue], key: String) throws -> T {
@@ -421,6 +482,8 @@ private enum GatewayClientError: Error, LocalizedError {
     case unexpectedFrame
     case serverRejected(String)
     case missingPayloadKey(String)
+    case connectionClosed(String)
+    case requestTooLarge(bytes: Int, maxBytes: Int)
 
     var errorDescription: String? {
         switch self {
@@ -429,6 +492,9 @@ private enum GatewayClientError: Error, LocalizedError {
         case .unexpectedFrame: "Unexpected gateway frame."
         case let .serverRejected(message): message
         case let .missingPayloadKey(key): "Missing payload key: \(key)"
+        case let .connectionClosed(message): message
+        case let .requestTooLarge(bytes, maxBytes):
+            "Request payload too large (\(bytes) bytes > \(maxBytes) bytes). Reduce attachment size and try again."
         }
     }
 }

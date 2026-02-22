@@ -49,16 +49,26 @@ struct MessageBubbleView: View {
         HStack(alignment: .bottom) {
             Spacer(minLength: 48)
 
-            Text(message.text)
-                .font(.body)
-                .foregroundStyle(colorScheme == .dark ? Color.black : Color.primary)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .fixedSize(horizontal: false, vertical: true)
-                .background(
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(colorScheme == .dark ? Color.white.opacity(0.95) : Color(uiColor: .secondarySystemBackground))
-                )
+            VStack(alignment: .trailing, spacing: 8) {
+                Text(message.text)
+                    .font(.body)
+                    .foregroundStyle(colorScheme == .dark ? Color.black : Color.primary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background(
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .fill(colorScheme == .dark ? Color.white.opacity(0.95) : Color(uiColor: .secondarySystemBackground))
+                    )
+
+                if !message.artifactRefs.isEmpty {
+                    VStack(alignment: .trailing, spacing: 6) {
+                        ForEach(Array(message.artifactRefs.enumerated()), id: \.offset) { _, ref in
+                            artifactReferenceBadge(ref)
+                        }
+                    }
+                }
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 4)
@@ -96,24 +106,7 @@ struct MessageBubbleView: View {
                 if !message.artifactRefs.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(Array(message.artifactRefs.enumerated()), id: \.offset) { _, ref in
-                            Button {
-                                onArtifactTap(ref)
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "doc")
-                                    Text(ref.displayText)
-                                        .lineLimit(1)
-                                }
-                                .font(.subheadline)
-                                .foregroundStyle(.blue)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .fill(Color.blue.opacity(0.1))
-                                )
-                            }
-                            .buttonStyle(.plain)
+                            artifactReferenceBadge(ref)
                         }
                     }
                 }
@@ -126,6 +119,45 @@ struct MessageBubbleView: View {
         .padding(.vertical, 6)
         .contextMenu {
             messageActionsMenu
+        }
+    }
+
+    @ViewBuilder
+    private func artifactReferenceBadge(_ ref: ChatArtifactReference) -> some View {
+        let isSessionScoped = (ref.scope ?? "").lowercased() == "session"
+        if isSessionScoped {
+            HStack(spacing: 6) {
+                Image(systemName: "paperclip")
+                Text(ref.displayText)
+                    .lineLimit(1)
+            }
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color(.tertiarySystemFill))
+            )
+        } else {
+            Button {
+                onArtifactTap(ref)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "doc")
+                    Text(ref.displayText)
+                        .lineLimit(1)
+                }
+                .font(.subheadline)
+                .foregroundStyle(.blue)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.blue.opacity(0.1))
+                )
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -203,16 +235,19 @@ struct MessageBubbleView: View {
     private var assistantText: some View {
         let isStoreStreaming = store.streamingAssistantMessageIDBySession[message.sessionID] == message.id
         let isStreaming = isStoreStreaming && !streamingIdleFallbackActive
-        let prefersRichRenderer = MarkdownDisplayNormalizer.likelyContainsCodeBlock(message.text)
-            || MarkdownMathPreprocessor.likelyContainsMath(message.text)
+        let normalized = MarkdownDisplayNormalizer.normalizeChatMessage(message.text)
+        let prefersMathRenderer = normalized.contains("\\(")
+            || normalized.contains("\\[")
+            || normalized.contains("$$")
+            || normalized.contains("\\begin{")
 
         Group {
-            if isStreaming || !prefersRichRenderer {
+            if isStreaming || !prefersMathRenderer {
                 StreamingMarkdownView(text: message.text, isStreaming: isStreaming)
             } else {
                 // Keep markdown-it + KaTeX for richer finalized payloads, but avoid WKWebView
                 // for plain assistant text to reduce delayed pop-in on session open.
-                MarkdownMathView(markdown: message.text)
+                MarkdownMathView(markdown: normalized)
             }
         }
         .onAppear { scheduleStreamingIdleFallback() }
@@ -271,12 +306,21 @@ struct MessageBubbleView: View {
     }
 
     private var assistantActionBar: some View {
-        HStack(spacing: 14) {
-            actionIconButton(title: "Copy", systemImage: "doc.on.doc") {
+        let messageID = message.id.uuidString.lowercased()
+        return HStack(spacing: 14) {
+            actionIconButton(
+                title: "Copy",
+                systemImage: "doc.on.doc",
+                identifier: "message.copy.\(messageID)"
+            ) {
                 copyMessageText(message.text)
             }
 
-            actionIconButton(title: "Retry", systemImage: "arrow.clockwise") {
+            actionIconButton(
+                title: "Retry",
+                systemImage: "arrow.clockwise",
+                identifier: "message.retry.\(messageID)"
+            ) {
                 onRetryMessage(message, nil)
             }
 
@@ -302,9 +346,14 @@ struct MessageBubbleView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Retry with different model")
+                .accessibilityIdentifier("message.retry.modelMenu.\(messageID)")
             }
 
-            actionIconButton(title: "Branch", systemImage: "arrow.triangle.branch") {
+            actionIconButton(
+                title: "Branch",
+                systemImage: "arrow.triangle.branch",
+                identifier: "message.branch.\(messageID)"
+            ) {
                 onBranchMessage(message)
             }
 
@@ -313,7 +362,12 @@ struct MessageBubbleView: View {
         .padding(.top, 2)
     }
 
-    private func actionIconButton(title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+    private func actionIconButton(
+        title: String,
+        systemImage: String,
+        identifier: String,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.callout.weight(.semibold))
@@ -321,6 +375,7 @@ struct MessageBubbleView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
+        .accessibilityIdentifier(identifier)
     }
 
     @ViewBuilder

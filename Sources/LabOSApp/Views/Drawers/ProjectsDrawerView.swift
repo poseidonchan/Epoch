@@ -31,6 +31,7 @@ struct ProjectsDrawerView: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .foregroundStyle(.primary)
+                            .accessibilityIdentifier("drawer.project.search")
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
@@ -54,6 +55,7 @@ struct ProjectsDrawerView: View {
                             )
                     }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier("drawer.project.create")
                 }
 
                 HStack(spacing: 10) {
@@ -70,6 +72,7 @@ struct ProjectsDrawerView: View {
                             .foregroundStyle(.primary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier("drawer.home.button")
 
                     Spacer(minLength: 0)
                 }
@@ -192,6 +195,7 @@ struct ProjectsDrawerView: View {
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
+        .accessibilityIdentifier("drawer.project.row.\(project.id.uuidString.lowercased())")
         .contextMenu {
             Button("Rename") {
                 renameProject = project
@@ -300,6 +304,7 @@ private struct ProjectDeleteSheet: View {
                     TextField(project.name, text: $typedName)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .accessibilityIdentifier("drawer.project.delete.confirmationField")
                 }
             }
             .navigationTitle("Delete Project")
@@ -307,10 +312,12 @@ private struct ProjectDeleteSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", role: .cancel, action: onCancel)
+                        .accessibilityIdentifier("drawer.project.delete.cancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Delete", role: .destructive, action: onDelete)
                         .disabled(typedName != project.name)
+                        .accessibilityIdentifier("drawer.project.delete.confirm")
                 }
             }
         }

@@ -79,6 +79,12 @@ public enum ArtifactOrigin: String, Codable, CaseIterable, Sendable {
     case generated = "generated"
 }
 
+public enum ArtifactIndexStatus: String, Codable, CaseIterable, Sendable {
+    case processing
+    case indexed
+    case failed
+}
+
 public struct Artifact: Identifiable, Hashable, Codable, Sendable {
     public let id: UUID
     public let projectID: UUID
@@ -89,6 +95,9 @@ public struct Artifact: Identifiable, Hashable, Codable, Sendable {
     public var sizeBytes: Int?
     public var createdBySessionID: UUID?
     public var createdByRunID: UUID?
+    public var indexStatus: ArtifactIndexStatus?
+    public var indexSummary: String?
+    public var indexedAt: Date?
 
     public init(
         id: UUID = UUID(),
@@ -99,7 +108,10 @@ public struct Artifact: Identifiable, Hashable, Codable, Sendable {
         modifiedAt: Date = .now,
         sizeBytes: Int? = nil,
         createdBySessionID: UUID? = nil,
-        createdByRunID: UUID? = nil
+        createdByRunID: UUID? = nil,
+        indexStatus: ArtifactIndexStatus? = nil,
+        indexSummary: String? = nil,
+        indexedAt: Date? = nil
     ) {
         self.id = id
         self.projectID = projectID
@@ -110,6 +122,9 @@ public struct Artifact: Identifiable, Hashable, Codable, Sendable {
         self.sizeBytes = sizeBytes
         self.createdBySessionID = createdBySessionID
         self.createdByRunID = createdByRunID
+        self.indexStatus = indexStatus
+        self.indexSummary = indexSummary
+        self.indexedAt = indexedAt
     }
 }
 
@@ -452,12 +467,54 @@ public struct ChatArtifactReference: Hashable, Codable, Sendable {
     public var projectID: UUID
     public var path: String
     public var artifactID: UUID?
+    public var scope: String?
+    public var mimeType: String?
+    public var sourceName: String?
+    public var inlineDataBase64: String?
+    public var byteCount: Int?
 
-    public init(displayText: String, projectID: UUID, path: String, artifactID: UUID? = nil) {
+    public init(
+        displayText: String,
+        projectID: UUID,
+        path: String,
+        artifactID: UUID? = nil,
+        scope: String? = nil,
+        mimeType: String? = nil,
+        sourceName: String? = nil,
+        inlineDataBase64: String? = nil,
+        byteCount: Int? = nil
+    ) {
         self.displayText = displayText
         self.projectID = projectID
         self.path = path
         self.artifactID = artifactID
+        self.scope = scope
+        self.mimeType = mimeType
+        self.sourceName = sourceName
+        self.inlineDataBase64 = inlineDataBase64
+        self.byteCount = byteCount
+    }
+}
+
+public struct ComposerAttachment: Identifiable, Hashable, Codable, Sendable {
+    public let id: UUID
+    public var displayName: String
+    public var mimeType: String?
+    public var inlineDataBase64: String?
+    public var byteCount: Int?
+
+    public init(
+        id: UUID = UUID(),
+        displayName: String,
+        mimeType: String? = nil,
+        inlineDataBase64: String? = nil,
+        byteCount: Int? = nil
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.mimeType = mimeType
+        self.inlineDataBase64 = inlineDataBase64
+        self.byteCount = byteCount
     }
 }
 
@@ -797,6 +854,11 @@ public enum MarkdownDisplayNormalizer {
         return normalized.joined(separator: "\n")
     }
 
+    public static func normalizeChatMessage(_ text: String) -> String {
+        let normalized = normalize(text)
+        return stripAccidentalWholeMessageBlockquote(normalized)
+    }
+
     public static func likelyContainsCodeBlock(_ text: String) -> Bool {
         var indentedBlockLineCount = 0
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
@@ -827,5 +889,49 @@ public enum MarkdownDisplayNormalizer {
         }
 
         return false
+    }
+
+    private static func stripAccidentalWholeMessageBlockquote(_ text: String) -> String {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard !lines.isEmpty else { return text }
+
+        let nonEmptyIndices = lines.indices.filter {
+            !lines[$0].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard nonEmptyIndices.count >= 2 else { return text }
+
+        let quotedIndices = nonEmptyIndices.filter { lineStartsWithMarkdownBlockquote(lines[$0]) }
+        guard !quotedIndices.isEmpty else { return text }
+
+        let quoteRatio = Double(quotedIndices.count) / Double(nonEmptyIndices.count)
+        guard quoteRatio >= 0.75 else { return text }
+
+        var out = lines
+        for idx in quotedIndices {
+            out[idx] = stripLeadingBlockquoteMarker(from: out[idx])
+        }
+        return out.joined(separator: "\n")
+    }
+
+    private static func lineStartsWithMarkdownBlockquote(_ line: String) -> Bool {
+        var idx = line.startIndex
+        while idx < line.endIndex, line[idx].isWhitespace, line[idx] != "\n", line[idx] != "\r" {
+            idx = line.index(after: idx)
+        }
+        return idx < line.endIndex && line[idx] == ">"
+    }
+
+    private static func stripLeadingBlockquoteMarker(from line: String) -> String {
+        var idx = line.startIndex
+        while idx < line.endIndex, line[idx].isWhitespace, line[idx] != "\n", line[idx] != "\r" {
+            idx = line.index(after: idx)
+        }
+        guard idx < line.endIndex, line[idx] == ">" else { return line }
+
+        var next = line.index(after: idx)
+        if next < line.endIndex, line[next] == " " {
+            next = line.index(after: next)
+        }
+        return String(line[..<idx]) + line[next...]
     }
 }

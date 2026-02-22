@@ -2,6 +2,7 @@
 import LabOSCore
 import PhotosUI
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct SessionChatView: View {
@@ -34,6 +35,8 @@ struct SessionChatView: View {
     private let bottomAnchorID = "__bottom__"
     private let scrollCoordinateSpace = "__chatScroll__"
     private let bottomProximityThreshold: CGFloat = 44
+    private let maxInlineAttachmentBytes = 900 * 1024
+    private let maxInlinePhotoDimension: CGFloat = 1_536
 
     private var session: Session? {
         store.sessions(for: projectID).first(where: { $0.id == sessionID })
@@ -107,6 +110,7 @@ struct SessionChatView: View {
                             }
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
+                            .accessibilityIdentifier("session.pending.process")
                         }
 
                         Color.clear
@@ -284,9 +288,9 @@ struct SessionChatView: View {
             .interactiveDismissDisabled()
         }
         .sheet(isPresented: $showFileSheet) {
-            ProjectFilesSheet(
-                title: "Project Files",
-                uploadedFiles: store.uploadedArtifacts(for: projectID),
+            ComposerAttachmentsSheet(
+                title: "Session Attachments",
+                pendingAttachments: store.pendingComposerAttachments(for: sessionID),
                 onAddPhotos: {
                     showFileSheet = false
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
@@ -297,8 +301,14 @@ struct SessionChatView: View {
                     showFileSheet = false
                     showFileImporter = true
                 },
-                onDeleteFile: { path in
-                    store.removeUploadedFile(projectID: projectID, path: path)
+                onAddTestPhoto: E2ETestAttachmentFactory.isEnabled ? {
+                    if let attachment = E2ETestAttachmentFactory.makeFixturePhotoAttachment() {
+                        store.addPendingComposerAttachments(sessionID: sessionID, attachments: [attachment])
+                    }
+                    showFileSheet = false
+                } : nil,
+                onDeleteAttachment: { id in
+                    store.removePendingComposerAttachment(sessionID: sessionID, attachmentID: id)
                 },
                 onClose: {
                     showFileSheet = false
@@ -313,13 +323,18 @@ struct SessionChatView: View {
         )
         .onChange(of: selectedPhotoItems) { _, items in
             guard !items.isEmpty else { return }
-            let timestamp = Int(Date().timeIntervalSince1970)
-            let fileNames = items.enumerated().map { index, item in
-                let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
-                return "photo-\(timestamp)-\(index + 1).\(ext)"
-            }
-            store.addUploadedFiles(projectID: projectID, fileNames: fileNames, createdBySessionID: sessionID)
+            let selected = items
             selectedPhotoItems = []
+            Task {
+                let attachments = await makePhotoAttachments(from: selected)
+                await MainActor.run {
+                    if attachments.count < selected.count {
+                        importErrorMessage = "Some photos were skipped because they were too large to send inline."
+                    }
+                    guard !attachments.isEmpty else { return }
+                    store.addPendingComposerAttachments(sessionID: sessionID, attachments: attachments)
+                }
+            }
         }
         .fileImporter(
             isPresented: $showFileImporter,
@@ -402,17 +417,22 @@ struct SessionChatView: View {
             statusAction: editingMessageID == nil ? nil : {
                 editingMessageID = nil
                 composerText = ""
+                store.clearPendingComposerAttachments(sessionID: sessionID)
             },
-	            attachmentAction: {
-	                showFileSheet = true
-	            },
-	            modelOptions: store.availableModels,
-	            thinkingLevelOptions: store.availableThinkingLevels.isEmpty ? ThinkingLevel.allCases : store.availableThinkingLevels,
-	            contextRemainingFraction: store.contextRemainingFraction(for: sessionID),
-	            contextWindowTokens: store.contextWindowTokens(for: sessionID) ?? 258_000
-	        ) {
-	            let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
-	            guard !text.isEmpty else { return }
+            attachmentAction: {
+                showFileSheet = true
+            },
+            pendingAttachments: store.pendingComposerAttachments(for: sessionID),
+            onRemoveAttachment: { attachmentID in
+                store.removePendingComposerAttachment(sessionID: sessionID, attachmentID: attachmentID)
+            },
+            modelOptions: store.availableModels,
+            thinkingLevelOptions: store.availableThinkingLevels.isEmpty ? ThinkingLevel.allCases : store.availableThinkingLevels,
+            contextRemainingFraction: store.contextRemainingFraction(for: sessionID),
+            contextWindowTokens: store.contextWindowTokens(for: sessionID) ?? 258_000
+        ) {
+            let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return }
                 if let editingMessageID {
                     store.overwriteUserMessage(
                         projectID: projectID,
@@ -436,10 +456,115 @@ struct SessionChatView: View {
     private func handleImportResult(_ result: Result<[URL], Error>) {
         switch result {
         case let .success(urls):
-            let fileNames = urls.map(\.lastPathComponent)
-            store.addUploadedFiles(projectID: projectID, fileNames: fileNames, createdBySessionID: sessionID)
+            let valid = urls.compactMap(makeFileAttachment(from:))
+                .filter { !$0.displayName.isEmpty }
+            if valid.count < urls.count {
+                importErrorMessage = "Some files were skipped because each attachment must be 4 MB or smaller."
+            }
+            guard !valid.isEmpty else { return }
+            store.addPendingComposerAttachments(sessionID: sessionID, attachments: valid)
         case let .failure(error):
             importErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func makePhotoAttachments(from items: [PhotosPickerItem]) async -> [ComposerAttachment] {
+        let timestamp = Int(Date().timeIntervalSince1970)
+        var results: [ComposerAttachment] = []
+        results.reserveCapacity(items.count)
+        for (index, item) in items.enumerated() {
+            let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
+            let mimeType = item.supportedContentTypes.first?.preferredMIMEType
+            let data = try? await item.loadTransferable(type: Data.self)
+            guard let normalizedData = normalizedInlineData(from: data, mimeType: mimeType) else { continue }
+            results.append(
+                ComposerAttachment(
+                    displayName: "photo-\(timestamp)-\(index + 1).\(ext)",
+                    mimeType: "image/jpeg",
+                    inlineDataBase64: normalizedData.base64EncodedString(),
+                    byteCount: normalizedData.count
+                )
+            )
+        }
+        return results
+    }
+
+    private func makeFileAttachment(from url: URL) -> ComposerAttachment? {
+        let mimeType = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessed {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+        let data = try? Data(contentsOf: url)
+        guard let normalizedData = normalizedInlineData(from: data, mimeType: mimeType) else { return nil }
+        return ComposerAttachment(
+            displayName: url.lastPathComponent,
+            mimeType: mimeType,
+            inlineDataBase64: normalizedData.base64EncodedString(),
+            byteCount: normalizedData.count
+        )
+    }
+
+    private func normalizedInlineData(from data: Data?, mimeType: String?) -> Data? {
+        guard let data, !data.isEmpty else { return nil }
+        if data.count <= maxInlineAttachmentBytes {
+            return data
+        }
+
+        guard (mimeType ?? "").lowercased().hasPrefix("image/"),
+              let image = UIImage(data: data) else {
+            return nil
+        }
+
+        return compressedImageDataForInlineSend(image)
+    }
+
+    private func compressedImageDataForInlineSend(_ image: UIImage) -> Data? {
+        var working = resizedImageIfNeeded(image, maxDimension: maxInlinePhotoDimension)
+        var compression: CGFloat = 0.82
+
+        while compression >= 0.24 {
+            if let encoded = working.jpegData(compressionQuality: compression),
+               encoded.count <= maxInlineAttachmentBytes {
+                return encoded
+            }
+            compression -= 0.12
+        }
+
+        while max(working.size.width, working.size.height) > 320 {
+            let nextSize = CGSize(width: max(320, floor(working.size.width * 0.8)),
+                                  height: max(320, floor(working.size.height * 0.8)))
+            working = resizedImage(working, targetSize: nextSize)
+            compression = 0.72
+            while compression >= 0.2 {
+                if let encoded = working.jpegData(compressionQuality: compression),
+                   encoded.count <= maxInlineAttachmentBytes {
+                    return encoded
+                }
+                compression -= 0.12
+            }
+        }
+
+        return nil
+    }
+
+    private func resizedImageIfNeeded(_ image: UIImage, maxDimension: CGFloat) -> UIImage {
+        let longest = max(image.size.width, image.size.height)
+        guard longest > maxDimension, longest > 0 else { return image }
+        let scale = maxDimension / longest
+        let target = CGSize(width: max(1, floor(image.size.width * scale)),
+                            height: max(1, floor(image.size.height * scale)))
+        return resizedImage(image, targetSize: target)
+    }
+
+    private func resizedImage(_ image: UIImage, targetSize: CGSize) -> UIImage {
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
         }
     }
 
@@ -478,6 +603,7 @@ struct SessionChatView: View {
                     .font(.headline)
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("session.back.project")
 
             Text("LabOS")
                 .font(.headline)

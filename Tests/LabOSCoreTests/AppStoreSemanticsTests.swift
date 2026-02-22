@@ -135,6 +135,58 @@ final class AppStoreSemanticsTests: XCTestCase {
         XCTAssertTrue(generatedAfterRun.contains { $0.path == "uploads/source.csv" }, "Generated files can still live under uploads/ but must not be treated as user uploads")
     }
 
+    func testSessionComposerAttachmentsStayOutOfProjectUploads() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        guard let project = await store.createProject(name: "Project Attachments") else {
+            XCTFail("Project was not created")
+            return
+        }
+        guard let session = await store.createSession(projectID: project.id, title: "Session Attachments") else {
+            XCTFail("Session was not created")
+            return
+        }
+
+        store.addPendingComposerAttachments(
+            sessionID: session.id,
+            attachments: [
+                ComposerAttachment(displayName: "notes.txt", mimeType: "text/plain"),
+                ComposerAttachment(displayName: "figure.png", mimeType: "image/png")
+            ]
+        )
+
+        store.sendMessage(projectID: project.id, sessionID: session.id, text: "Use my attachments")
+
+        let lastUserMessage = store.messages(for: session.id).last(where: { $0.role == .user })
+        XCTAssertNotNil(lastUserMessage)
+        XCTAssertEqual(lastUserMessage?.artifactRefs.count, 2)
+        XCTAssertTrue((lastUserMessage?.artifactRefs.allSatisfy { $0.scope == "session" }) ?? false)
+        XCTAssertTrue(store.uploadedArtifacts(for: project.id).isEmpty, "Session composer attachments must not become project uploads")
+        XCTAssertTrue(store.pendingComposerAttachments(for: session.id).isEmpty, "Pending attachments should clear after send")
+    }
+
+    func testSendMessageCanAcceptExplicitSessionAttachments() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        guard let project = await store.createProject(name: "Project Explicit Attachments") else {
+            XCTFail("Project was not created")
+            return
+        }
+        guard let session = await store.createSession(projectID: project.id, title: "Session Explicit Attachments") else {
+            XCTFail("Session was not created")
+            return
+        }
+
+        let pending = [
+            ComposerAttachment(displayName: "draft.pdf", mimeType: "application/pdf")
+        ]
+
+        store.sendMessage(projectID: project.id, sessionID: session.id, text: "Check this", attachments: pending)
+
+        let lastUserMessage = store.messages(for: session.id).last(where: { $0.role == .user })
+        XCTAssertEqual(lastUserMessage?.artifactRefs.map(\.displayText), ["draft.pdf"])
+        XCTAssertEqual(lastUserMessage?.artifactRefs.first?.scope, "session")
+        XCTAssertTrue(store.uploadedArtifacts(for: project.id).isEmpty)
+    }
+
     private func waitUntil(
         timeoutSeconds: TimeInterval,
         pollEvery interval: TimeInterval = 0.05,

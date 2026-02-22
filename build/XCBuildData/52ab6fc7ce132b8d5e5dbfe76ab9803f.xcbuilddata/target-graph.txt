@@ -1,0 +1,4 @@
+Target dependency graph (2 targets)
+Target 'LabOSCoreTests' in project 'LabOS'
+➜ Explicit dependency on target 'LabOSCore' in project 'LabOS'
+Target 'LabOSCore' in project 'LabOS' (no dependencies)
