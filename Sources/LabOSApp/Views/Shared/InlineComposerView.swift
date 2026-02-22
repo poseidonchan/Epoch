@@ -1,5 +1,6 @@
 #if os(iOS)
 import LabOSCore
+import Photos
 import SwiftUI
 import UIKit
 
@@ -389,7 +390,9 @@ struct InlineComposerView: View {
             if let attachmentAction {
                 Button {
                     showsPlusMenu = false
-                    attachmentAction()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        attachmentAction()
+                    }
                 } label: {
                     Label("Add photos & files", systemImage: "paperclip")
                         .font(.headline.weight(.semibold))
@@ -1000,16 +1003,27 @@ struct ProjectFilesSheet: View {
 struct ComposerAttachmentsSheet: View {
     let title: String
     let pendingAttachments: [ComposerAttachment]
+    let selectedRecentPhotoTokens: Set<String>
+    let onTakePhoto: () -> Void
     let onAddPhotos: () -> Void
+    let onSelectRecentPhoto: (String) -> Void
     let onAddFiles: () -> Void
     let onAddTestPhoto: (() -> Void)?
     var onDeleteAttachment: ((UUID) -> Void)? = nil
     let onClose: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var recentPhotos: [RecentPhotoThumbnail] = []
+    @State private var recentPhotosAuthorized = false
+    @State private var recentPhotosAuthorizationStatus: PHAuthorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+    @State private var isLoadingRecentPhotos = false
 
     private var imageAttachments: [ComposerAttachment] {
-        pendingAttachments.filter { ($0.mimeType ?? "").lowercased().hasPrefix("image/") }
+        pendingAttachments.filter {
+            ($0.mimeType ?? "").lowercased().hasPrefix("image/")
+                && ($0.sourceToken?.isEmpty != false)
+        }
     }
 
     private var fileAttachments: [ComposerAttachment] {
@@ -1018,6 +1032,42 @@ struct ComposerAttachmentsSheet: View {
 
     private var hasAttachments: Bool {
         !pendingAttachments.isEmpty
+    }
+
+    private var hasRecentPhotos: Bool {
+        !recentPhotos.isEmpty
+    }
+
+    private var sheetDetentFraction: CGFloat {
+        if !fileAttachments.isEmpty {
+            return 0.68
+        }
+        if !imageAttachments.isEmpty || hasRecentPhotos {
+            return 0.56
+        }
+        return 0.52
+    }
+
+    private var recentPhotoPlaceholderTitle: String {
+        if recentPhotosAuthorizationStatus == .limited {
+            return "Photo access limited"
+        }
+        return recentPhotosAuthorized ? "No recent photos" : "Photo access needed"
+    }
+
+    private var recentPhotoPlaceholderSymbol: String {
+        if recentPhotosAuthorizationStatus == .limited {
+            return "photo.badge.exclamationmark"
+        }
+        return recentPhotosAuthorized ? "photo.on.rectangle" : "photo.badge.exclamationmark"
+    }
+
+    private var canRequestPhotoAccess: Bool {
+        !recentPhotosAuthorized || recentPhotosAuthorizationStatus == .limited
+    }
+
+    private var canOpenAllPhotosPicker: Bool {
+        recentPhotosAuthorizationStatus == .authorized
     }
 
     var body: some View {
@@ -1038,9 +1088,11 @@ struct ComposerAttachmentsSheet: View {
                 Button(action: onAddPhotos) {
                     Text("All Photos")
                         .font(.headline.weight(.semibold))
-                        .foregroundStyle(.blue)
+                        .foregroundStyle(canOpenAllPhotosPicker ? .blue : .secondary)
                 }
                 .buttonStyle(.plain)
+                .disabled(!canOpenAllPhotosPicker)
+                .opacity(canOpenAllPhotosPicker ? 1 : 0.55)
                 .accessibilityIdentifier("composer.attachments.allPhotos")
 
                 if let onAddTestPhoto {
@@ -1141,26 +1193,46 @@ struct ComposerAttachmentsSheet: View {
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 20)
-        .presentationDetents([.fraction(hasAttachments ? 0.68 : 0.52)])
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .presentationDetents([.fraction(sheetDetentFraction)])
         .presentationDragIndicator(.hidden)
         .presentationBackground(.ultraThinMaterial)
-    }
-
-    private var mediaRail: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                addPhotoTile
-
-                ForEach(imageAttachments) { attachment in
-                    imageTile(attachment)
-                }
-            }
-            .padding(.vertical, 2)
+        .task {
+            await loadRecentPhotos()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            Task { await loadRecentPhotos() }
         }
     }
 
-    private var addPhotoTile: some View {
-        Button(action: onAddPhotos) {
+    private var mediaRail: some View {
+        HStack(spacing: 10) {
+            cameraTile
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    if hasRecentPhotos {
+                        ForEach(Array(recentPhotos.enumerated()), id: \.element.id) { index, photo in
+                            recentPhotoTile(photo)
+                                .accessibilityIdentifier("composer.attachments.recent.\(index)")
+                        }
+                    } else {
+                        recentPhotoPlaceholderTile
+                    }
+
+                    ForEach(imageAttachments) { attachment in
+                        imageTile(attachment)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .accessibilityIdentifier("composer.attachments.recentRail")
+        }
+    }
+
+    private var cameraTile: some View {
+        Button(action: onTakePhoto) {
             ZStack {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(
@@ -1178,7 +1250,7 @@ struct ComposerAttachmentsSheet: View {
                     Image(systemName: "camera")
                         .font(.system(size: 22, weight: .semibold))
                         .foregroundStyle(.primary)
-                    Text("Add Photo")
+                    Text("Take Photo")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
@@ -1190,6 +1262,59 @@ struct ComposerAttachmentsSheet: View {
             )
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("composer.attachments.cameraTile")
+    }
+
+    private var recentPhotoPlaceholderTile: some View {
+        Group {
+            if canRequestPhotoAccess {
+                Button(action: requestPhotoAccess) {
+                    placeholderTileBody(
+                        title: recentPhotoPlaceholderTitle,
+                        symbol: recentPhotoPlaceholderSymbol
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("composer.attachments.requestPhotoAccess")
+            } else {
+                placeholderTileBody(
+                    title: recentPhotoPlaceholderTitle,
+                    symbol: recentPhotoPlaceholderSymbol
+                )
+                .accessibilityIdentifier("composer.attachments.recentPlaceholder")
+            }
+        }
+    }
+
+    private func recentPhotoTile(_ photo: RecentPhotoThumbnail) -> some View {
+        let isSelected = selectedRecentPhotoTokens.contains(photo.selectionToken)
+        return Button {
+            onSelectRecentPhoto(photo.selectionToken)
+        } label: {
+            ZStack(alignment: .topTrailing) {
+                Image(uiImage: photo.thumbnail)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 108, height: 96)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .strokeBorder(isSelected ? Color.blue : Color.primary.opacity(0.12), lineWidth: isSelected ? 2 : 1)
+                    )
+
+                Circle()
+                    .fill(isSelected ? Color.blue : Color.black.opacity(0.28))
+                    .frame(width: 22, height: 22)
+                    .overlay(
+                        Image(systemName: isSelected ? "checkmark" : "circle")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.white)
+                    )
+                    .padding(6)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isSelected ? "Selected photo" : "Unselected photo")
     }
 
     @ViewBuilder
@@ -1300,6 +1425,330 @@ struct ComposerAttachmentsSheet: View {
             return "doc.richtext"
         }
         return "doc"
+    }
+
+    @MainActor
+    private func loadRecentPhotos() async {
+        guard !isLoadingRecentPhotos else { return }
+        isLoadingRecentPhotos = true
+        defer { isLoadingRecentPhotos = false }
+
+        var status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        var requestedAuthorization = false
+        if status == .notDetermined {
+            requestedAuthorization = true
+            status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+        }
+        recentPhotosAuthorizationStatus = status
+        let authorized = (status == .authorized || status == .limited)
+        recentPhotosAuthorized = authorized
+        guard authorized else {
+            recentPhotos = await cachedRecentPhotoSnapshots()
+            return
+        }
+
+        var snapshots = await recentPhotoSnapshots()
+        if snapshots.isEmpty && requestedAuthorization {
+            // Authorization dialogs can resolve before Photos finishes surfacing assets.
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            snapshots = await recentPhotoSnapshots()
+        }
+
+        if snapshots.isEmpty {
+            snapshots = await cachedRecentPhotoSnapshots()
+        }
+
+        recentPhotos = snapshots
+    }
+
+    private func recentPhotoSnapshots(fetchLimit: Int = 18, maxThumbnails: Int = 12) async -> [RecentPhotoThumbnail] {
+        let options = PHFetchOptions()
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        options.fetchLimit = fetchLimit
+        options.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+
+        let assets = fetchRecentImageAssets(options: options)
+        guard assets.count > 0 else { return [] }
+
+        let manager = PHImageManager.default()
+        let requestOptions = PHImageRequestOptions()
+        requestOptions.isSynchronous = true
+        requestOptions.deliveryMode = .fastFormat
+        requestOptions.resizeMode = .exact
+        requestOptions.isNetworkAccessAllowed = true
+
+        let dataFallbackOptions = PHImageRequestOptions()
+        dataFallbackOptions.isSynchronous = true
+        dataFallbackOptions.deliveryMode = .highQualityFormat
+        dataFallbackOptions.resizeMode = .none
+        dataFallbackOptions.isNetworkAccessAllowed = true
+
+        var snapshots: [RecentPhotoThumbnail] = []
+        snapshots.reserveCapacity(min(assets.count, maxThumbnails))
+
+        let tileSize = CGSize(width: 216, height: 192)
+        let upperBound = min(assets.count, maxThumbnails)
+        for idx in 0..<upperBound {
+            let asset = assets.object(at: idx)
+            var image: UIImage?
+            manager.requestImage(
+                for: asset,
+                targetSize: tileSize,
+                contentMode: .aspectFill,
+                options: requestOptions
+            ) { rendered, _ in
+                image = rendered
+            }
+
+            if image == nil {
+                manager.requestImageDataAndOrientation(for: asset, options: dataFallbackOptions) { data, _, _, _ in
+                    guard let data else { return }
+                    image = UIImage(data: data)
+                }
+            }
+
+            guard let image else { continue }
+            snapshots.append(
+                RecentPhotoThumbnail(
+                    id: "asset:\(asset.localIdentifier)",
+                    selectionToken: "asset:\(asset.localIdentifier)",
+                    thumbnail: image
+                )
+            )
+        }
+        return snapshots
+    }
+
+    private func fetchRecentImageAssets(options: PHFetchOptions) -> PHFetchResult<PHAsset> {
+        let userLibraryCollections = PHAssetCollection.fetchAssetCollections(
+            with: .smartAlbum,
+            subtype: .smartAlbumUserLibrary,
+            options: nil
+        )
+        if let userLibrary = userLibraryCollections.firstObject {
+            let inLibrary = PHAsset.fetchAssets(in: userLibrary, options: options)
+            if inLibrary.count > 0 {
+                return inLibrary
+            }
+        }
+        return PHAsset.fetchAssets(with: .image, options: options)
+    }
+
+    private func cachedRecentPhotoSnapshots() async -> [RecentPhotoThumbnail] {
+        let cached = await RecentInlinePhotoCache.shared.snapshot(limit: 12)
+        return cached.compactMap { cachedPhoto in
+            guard let thumbnail = UIImage(data: cachedPhoto.thumbnailData) ?? UIImage(data: cachedPhoto.data) else {
+                return nil
+            }
+            return RecentPhotoThumbnail(
+                id: cachedPhoto.token,
+                selectionToken: cachedPhoto.token,
+                thumbnail: thumbnail
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func placeholderTileBody(title: String, symbol: String) -> some View {
+        VStack(spacing: 7) {
+            Image(systemName: symbol)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+        }
+        .frame(width: 108, height: 96)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.primary.opacity(colorScheme == .dark ? 0.16 : 0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.12))
+        )
+    }
+
+    @MainActor
+    private func presentLimitedLibraryPicker() {
+        guard recentPhotosAuthorizationStatus == .limited else { return }
+        guard let root = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?
+            .rootViewController else {
+            return
+        }
+        let presenter = topMostViewController(from: root)
+        PHPhotoLibrary.shared().presentLimitedLibraryPicker(from: presenter)
+    }
+
+    @MainActor
+    private func requestPhotoAccess() {
+        switch recentPhotosAuthorizationStatus {
+        case .denied, .restricted, .limited:
+            openPhotoPrivacySettings()
+        default:
+            Task { await loadRecentPhotos() }
+        }
+    }
+
+    @MainActor
+    private func openPhotoPrivacySettings() {
+        let deepLink = URL(string: "App-Prefs:root=Privacy&path=PHOTOS")
+        let appSettings = URL(string: UIApplication.openSettingsURLString)
+
+        if let deepLink {
+            UIApplication.shared.open(deepLink, options: [:]) { success in
+                guard !success, let appSettings else { return }
+                UIApplication.shared.open(appSettings)
+            }
+            return
+        }
+
+        if let appSettings {
+            UIApplication.shared.open(appSettings)
+        }
+    }
+
+    private func topMostViewController(from root: UIViewController) -> UIViewController {
+        var current = root
+        while let presented = current.presentedViewController {
+            current = presented
+        }
+        return current
+    }
+}
+
+struct CameraCaptureSheet: UIViewControllerRepresentable {
+    let onCapture: (UIImage) -> Void
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onCapture: onCapture, onCancel: onCancel)
+    }
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.mediaTypes = ["public.image"]
+        picker.cameraCaptureMode = .photo
+        picker.delegate = context.coordinator
+        picker.allowsEditing = false
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        private let onCapture: (UIImage) -> Void
+        private let onCancel: () -> Void
+
+        init(onCapture: @escaping (UIImage) -> Void, onCancel: @escaping () -> Void) {
+            self.onCapture = onCapture
+            self.onCancel = onCancel
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            picker.dismiss(animated: true)
+            onCancel()
+        }
+
+        func imagePickerController(
+            _ picker: UIImagePickerController,
+            didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+        ) {
+            guard let image = info[.originalImage] as? UIImage else {
+                picker.dismiss(animated: true)
+                onCancel()
+                return
+            }
+            picker.dismiss(animated: true)
+            onCapture(image)
+        }
+    }
+}
+
+private struct RecentPhotoThumbnail: Identifiable {
+    let id: String
+    let selectionToken: String
+    let thumbnail: UIImage
+}
+
+struct CachedInlinePhoto: Sendable {
+    let token: String
+    let sourceIdentifier: String?
+    let data: Data
+    let mimeType: String?
+    let fileExtension: String?
+    let thumbnailData: Data
+}
+
+struct CachedInlinePhotoSeed: Sendable {
+    let token: String
+    let sourceIdentifier: String?
+    let data: Data
+    let mimeType: String?
+    let fileExtension: String?
+    let thumbnailData: Data
+}
+
+actor RecentInlinePhotoCache {
+    static let shared = RecentInlinePhotoCache()
+
+    private var photos: [CachedInlinePhoto] = []
+    private let maxItems = 18
+
+    func remember(_ seeds: [CachedInlinePhotoSeed]) {
+        guard !seeds.isEmpty else { return }
+
+        for seed in seeds {
+            if let existingIndex = photos.firstIndex(where: { $0.token == seed.token })
+                ?? (seed.sourceIdentifier.flatMap { source in
+                    photos.firstIndex(where: { $0.sourceIdentifier == source })
+                }) {
+                let existing = photos.remove(at: existingIndex)
+                photos.insert(
+                    CachedInlinePhoto(
+                        token: seed.token.isEmpty ? existing.token : seed.token,
+                        sourceIdentifier: seed.sourceIdentifier ?? existing.sourceIdentifier,
+                        data: seed.data,
+                        mimeType: seed.mimeType,
+                        fileExtension: seed.fileExtension,
+                        thumbnailData: seed.thumbnailData
+                    ),
+                    at: 0
+                )
+                continue
+            }
+
+            photos.insert(
+                CachedInlinePhoto(
+                    token: seed.token.isEmpty ? "inline:\(UUID().uuidString.lowercased())" : seed.token,
+                    sourceIdentifier: seed.sourceIdentifier,
+                    data: seed.data,
+                    mimeType: seed.mimeType,
+                    fileExtension: seed.fileExtension,
+                    thumbnailData: seed.thumbnailData
+                ),
+                at: 0
+            )
+        }
+
+        if photos.count > maxItems {
+            photos.removeLast(photos.count - maxItems)
+        }
+    }
+
+    func snapshot(limit: Int = 12) -> [CachedInlinePhoto] {
+        guard !photos.isEmpty else { return [] }
+        return Array(photos.prefix(max(1, limit)))
+    }
+
+    func payload(for token: String) -> CachedInlinePhoto? {
+        photos.first(where: { $0.token == token })
     }
 }
 

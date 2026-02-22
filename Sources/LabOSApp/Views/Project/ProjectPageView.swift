@@ -1,5 +1,6 @@
 #if os(iOS)
 import LabOSCore
+import Photos
 import PhotosUI
 import SwiftUI
 import UIKit
@@ -15,6 +16,7 @@ struct ProjectPageView: View {
     @State private var showProjectFilesSheet = false
     @State private var showComposerAttachmentSheet = false
     @State private var showPhotoPicker = false
+    @State private var showCameraCapture = false
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var showFileImporter = false
     @State private var importErrorMessage: String?
@@ -165,12 +167,27 @@ struct ProjectPageView: View {
             ComposerAttachmentsSheet(
                 title: "Session Attachments",
                 pendingAttachments: store.pendingComposerAttachments(for: composerDraftSessionID),
+                selectedRecentPhotoTokens: Set(store.pendingComposerAttachments(for: composerDraftSessionID).compactMap(\.sourceToken)),
+                onTakePhoto: {
+                    importTarget = .composer
+                    showComposerAttachmentSheet = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                            showCameraCapture = true
+                        } else {
+                            importErrorMessage = "Camera is unavailable on this device."
+                        }
+                    }
+                },
                 onAddPhotos: {
                     importTarget = .composer
                     showComposerAttachmentSheet = false
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                         showPhotoPicker = true
                     }
+                },
+                onSelectRecentPhoto: { token in
+                    toggleRecentPhotoAttachment(selectionToken: token)
                 },
                 onAddFiles: {
                     importTarget = .composer
@@ -188,6 +205,17 @@ struct ProjectPageView: View {
                 },
                 onClose: {
                     showComposerAttachmentSheet = false
+                }
+            )
+        }
+        .sheet(isPresented: $showCameraCapture) {
+            CameraCaptureSheet(
+                onCapture: { image in
+                    showCameraCapture = false
+                    addCameraCaptureAttachment(image)
+                },
+                onCancel: {
+                    showCameraCapture = false
                 }
             )
         }
@@ -219,8 +247,15 @@ struct ProjectPageView: View {
                         if attachments.count < selected.count {
                             importErrorMessage = "Some photos were skipped because they were too large to send inline."
                         }
-                        guard !attachments.isEmpty else { return }
-                        store.addPendingComposerAttachments(sessionID: composerDraftSessionID, attachments: attachments)
+                        let existingTokens = Set(store.pendingComposerAttachments(for: composerDraftSessionID).compactMap(\.sourceToken))
+                        let uniqueAttachments = attachments.filter { attachment in
+                            guard let token = attachment.sourceToken else { return true }
+                            return !existingTokens.contains(token)
+                        }
+                        if !uniqueAttachments.isEmpty {
+                            store.addPendingComposerAttachments(sessionID: composerDraftSessionID, attachments: uniqueAttachments)
+                        }
+                        showComposerAttachmentSheet = true
                     }
                 }
             }
@@ -401,8 +436,11 @@ struct ProjectPageView: View {
     private func makePhotoAttachments(from items: [PhotosPickerItem]) async -> [ComposerAttachment] {
         let timestamp = Int(Date().timeIntervalSince1970)
         var results: [ComposerAttachment] = []
+        var cacheSeeds: [CachedInlinePhotoSeed] = []
         results.reserveCapacity(items.count)
+        cacheSeeds.reserveCapacity(items.count)
         for (index, item) in items.enumerated() {
+            let selectionToken = photoSelectionToken(for: item, index: index)
             let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
             let mimeType = item.supportedContentTypes.first?.preferredMIMEType
             let data = try? await item.loadTransferable(type: Data.self)
@@ -412,11 +450,139 @@ struct ProjectPageView: View {
                     displayName: "photo-\(timestamp)-\(index + 1).\(ext)",
                     mimeType: "image/jpeg",
                     inlineDataBase64: normalizedData.base64EncodedString(),
-                    byteCount: normalizedData.count
+                    byteCount: normalizedData.count,
+                    sourceToken: selectionToken
+                )
+            )
+            cacheSeeds.append(
+                CachedInlinePhotoSeed(
+                    token: selectionToken,
+                    sourceIdentifier: item.itemIdentifier,
+                    data: normalizedData,
+                    mimeType: "image/jpeg",
+                    fileExtension: "jpg",
+                    thumbnailData: normalizedData
                 )
             )
         }
+        await RecentInlinePhotoCache.shared.remember(cacheSeeds)
         return results
+    }
+
+    private func addCameraCaptureAttachment(_ image: UIImage) {
+        guard let seedData = image.jpegData(compressionQuality: 0.92),
+              let normalizedData = normalizedInlineData(from: seedData, mimeType: "image/jpeg")
+        else {
+            importErrorMessage = "The captured photo was too large to attach."
+            return
+        }
+
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let attachment = ComposerAttachment(
+            displayName: "camera-\(timestamp).jpg",
+            mimeType: "image/jpeg",
+            inlineDataBase64: normalizedData.base64EncodedString(),
+            byteCount: normalizedData.count
+        )
+        store.addPendingComposerAttachments(sessionID: composerDraftSessionID, attachments: [attachment])
+    }
+
+    private func toggleRecentPhotoAttachment(selectionToken: String) {
+        if let existing = store.pendingComposerAttachments(for: composerDraftSessionID).first(where: { $0.sourceToken == selectionToken }) {
+            store.removePendingComposerAttachment(sessionID: composerDraftSessionID, attachmentID: existing.id)
+            return
+        }
+
+        Task {
+            if let cached = await RecentInlinePhotoCache.shared.payload(for: selectionToken),
+               let normalizedData = normalizedInlineData(from: cached.data, mimeType: cached.mimeType) {
+                let timestamp = Int(Date().timeIntervalSince1970)
+                let ext = cached.fileExtension ?? "jpg"
+                let attachment = ComposerAttachment(
+                    displayName: "photo-\(timestamp).\(ext)",
+                    mimeType: cached.mimeType ?? "image/jpeg",
+                    inlineDataBase64: normalizedData.base64EncodedString(),
+                    byteCount: normalizedData.count,
+                    sourceToken: selectionToken
+                )
+
+                await MainActor.run {
+                    if store.pendingComposerAttachments(for: composerDraftSessionID).contains(where: { $0.sourceToken == selectionToken }) {
+                        return
+                    }
+                    store.addPendingComposerAttachments(sessionID: composerDraftSessionID, attachments: [attachment])
+                }
+                return
+            }
+
+            let assetLocalIdentifier = selectionToken.hasPrefix("asset:")
+                ? String(selectionToken.dropFirst("asset:".count))
+                : selectionToken
+
+            guard let payload = await loadPhotoAsset(localIdentifier: assetLocalIdentifier),
+                  let normalizedData = normalizedInlineData(from: payload.data, mimeType: payload.mimeType)
+            else {
+                await MainActor.run {
+                    importErrorMessage = "The selected photo could not be added."
+                }
+                return
+            }
+
+            let timestamp = Int(Date().timeIntervalSince1970)
+            let ext = payload.fileExtension ?? "jpg"
+            let attachment = ComposerAttachment(
+                displayName: "photo-\(timestamp).\(ext)",
+                mimeType: payload.mimeType ?? "image/jpeg",
+                inlineDataBase64: normalizedData.base64EncodedString(),
+                byteCount: normalizedData.count,
+                sourceToken: selectionToken
+            )
+
+            await MainActor.run {
+                if store.pendingComposerAttachments(for: composerDraftSessionID).contains(where: { $0.sourceToken == selectionToken }) {
+                    return
+                }
+                store.addPendingComposerAttachments(sessionID: composerDraftSessionID, attachments: [attachment])
+            }
+        }
+    }
+
+    private func photoSelectionToken(for item: PhotosPickerItem, index: Int) -> String {
+        if let identifier = item.itemIdentifier, !identifier.isEmpty {
+            return "asset:\(identifier)"
+        }
+        return "inline:picker-\(Int(Date().timeIntervalSince1970))-\(index)-\(UUID().uuidString.lowercased())"
+    }
+
+    private func loadPhotoAsset(localIdentifier: String) async -> (data: Data, mimeType: String?, fileExtension: String?)? {
+        await withCheckedContinuation { continuation in
+            let assets = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
+            guard let asset = assets.firstObject else {
+                continuation.resume(returning: nil)
+                return
+            }
+
+            let options = PHImageRequestOptions()
+            options.isNetworkAccessAllowed = true
+            options.deliveryMode = .highQualityFormat
+            options.version = .current
+
+            var didResume = false
+            PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, uti, _, info in
+                guard !didResume else { return }
+                let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+                guard !isDegraded else { return }
+                didResume = true
+
+                guard let data else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                let type = uti.flatMap { UTType($0) }
+                continuation.resume(returning: (data, type?.preferredMIMEType, type?.preferredFilenameExtension))
+            }
+        }
     }
 
     private func makePhotoProjectUploads(from items: [PhotosPickerItem]) async -> [AppStore.ProjectUploadFile] {

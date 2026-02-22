@@ -502,19 +502,22 @@ public struct ComposerAttachment: Identifiable, Hashable, Codable, Sendable {
     public var mimeType: String?
     public var inlineDataBase64: String?
     public var byteCount: Int?
+    public var sourceToken: String?
 
     public init(
         id: UUID = UUID(),
         displayName: String,
         mimeType: String? = nil,
         inlineDataBase64: String? = nil,
-        byteCount: Int? = nil
+        byteCount: Int? = nil,
+        sourceToken: String? = nil
     ) {
         self.id = id
         self.displayName = displayName
         self.mimeType = mimeType
         self.inlineDataBase64 = inlineDataBase64
         self.byteCount = byteCount
+        self.sourceToken = sourceToken
     }
 }
 

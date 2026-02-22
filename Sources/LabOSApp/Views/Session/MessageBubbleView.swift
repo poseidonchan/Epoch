@@ -381,7 +381,20 @@ struct MessageBubbleView: View {
     @ViewBuilder
     private var messageActionsMenu: some View {
         switch message.role {
-        case .user, .assistant:
+        case .user:
+            Button {
+                copyMessageText(message.text)
+            } label: {
+                Label("Copy", systemImage: "doc.on.doc")
+            }
+
+            Button {
+                onEditMessage(message)
+            } label: {
+                Label("Edit", systemImage: "pencil")
+            }
+
+        case .assistant:
             Button {
                 copyMessageText(message.text)
             } label: {
@@ -424,7 +437,7 @@ struct MessageBubbleView: View {
         }
     }
 
-private func copyMessageText(_ text: String) {
+    private func copyMessageText(_ text: String) {
         UIPasteboard.general.string = text
     }
 }
