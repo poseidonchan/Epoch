@@ -3,7 +3,7 @@ import Foundation
 
 @MainActor
 public final class AppStore: ObservableObject {
-    private enum DefaultsKey {
+    internal enum DefaultsKey {
         static let gatewayDeviceID = "LabOS.gateway.deviceID"
         static let gatewayWSURL = "LabOS.gateway.wsURL"
         static let gatewayToken = "LabOS.gateway.token"
@@ -165,11 +165,10 @@ public final class AppStore: ObservableObject {
         var path: String
     }
     private var pendingLocalUserEchosBySession: [UUID: [PendingLocalUserEcho]] = [:]
-    private var attachmentPayloadsBySessionMessageID: [UUID: [UUID: [ComposerAttachment]]] = [:]
     internal var artifactContentCache: [String: String] = [:]
     internal var artifactDataCache: [String: Data] = [:]
     private let backend: BackendClient
-    private let defaults: UserDefaults
+    internal let defaults: UserDefaults
     internal var gatewayClient: GatewayClient?
     private var gatewayEventsTask: Task<Void, Never>?
     private var gatewayStateCancellable: AnyCancellable?
@@ -205,14 +204,15 @@ public final class AppStore: ObservableObject {
         self.backend = backend
         defaults = userDefaults
         loadGatewaySettings()
-        loadHpcSettings()
-        loadNotificationSettings()
 
-        // Initialize services after all stored properties are set
+        // Initialize services
         composerService = ComposerService(store: self)
         projectService = ProjectService(store: self)
         planService = PlanApprovalService(store: self)
         chatService = ChatSessionService(store: self)
+
+        composerService.loadHpcSettings()
+        composerService.loadNotificationSettings()
 
         if bootstrapDemo, !isGatewayConfigured {
             seedDemoData()
@@ -300,23 +300,8 @@ public final class AppStore: ObservableObject {
         gatewayToken = defaults.string(forKey: DefaultsKey.gatewayToken) ?? ""
     }
 
-    private func loadHpcSettings() {
-        hpcPartition = defaults.string(forKey: DefaultsKey.hpcPartition) ?? ""
-        hpcAccount = defaults.string(forKey: DefaultsKey.hpcAccount) ?? ""
-        hpcQos = defaults.string(forKey: DefaultsKey.hpcQos) ?? ""
-    }
-
-    private func loadNotificationSettings() {
-        if defaults.object(forKey: DefaultsKey.runCompletionNotificationsEnabled) == nil {
-            runCompletionNotificationsEnabled = true
-            return
-        }
-        runCompletionNotificationsEnabled = defaults.bool(forKey: DefaultsKey.runCompletionNotificationsEnabled)
-    }
-
     public func setRunCompletionNotificationsEnabled(_ enabled: Bool) {
-        runCompletionNotificationsEnabled = enabled
-        defaults.set(enabled, forKey: DefaultsKey.runCompletionNotificationsEnabled)
+        composerService.setRunCompletionNotificationsEnabled(enabled)
     }
 
     public func saveGatewaySettings(wsURLString: String, token: String) {
@@ -330,37 +315,14 @@ public final class AppStore: ObservableObject {
     }
 
     public func saveHpcSettings(partition: String, account: String, qos: String) {
-        let partitionValue = partition.trimmingCharacters(in: .whitespacesAndNewlines)
-        let accountValue = account.trimmingCharacters(in: .whitespacesAndNewlines)
-        let qosValue = qos.trimmingCharacters(in: .whitespacesAndNewlines)
-        hpcPartition = partitionValue
-        hpcAccount = accountValue
-        hpcQos = qosValue
-        defaults.set(partitionValue, forKey: DefaultsKey.hpcPartition)
-        defaults.set(accountValue, forKey: DefaultsKey.hpcAccount)
-        defaults.set(qosValue, forKey: DefaultsKey.hpcQos)
+        composerService.saveHpcSettings(partition: partition, account: account, qos: qos)
     }
 
     public func pushHpcPreferencesToGateway() {
-        guard isGatewayConnected, let gatewayClient else { return }
-        struct Params: Codable, Sendable {
-            var partition: String?
-            var account: String?
-            var qos: String?
-        }
-        Task {
-            _ = try? await gatewayClient.request(
-                method: "hpc.prefs.set",
-                params: Params(
-                    partition: normalizedOptionalString(hpcPartition),
-                    account: normalizedOptionalString(hpcAccount),
-                    qos: normalizedOptionalString(hpcQos)
-                )
-            )
-        }
+        composerService.pushHpcPreferencesToGateway()
     }
 
-    private func normalizedOptionalString(_ value: String) -> String? {
+    internal func normalizedOptionalString(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
@@ -388,15 +350,15 @@ public final class AppStore: ObservableObject {
         guard isGatewayConnected else { return }
 
         lastGatewayErrorMessage = nil
-        await refreshModelsFromGateway()
+        await composerService.refreshModelsFromGateway()
         await refreshProjectsFromGateway()
-        pushHpcPreferencesToGateway()
+        composerService.pushHpcPreferencesToGateway()
         startGatewayEventLoop()
         startResourcePolling()
     }
 
     // Best-effort connect for chat sends. Avoids resetting local project/session UI state.
-    private func ensureGatewayConnectedForChat() async -> Bool {
+    internal func ensureGatewayConnectedForChat() async -> Bool {
         if isGatewayConnected { return true }
         guard isGatewayConfigured else { return false }
 
@@ -437,8 +399,8 @@ public final class AppStore: ObservableObject {
 
             self.startGatewayEventLoop()
             self.startResourcePolling()
-            await self.refreshModelsFromGateway()
-            self.pushHpcPreferencesToGateway()
+            await self.composerService.refreshModelsFromGateway()
+            self.composerService.pushHpcPreferencesToGateway()
 
             self.lastGatewayErrorMessage = nil
             return self.isGatewayConnected
@@ -492,7 +454,7 @@ public final class AppStore: ObservableObject {
         return components.url?.absoluteString
     }
 
-    private static func gatewayID(_ id: UUID) -> String {
+    internal static func gatewayID(_ id: UUID) -> String {
         id.uuidString.lowercased()
     }
 
@@ -652,24 +614,6 @@ public final class AppStore: ObservableObject {
         components?.query = nil
         components?.fragment = nil
         return components?.url
-    }
-
-    private func refreshModelsFromGateway() async {
-        guard let gatewayClient else { return }
-        struct EmptyParams: Codable, Sendable {}
-        do {
-            let res = try await gatewayClient.request(method: "models.current", params: EmptyParams())
-            let models: ModelsCurrentResponse = try decodeGatewayPayloadObject(res.payload)
-            activeProvider = models.provider
-            availableModels = models.models
-            defaultModelId = models.defaultModelId.isEmpty ? nil : models.defaultModelId
-            availableThinkingLevels = models.thinkingLevels
-        } catch {
-            activeProvider = nil
-            availableModels = []
-            defaultModelId = nil
-            availableThinkingLevels = []
-        }
     }
 
     private func refreshProjectsFromGateway() async {
@@ -935,7 +879,7 @@ public final class AppStore: ObservableObject {
         sessionHistoryPrefetchTasksByProject[projectID] = task
     }
 
-    private func decodeGatewayPayload<T: Decodable>(_ payload: [String: JSONValue]?, key: String) throws -> T {
+    internal func decodeGatewayPayload<T: Decodable>(_ payload: [String: JSONValue]?, key: String) throws -> T {
         guard let payload, let value = payload[key] else {
             throw NSError(domain: "LabOS", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing payload key \(key)"])
         }
@@ -943,7 +887,7 @@ public final class AppStore: ObservableObject {
         return try gatewayJSONDecoder.decode(T.self, from: data)
     }
 
-    private func decodeGatewayPayloadObject<T: Decodable>(_ payload: [String: JSONValue]?) throws -> T {
+    internal func decodeGatewayPayloadObject<T: Decodable>(_ payload: [String: JSONValue]?) throws -> T {
         guard let payload else {
             throw NSError(domain: "LabOS", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing payload object"])
         }
@@ -972,9 +916,7 @@ public final class AppStore: ObservableObject {
 	            }
 
         case let .sessionPermissionUpdated(payload):
-            if let level = Self.parsePermissionLevel(payload.level) {
-                permissionLevelBySession[payload.sessionId] = level
-            }
+            composerService.handleSessionPermissionUpdated(payload)
 
         case let .chatMessageCreated(projectID, sessionID, message):
             _ = projectID
@@ -1595,43 +1537,19 @@ public final class AppStore: ObservableObject {
     }
 
     public func contextRemainingFraction(for sessionID: UUID) -> Double? {
-        guard let total = sessionContextBySession[sessionID]?.contextWindowTokens,
-              let remaining = sessionContextBySession[sessionID]?.remainingTokens,
-              total > 0
-        else {
-            return nil
-        }
-        return min(max(Double(remaining) / Double(total), 0), 1)
+        composerService.contextRemainingFraction(for: sessionID)
     }
 
     public func contextWindowTokens(for sessionID: UUID) -> Int? {
-        sessionContextBySession[sessionID]?.contextWindowTokens
+        composerService.contextWindowTokens(for: sessionID)
     }
 
     public func permissionLevel(for sessionID: UUID) -> SessionPermissionLevel {
-        permissionLevelBySession[sessionID] ?? .default
+        composerService.permissionLevel(for: sessionID)
     }
 
     public func setPermissionLevel(projectID: UUID, sessionID: UUID, level: SessionPermissionLevel) {
-        permissionLevelBySession[sessionID] = level
-
-        guard isGatewayConfigured else { return }
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            let ok = await self.ensureGatewayConnectedForChat()
-            guard ok, self.isGatewayConnected, let gatewayClient = self.gatewayClient else { return }
-
-            struct Params: Codable, Sendable {
-                var projectId: String
-                var sessionId: String
-                var level: SessionPermissionLevel
-            }
-
-            _ = try? await gatewayClient.request(
-                method: "sessions.permission.set",
-                params: Params(projectId: Self.gatewayID(projectID), sessionId: Self.gatewayID(sessionID), level: level)
-            )
-        }
+        composerService.setPermissionLevel(projectID: projectID, sessionID: sessionID, level: level)
     }
 
     public var activeProjectSessions: [Session] {
@@ -1728,45 +1646,27 @@ public final class AppStore: ObservableObject {
     }
 
     public func pendingComposerAttachments(for sessionID: UUID) -> [ComposerAttachment] {
-        pendingComposerAttachmentsBySession[sessionID] ?? []
+        composerService.pendingComposerAttachments(for: sessionID)
     }
 
     public func addPendingComposerAttachments(sessionID: UUID, attachments: [ComposerAttachment]) {
-        let cleaned = attachments.filter { !$0.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        guard !cleaned.isEmpty else { return }
-        var existing = pendingComposerAttachmentsBySession[sessionID] ?? []
-        existing.append(contentsOf: cleaned)
-        pendingComposerAttachmentsBySession[sessionID] = existing
+        composerService.addPendingComposerAttachments(sessionID: sessionID, attachments: attachments)
     }
 
     public func removePendingComposerAttachment(sessionID: UUID, attachmentID: UUID) {
-        guard var existing = pendingComposerAttachmentsBySession[sessionID] else { return }
-        existing.removeAll { $0.id == attachmentID }
-        pendingComposerAttachmentsBySession[sessionID] = existing.isEmpty ? nil : existing
+        composerService.removePendingComposerAttachment(sessionID: sessionID, attachmentID: attachmentID)
     }
 
     public func clearPendingComposerAttachments(sessionID: UUID) {
-        pendingComposerAttachmentsBySession[sessionID] = nil
+        composerService.clearPendingComposerAttachments(sessionID: sessionID)
     }
 
     private func attachmentPayload(for sessionID: UUID, messageID: UUID) -> [ComposerAttachment] {
-        attachmentPayloadsBySessionMessageID[sessionID]?[messageID] ?? []
+        composerService.attachmentPayload(for: sessionID, messageID: messageID)
     }
 
     private func attachmentsFromArtifactRefs(_ refs: [ChatArtifactReference]) -> [ComposerAttachment] {
-        refs.compactMap { ref in
-            let scope = (ref.scope ?? "session").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            guard scope.isEmpty || scope == "session" else { return nil }
-            let displayName = (ref.sourceName ?? ref.displayText).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !displayName.isEmpty else { return nil }
-            return ComposerAttachment(
-                id: ref.artifactID ?? UUID(),
-                displayName: displayName,
-                mimeType: ref.mimeType,
-                inlineDataBase64: ref.inlineDataBase64,
-                byteCount: ref.byteCount
-            )
-        }
+        composerService.attachmentsFromArtifactRefs(refs)
     }
 
     private func setAttachmentPayload(
@@ -1774,19 +1674,11 @@ public final class AppStore: ObservableObject {
         messageID: UUID,
         attachments: [ComposerAttachment]
     ) {
-        var byMessage = attachmentPayloadsBySessionMessageID[sessionID] ?? [:]
-        if attachments.isEmpty {
-            byMessage[messageID] = nil
-        } else {
-            byMessage[messageID] = attachments
-        }
-        attachmentPayloadsBySessionMessageID[sessionID] = byMessage.isEmpty ? nil : byMessage
+        composerService.setAttachmentPayload(for: sessionID, messageID: messageID, attachments: attachments)
     }
 
     private func pruneAttachmentPayloads(for sessionID: UUID, keptMessageIDs: Set<UUID>) {
-        guard var byMessage = attachmentPayloadsBySessionMessageID[sessionID] else { return }
-        byMessage = byMessage.filter { keptMessageIDs.contains($0.key) }
-        attachmentPayloadsBySessionMessageID[sessionID] = byMessage.isEmpty ? nil : byMessage
+        composerService.pruneAttachmentPayloads(for: sessionID, keptMessageIDs: keptMessageIDs)
     }
 
     private static func messageDisplayOrder(_ lhs: ChatMessage, _ rhs: ChatMessage) -> Bool {
@@ -2051,41 +1943,31 @@ public final class AppStore: ObservableObject {
     }
 
     public func planModeEnabled(for sessionID: UUID) -> Bool {
-        planModeEnabledBySession[sessionID] ?? false
+        composerService.planModeEnabled(for: sessionID)
     }
 
     public func setPlanModeEnabled(for sessionID: UUID, enabled: Bool) {
-        planModeEnabledBySession[sessionID] = enabled
+        composerService.setPlanModeEnabled(for: sessionID, enabled: enabled)
     }
 
     public func selectedModelId(for sessionID: UUID) -> String {
-        selectedModelIdBySession[sessionID] ?? defaultModelId ?? availableModels.first?.id ?? ""
+        composerService.selectedModelId(for: sessionID)
     }
 
     public func setSelectedModelId(for sessionID: UUID, modelId: String) {
-        selectedModelIdBySession[sessionID] = modelId
-        normalizeThinkingPrefs(sessionID: sessionID)
+        composerService.setSelectedModelId(for: sessionID, modelId: modelId)
     }
 
     public func selectedModelInfo(for sessionID: UUID) -> GatewayModelInfo? {
-        let id = selectedModelId(for: sessionID)
-        return availableModels.first(where: { $0.id == id })
+        composerService.selectedModelInfo(for: sessionID)
     }
 
     public func selectedThinkingLevel(for sessionID: UUID) -> ThinkingLevel? {
-        selectedThinkingLevelBySession[sessionID]
+        composerService.selectedThinkingLevel(for: sessionID)
     }
 
     public func setSelectedThinkingLevel(for sessionID: UUID, level: ThinkingLevel?) {
-        guard selectedModelInfo(for: sessionID)?.reasoning == true else {
-            selectedThinkingLevelBySession[sessionID] = nil
-            return
-        }
-        if let level {
-            selectedThinkingLevelBySession[sessionID] = level
-        } else {
-            selectedThinkingLevelBySession[sessionID] = nil
-        }
+        composerService.setSelectedThinkingLevel(for: sessionID, level: level)
     }
 
     @discardableResult
@@ -2171,7 +2053,7 @@ public final class AppStore: ObservableObject {
 
 	        for sessionID in removedSessionIDs {
 	            messagesBySession[sessionID] = nil
-            attachmentPayloadsBySessionMessageID[sessionID] = nil
+            composerService.pruneAttachmentPayloads(for: sessionID, keptMessageIDs: [])
             pendingApprovalsBySession[sessionID] = nil
             livePlanBySession[sessionID] = nil
             liveAgentEventsBySession[sessionID] = nil
@@ -2598,7 +2480,7 @@ public final class AppStore: ObservableObject {
         sessionsByProject[projectID] = sessions
 
         messagesBySession[sessionID] = nil
-        attachmentPayloadsBySessionMessageID[sessionID] = nil
+        composerService.pruneAttachmentPayloads(for: sessionID, keptMessageIDs: [])
         pendingApprovalsBySession[sessionID] = nil
         livePlanBySession[sessionID] = nil
         liveAgentEventsBySession[sessionID] = nil
@@ -2630,33 +2512,12 @@ public final class AppStore: ObservableObject {
         }
     }
 
-    private static func sanitizeAttachmentPathComponent(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "attachment" }
-        let cleaned = trimmed.replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "\\", with: "_")
-        return cleaned.isEmpty ? "attachment" : cleaned
-    }
-
     private func makeSessionAttachmentReferences(
         projectID: UUID,
         sessionID: UUID,
         attachments: [ComposerAttachment]
     ) -> [ChatArtifactReference] {
-        attachments.map { attachment in
-            let safeName = Self.sanitizeAttachmentPathComponent(attachment.displayName)
-            return ChatArtifactReference(
-                displayText: attachment.displayName,
-                projectID: projectID,
-                path: "session_attachments/\(sessionID.uuidString)/\(safeName)",
-                artifactID: attachment.id,
-                scope: "session",
-                mimeType: attachment.mimeType,
-                sourceName: attachment.displayName,
-                inlineDataBase64: attachment.inlineDataBase64,
-                byteCount: attachment.byteCount
-            )
-        }
+        composerService.makeSessionAttachmentReferences(projectID: projectID, sessionID: sessionID, attachments: attachments)
     }
 
     public func sendMessage(
@@ -3495,45 +3356,11 @@ public final class AppStore: ObservableObject {
     }
 
     private func ensureComposerPrefs(sessionID: UUID) {
-        if planModeEnabledBySession[sessionID] == nil {
-            planModeEnabledBySession[sessionID] = false
-        }
-
-        if permissionLevelBySession[sessionID] == nil {
-            permissionLevelBySession[sessionID] = .default
-        }
-
-        if selectedModelIdBySession[sessionID] == nil {
-            if let modelId = defaultModelId ?? availableModels.first?.id {
-                if !modelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    selectedModelIdBySession[sessionID] = modelId
-                }
-            }
-        }
-
-        normalizeThinkingPrefs(sessionID: sessionID)
+        composerService.ensureComposerPrefs(sessionID: sessionID)
     }
 
     private func normalizeThinkingPrefs(sessionID: UUID) {
-        let modelId = selectedModelIdBySession[sessionID] ?? defaultModelId ?? availableModels.first?.id
-        let supportsReasoning = modelId.flatMap { id in
-            availableModels.first(where: { $0.id == id })?.reasoning
-        } ?? false
-
-        guard supportsReasoning else {
-            selectedThinkingLevelBySession[sessionID] = nil
-            return
-        }
-
-        if selectedThinkingLevelBySession[sessionID] == nil {
-            selectedThinkingLevelBySession[sessionID] = availableThinkingLevels.first ?? .medium
-        }
-
-        if let selected = selectedThinkingLevelBySession[sessionID],
-           !availableThinkingLevels.isEmpty,
-           !availableThinkingLevels.contains(selected) {
-            selectedThinkingLevelBySession[sessionID] = availableThinkingLevels.first ?? .medium
-        }
+        composerService.ensureComposerPrefs(sessionID: sessionID)
     }
 
     private func setSessionLifecycle(projectID: UUID, sessionID: UUID, lifecycle: SessionLifecycle) {
@@ -3754,7 +3581,7 @@ public final class AppStore: ObservableObject {
         """
     }
 
-    private static func parsePermissionLevel(_ raw: String?) -> SessionPermissionLevel? {
+    internal static func parsePermissionLevel(_ raw: String?) -> SessionPermissionLevel? {
         guard let raw else { return nil }
         switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "default":
