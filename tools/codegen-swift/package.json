@@ -1,0 +1,10 @@
+{
+  "name": "@labos/codegen-swift",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "gen": "node gen.mjs"
+  }
+}
+
