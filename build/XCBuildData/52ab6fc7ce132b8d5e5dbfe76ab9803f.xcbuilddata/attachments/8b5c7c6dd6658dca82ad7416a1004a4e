@@ -1,0 +1,5 @@
+ extern const unsigned char LabOSCoreVersionString[];
+ extern const double LabOSCoreVersionNumber;
+
+ const unsigned char LabOSCoreVersionString[] __attribute__ ((used)) = "@(#)PROGRAM:LabOSCore  PROJECT:LabOS-1" "\n";
+ const double LabOSCoreVersionNumber __attribute__ ((used)) = (double)1.;
