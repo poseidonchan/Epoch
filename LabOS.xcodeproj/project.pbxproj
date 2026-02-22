@@ -16,6 +16,7 @@
 		150740B092B8326EFCA40CDB /* katex.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 3FB7089EA136E78CEE406EBA /* katex.min.js */; };
 		17B429444912E3FFCEDD3E2C /* SessionChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D92C4BA96A4950420952E8B8 /* SessionChatView.swift */; };
 		1B1AFEAB52520295ACBB661C /* KaTeX_Main-BoldItalic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 9A5C04B5E8665CAB79907795 /* KaTeX_Main-BoldItalic.woff2 */; };
+		1F9DD9513CC41B09AC45D6F7 /* AppStoreSessionPrefetchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3A7AC2C1FB680E073FEA23 /* AppStoreSessionPrefetchTests.swift */; };
 		215F7FD44374892A5BFAB816 /* KaTeX_Size4-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 53DFC00E56A1723C4B15FA2B /* KaTeX_Size4-Regular.woff2 */; };
 		21C639B2FD960EBEEFE6F12B /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF33BCF594E0FEF19FB1D36E /* AppStore.swift */; };
 		229E435623611882336A09B7 /* LabOSProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25C5BF0DD4E3B6E5314952BD /* LabOSProtocol.swift */; };
@@ -25,15 +26,18 @@
 		386E1692E146D1D094554CB3 /* SessionDeleteSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 468108B7F94F98B04905A6E0 /* SessionDeleteSheet.swift */; };
 		3957E0AD6C9452ECFEE4098C /* ArtifactPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E0441216B1BBE72A8EB402F /* ArtifactPreviewView.swift */; };
 		3B7509A970F8EB8609758D00 /* LabOSAppMacStub.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E4D7C63CBAF7DFA78404613 /* LabOSAppMacStub.swift */; };
+		3C4F473F3B347E4D6B79D618 /* ChatViewportPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F32B8634539C34FB51FE49A5 /* ChatViewportPolicyTests.swift */; };
 		43531B3ED8B98DE7BE35D1C9 /* SessionsDrawerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62CE65E4206A9C25DEC9333F /* SessionsDrawerView.swift */; };
 		49C6BE44BAE21640B235DF26 /* KaTeX_Size2-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = BDC64475632A5108467A6488 /* KaTeX_Size2-Regular.woff2 */; };
 		4AA35B45D0B7ABBEFF62FEE8 /* highlight.min.js in Resources */ = {isa = PBXBuildFile; fileRef = ED08A4B17D2F9D7A624CD9FF /* highlight.min.js */; };
 		4B85659EFDDC3B10DC41B08F /* MarkdownMathView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD868C2720E3412B2648601D /* MarkdownMathView.swift */; };
 		55DF02110B1A2C7471985040 /* DeepLinkCodecTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABC2F7238BE0457330703F6A /* DeepLinkCodecTests.swift */; };
+		56A2115CDBE138DB963C1A28 /* GatewayClientReliabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6C58EED796865ECDDBEDAA1 /* GatewayClientReliabilityTests.swift */; };
 		5A684A338B7C176F9EA3358C /* katex.min.css in Resources */ = {isa = PBXBuildFile; fileRef = DA8C11D2397443BB0731D0E8 /* katex.min.css */; };
 		5E987905566F09D4F180C266 /* AppStoreSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74FBD2DE522DB403555DE56A /* AppStoreSettingsTests.swift */; };
 		619ED2679338A920015779E2 /* github.min.css in Resources */ = {isa = PBXBuildFile; fileRef = 3A6F2C956353F9F947C4A29D /* github.min.css */; };
 		65CA65EC00527C21549EDDA5 /* SanitizedHTMLWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF4E725AC2CE9D1BD3596D1E /* SanitizedHTMLWebView.swift */; };
+		67A029E290F08BD69233616B /* MarkdownDisplayNormalizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9FBEA2C6BDCD95808EF47D7 /* MarkdownDisplayNormalizerTests.swift */; };
 		69BA9ED22289FF9936A22AD5 /* APIContract.swift in Sources */ = {isa = PBXBuildFile; fileRef = C108FC01D09EC28BCE24705C /* APIContract.swift */; };
 		6EFAFB4D50249084219EC913 /* KaTeX_Script-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 2548B24CB6CC8ACEA832FD14 /* KaTeX_Script-Regular.woff2 */; };
 		70A837E2A5700B5ED6EE45F4 /* NotebookPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E56CD77B122B4115B6E2777 /* NotebookPreviewView.swift */; };
@@ -57,6 +61,7 @@
 		BA1D4AB0B586E5594A964FE0 /* ProjectPageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB06F26440C88FE19E862F0E /* ProjectPageView.swift */; };
 		BB4789CED3582ACF6E5760D9 /* StreamingMarkdownView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3339C56973FA78D4BC9D5B36 /* StreamingMarkdownView.swift */; };
 		BD9B65A52AA069AEE78FCF1F /* KaTeX_Fraktur-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = A626EEC81411153FDA9EA502 /* KaTeX_Fraktur-Regular.woff2 */; };
+		BE342E13E7FD09C8B6EDAC77 /* E2ESmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0ACBE2C9C8914030F4D3FFF /* E2ESmokeTests.swift */; };
 		C446ADBE71EEB39A20CD14E1 /* KaTeX_Caligraphic-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 56B9EF69E84951CA0AB6889B /* KaTeX_Caligraphic-Regular.woff2 */; };
 		CBFDEA2BCBAAE9D66F52A1BE /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12C093E585B2F2E43590E4D3 /* Models.swift */; };
 		CE957ACB10348C7F9E7C3C96 /* InlineComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D63405BA7CF1863931018509 /* InlineComposerView.swift */; };
@@ -73,11 +78,14 @@
 		E3790E020C8F5630B9ACAA93 /* KaTeX_Size3-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 3521D0203F1384F620518026 /* KaTeX_Size3-Regular.woff2 */; };
 		ECD30007D702964E34C826AD /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = 458D033A6A936A607513EBFE /* MarkdownUI */; };
 		ED37E6C0F88B55CC8FA15D0F /* github-dark.min.css in Resources */ = {isa = PBXBuildFile; fileRef = 0D6DBF2B2CDBD9752C2565E4 /* github-dark.min.css */; };
+		F002F285DFA8639FB84C4CC9 /* AppStoreMessageActionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83E22632C22AAC7281260589 /* AppStoreMessageActionsTests.swift */; };
 		F442EEC9D7685A9CA40307FD /* NamePromptSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1688F834B3194EB65F26759 /* NamePromptSheet.swift */; };
 		F99E07EA4F5E0A9F8555620F /* PlanConfirmationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6215F7D415A140E9152CCFD0 /* PlanConfirmationSheet.swift */; };
+		FA076A16F659F0760A108C9E /* AppStoreLiveActivityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3504441E2680132F455E0B91 /* AppStoreLiveActivityTests.swift */; };
 		FAF7AA77FB3983E211391E16 /* KaTeX_Main-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 2BD10C70F83D43B573E95BD6 /* KaTeX_Main-Regular.woff2 */; };
 		FBB46FC5A7B24B1EB23B8517 /* LabOSCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9A843BC31C423DF184FB7A9B /* LabOSCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		FF3A95AB3F737068533E6F92 /* AppStoreSemanticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B7ECF3F55555C7D0039EA2E /* AppStoreSemanticsTests.swift */; };
+		FFD1602C8B45C81B373D596C /* GatewayContract.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6E262B87B8743CD4AA62E60 /* GatewayContract.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -87,6 +95,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = CE3B57FB53F507FC92B79401;
 			remoteInfo = LabOSCore;
+		};
+		A7A873485B52B83B43D8197E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 81DF874F6AB2A59FAF67954B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FE8BD5589FB4A902380A5E9B;
+			remoteInfo = LabOSApp;
 		};
 		BBD544C53C16521429EE057F /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -135,12 +150,14 @@
 		2BD10C70F83D43B573E95BD6 /* KaTeX_Main-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Main-Regular.woff2"; sourceTree = "<group>"; };
 		2F2A63CE55013CFDE15FACCA /* ProjectsDrawerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectsDrawerView.swift; sourceTree = "<group>"; };
 		3339C56973FA78D4BC9D5B36 /* StreamingMarkdownView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingMarkdownView.swift; sourceTree = "<group>"; };
+		3504441E2680132F455E0B91 /* AppStoreLiveActivityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreLiveActivityTests.swift; sourceTree = "<group>"; };
 		3521D0203F1384F620518026 /* KaTeX_Size3-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Size3-Regular.woff2"; sourceTree = "<group>"; };
 		3A6F2C956353F9F947C4A29D /* github.min.css */ = {isa = PBXFileReference; lastKnownFileType = text.css; path = github.min.css; sourceTree = "<group>"; };
 		3FB7089EA136E78CEE406EBA /* katex.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = katex.min.js; sourceTree = "<group>"; };
 		43263C860C87506E8E6863F3 /* KaTeX_Size1-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Size1-Regular.woff2"; sourceTree = "<group>"; };
 		43ABB14972152AC345AAC0DD /* KaTeX_SansSerif-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_SansSerif-Regular.woff2"; sourceTree = "<group>"; };
 		441902AFE6E3819C81211088 /* KaTeX_AMS-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_AMS-Regular.woff2"; sourceTree = "<group>"; };
+		463CD4E38BB5EE4040833D63 /* LabOSE2ETests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = LabOSE2ETests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		468108B7F94F98B04905A6E0 /* SessionDeleteSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDeleteSheet.swift; sourceTree = "<group>"; };
 		4B73551CDAFFFCFB66EC92FF /* markdown-math-renderer.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "markdown-math-renderer.js"; sourceTree = "<group>"; };
 		4E4D7C63CBAF7DFA78404613 /* LabOSAppMacStub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LabOSAppMacStub.swift; sourceTree = "<group>"; };
@@ -161,6 +178,7 @@
 		7E0441216B1BBE72A8EB402F /* ArtifactPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtifactPreviewView.swift; sourceTree = "<group>"; };
 		82559E781F62B7DD85CF3B15 /* KaTeX_Fraktur-Bold.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Fraktur-Bold.woff2"; sourceTree = "<group>"; };
 		82647FFDDB9DF9F05D35DD61 /* auto-render.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "auto-render.min.js"; sourceTree = "<group>"; };
+		83E22632C22AAC7281260589 /* AppStoreMessageActionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreMessageActionsTests.swift; sourceTree = "<group>"; };
 		889DD25ABE8EC1B218AB82E7 /* KaTeX_Math-Italic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Math-Italic.woff2"; sourceTree = "<group>"; };
 		8ADEBF41B77336AD92FB59BD /* MarkdownMathPreprocessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownMathPreprocessor.swift; sourceTree = "<group>"; };
 		8B7ECF3F55555C7D0039EA2E /* AppStoreSemanticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreSemanticsTests.swift; sourceTree = "<group>"; };
@@ -170,6 +188,8 @@
 		9A843BC31C423DF184FB7A9B /* LabOSCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LabOSCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		9E91F2EFED08A9EAE52D3B0E /* r.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = r.min.js; sourceTree = "<group>"; };
 		A626EEC81411153FDA9EA502 /* KaTeX_Fraktur-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Fraktur-Regular.woff2"; sourceTree = "<group>"; };
+		A6C58EED796865ECDDBEDAA1 /* GatewayClientReliabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayClientReliabilityTests.swift; sourceTree = "<group>"; };
+		A6E262B87B8743CD4AA62E60 /* GatewayContract.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayContract.swift; sourceTree = "<group>"; };
 		AB2347E8F379C9E6FC6C5508 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		ABC2F7238BE0457330703F6A /* DeepLinkCodecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepLinkCodecTests.swift; sourceTree = "<group>"; };
 		AD868C2720E3412B2648601D /* MarkdownMathView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownMathView.swift; sourceTree = "<group>"; };
@@ -187,9 +207,13 @@
 		D92C4BA96A4950420952E8B8 /* SessionChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionChatView.swift; sourceTree = "<group>"; };
 		DA8C11D2397443BB0731D0E8 /* katex.min.css */ = {isa = PBXFileReference; lastKnownFileType = text.css; path = katex.min.css; sourceTree = "<group>"; };
 		E28E7F4F053654746D1F384B /* KaTeX_Typewriter-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Typewriter-Regular.woff2"; sourceTree = "<group>"; };
+		E9FBEA2C6BDCD95808EF47D7 /* MarkdownDisplayNormalizerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownDisplayNormalizerTests.swift; sourceTree = "<group>"; };
 		ED08A4B17D2F9D7A624CD9FF /* highlight.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = highlight.min.js; sourceTree = "<group>"; };
+		EE3A7AC2C1FB680E073FEA23 /* AppStoreSessionPrefetchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreSessionPrefetchTests.swift; sourceTree = "<group>"; };
 		EF4E725AC2CE9D1BD3596D1E /* SanitizedHTMLWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SanitizedHTMLWebView.swift; sourceTree = "<group>"; };
+		F0ACBE2C9C8914030F4D3FFF /* E2ESmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = E2ESmokeTests.swift; sourceTree = "<group>"; };
 		F297B0CFEBA0A68BF3DFEF3F /* MessageBubbleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubbleView.swift; sourceTree = "<group>"; };
+		F32B8634539C34FB51FE49A5 /* ChatViewportPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatViewportPolicyTests.swift; sourceTree = "<group>"; };
 		FB06F26440C88FE19E862F0E /* ProjectPageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectPageView.swift; sourceTree = "<group>"; };
 		FB9F6360C65BCE5F8F085497 /* HubIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubIntegrationTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -215,6 +239,15 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		100E9B2CDC4334CA11B0435D /* LabOSE2ETests */ = {
+			isa = PBXGroup;
+			children = (
+				F0ACBE2C9C8914030F4D3FFF /* E2ESmokeTests.swift */,
+			);
+			name = LabOSE2ETests;
+			path = Tests/LabOSE2ETests;
+			sourceTree = "<group>";
+		};
 		18CF09AEEA5BB90EC4A4D8E4 /* Session */ = {
 			isa = PBXGroup;
 			children = (
@@ -304,6 +337,7 @@
 				92CE6023B893EA9183DFA4D1 /* LabOSApp.app */,
 				9A843BC31C423DF184FB7A9B /* LabOSCore.framework */,
 				7DDDB2CD46E24556B9D896F5 /* LabOSCoreTests.xctest */,
+				463CD4E38BB5EE4040833D63 /* LabOSE2ETests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -369,6 +403,7 @@
 		89442CB7CD873C8921DA8133 /* Generated */ = {
 			isa = PBXGroup;
 			children = (
+				A6E262B87B8743CD4AA62E60 /* GatewayContract.swift */,
 				25C5BF0DD4E3B6E5314952BD /* LabOSProtocol.swift */,
 			);
 			path = Generated;
@@ -394,10 +429,16 @@
 		CDA0110EDD5709886DA1B069 /* LabOSCoreTests */ = {
 			isa = PBXGroup;
 			children = (
+				3504441E2680132F455E0B91 /* AppStoreLiveActivityTests.swift */,
+				83E22632C22AAC7281260589 /* AppStoreMessageActionsTests.swift */,
 				8B7ECF3F55555C7D0039EA2E /* AppStoreSemanticsTests.swift */,
+				EE3A7AC2C1FB680E073FEA23 /* AppStoreSessionPrefetchTests.swift */,
 				74FBD2DE522DB403555DE56A /* AppStoreSettingsTests.swift */,
+				F32B8634539C34FB51FE49A5 /* ChatViewportPolicyTests.swift */,
 				ABC2F7238BE0457330703F6A /* DeepLinkCodecTests.swift */,
+				A6C58EED796865ECDDBEDAA1 /* GatewayClientReliabilityTests.swift */,
 				FB9F6360C65BCE5F8F085497 /* HubIntegrationTests.swift */,
+				E9FBEA2C6BDCD95808EF47D7 /* MarkdownDisplayNormalizerTests.swift */,
 				D8058E022BD03DCE69CC0620 /* NotebookDocumentTests.swift */,
 			);
 			name = LabOSCoreTests;
@@ -419,6 +460,7 @@
 				FA8853312FC3B3D9460B1ED8 /* LabOSApp */,
 				51F207C02BCF649A09C0E656 /* LabOSCore */,
 				CDA0110EDD5709886DA1B069 /* LabOSCoreTests */,
+				100E9B2CDC4334CA11B0435D /* LabOSE2ETests */,
 				4B71BE6D166B32E8C9F82922 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -456,6 +498,24 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		040C3D396D40F3A2807181DD /* LabOSE2ETests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B4E15D4EC2CE9CC79D11D42B /* Build configuration list for PBXNativeTarget "LabOSE2ETests" */;
+			buildPhases = (
+				7DCB862AC5EF8377BF832203 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				5946641C4314C4B1BBC5F16E /* PBXTargetDependency */,
+			);
+			name = LabOSE2ETests;
+			packageProductDependencies = (
+			);
+			productName = LabOSE2ETests;
+			productReference = 463CD4E38BB5EE4040833D63 /* LabOSE2ETests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		7754C18EF1ACFC7C4CBCC957 /* LabOSCoreTests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = FEC349835628D881C93038E7 /* Build configuration list for PBXNativeTarget "LabOSCoreTests" */;
@@ -523,6 +583,11 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					040C3D396D40F3A2807181DD = {
+						TestTargetID = FE8BD5589FB4A902380A5E9B;
+					};
+				};
 			};
 			buildConfigurationList = B9917E52F71000FE8254FF83 /* Build configuration list for PBXProject "LabOS" */;
 			compatibilityVersion = "Xcode 14.0";
@@ -544,6 +609,7 @@
 				FE8BD5589FB4A902380A5E9B /* LabOSApp */,
 				CE3B57FB53F507FC92B79401 /* LabOSCore */,
 				7754C18EF1ACFC7C4CBCC957 /* LabOSCoreTests */,
+				040C3D396D40F3A2807181DD /* LabOSE2ETests */,
 			);
 		};
 /* End PBXProject section */
@@ -593,10 +659,16 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FA076A16F659F0760A108C9E /* AppStoreLiveActivityTests.swift in Sources */,
+				F002F285DFA8639FB84C4CC9 /* AppStoreMessageActionsTests.swift in Sources */,
 				FF3A95AB3F737068533E6F92 /* AppStoreSemanticsTests.swift in Sources */,
+				1F9DD9513CC41B09AC45D6F7 /* AppStoreSessionPrefetchTests.swift in Sources */,
 				5E987905566F09D4F180C266 /* AppStoreSettingsTests.swift in Sources */,
+				3C4F473F3B347E4D6B79D618 /* ChatViewportPolicyTests.swift in Sources */,
 				55DF02110B1A2C7471985040 /* DeepLinkCodecTests.swift in Sources */,
+				56A2115CDBE138DB963C1A28 /* GatewayClientReliabilityTests.swift in Sources */,
 				A14B7C4AACA74104F0F3BCA9 /* HubIntegrationTests.swift in Sources */,
+				67A029E290F08BD69233616B /* MarkdownDisplayNormalizerTests.swift in Sources */,
 				A659A450F7F399854EC9A515 /* NotebookDocumentTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -610,9 +682,18 @@
 				D0C8A49CEBA0F23A802C3BDE /* BackendClient.swift in Sources */,
 				A41C51299BCE6D56299DA622 /* DeepLink.swift in Sources */,
 				D708C455D571F30B9A325704 /* GatewayClient.swift in Sources */,
+				FFD1602C8B45C81B373D596C /* GatewayContract.swift in Sources */,
 				229E435623611882336A09B7 /* LabOSProtocol.swift in Sources */,
 				CBFDEA2BCBAAE9D66F52A1BE /* Models.swift in Sources */,
 				74B8D2B347B4A376AA874F31 /* NotebookDocument.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7DCB862AC5EF8377BF832203 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BE342E13E7FD09C8B6EDAC77 /* E2ESmokeTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -649,6 +730,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		5946641C4314C4B1BBC5F16E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FE8BD5589FB4A902380A5E9B /* LabOSApp */;
+			targetProxy = A7A873485B52B83B43D8197E /* PBXContainerItemProxy */;
+		};
 		7AD89FCAD237F1770EF18817 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = CE3B57FB53F507FC92B79401 /* LabOSCore */;
@@ -662,6 +748,23 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		013CD4C088215EBF3BA48744 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = labos.LabOSE2ETests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = LabOSApp;
+			};
+			name = Release;
+		};
 		2A3F2AEA12C7DB3F496173FC /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -905,6 +1008,23 @@
 			};
 			name = Release;
 		};
+		F50F7333E8B2C226F602F317 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = labos.LabOSE2ETests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = LabOSApp;
+			};
+			name = Debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -922,6 +1042,15 @@
 			buildConfigurations = (
 				BDF7391D98E0277B2489100F /* Debug */,
 				4AFB388AADEFA3526C2E301D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B4E15D4EC2CE9CC79D11D42B /* Build configuration list for PBXNativeTarget "LabOSE2ETests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F50F7333E8B2C226F602F317 /* Debug */,
+				013CD4C088215EBF3BA48744 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
