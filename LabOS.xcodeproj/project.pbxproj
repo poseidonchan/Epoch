@@ -1,0 +1,969 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		059175377FB51AE655C9900E /* KaTeX_Caligraphic-Bold.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 547E78AB6156D09E6412924C /* KaTeX_Caligraphic-Bold.woff2 */; };
+		05A61E4BB013E8BBC4ACE416 /* r.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 9E91F2EFED08A9EAE52D3B0E /* r.min.js */; };
+		06995E3F8ACCB2805349FAEA /* KaTeX_SansSerif-Bold.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = B91AA911BAEBDD15F8746A2F /* KaTeX_SansSerif-Bold.woff2 */; };
+		0D2913848BF392040125C00B /* KaTeX_Fraktur-Bold.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 82559E781F62B7DD85CF3B15 /* KaTeX_Fraktur-Bold.woff2 */; };
+		12626AF484CCB849AEAE3F04 /* MessageBubbleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F297B0CFEBA0A68BF3DFEF3F /* MessageBubbleView.swift */; };
+		138A2C99C574ECB137AAADD3 /* KaTeX_Typewriter-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = E28E7F4F053654746D1F384B /* KaTeX_Typewriter-Regular.woff2 */; };
+		150740B092B8326EFCA40CDB /* katex.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 3FB7089EA136E78CEE406EBA /* katex.min.js */; };
+		17B429444912E3FFCEDD3E2C /* SessionChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D92C4BA96A4950420952E8B8 /* SessionChatView.swift */; };
+		1B1AFEAB52520295ACBB661C /* KaTeX_Main-BoldItalic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 9A5C04B5E8665CAB79907795 /* KaTeX_Main-BoldItalic.woff2 */; };
+		215F7FD44374892A5BFAB816 /* KaTeX_Size4-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 53DFC00E56A1723C4B15FA2B /* KaTeX_Size4-Regular.woff2 */; };
+		21C639B2FD960EBEEFE6F12B /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF33BCF594E0FEF19FB1D36E /* AppStore.swift */; };
+		229E435623611882336A09B7 /* LabOSProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25C5BF0DD4E3B6E5314952BD /* LabOSProtocol.swift */; };
+		323E5F26CFE57FF6AEF54EC6 /* KaTeX_AMS-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 441902AFE6E3819C81211088 /* KaTeX_AMS-Regular.woff2 */; };
+		32641AB44EF6DDB26A152B6B /* auto-render.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 82647FFDDB9DF9F05D35DD61 /* auto-render.min.js */; };
+		3572C994A2111777E4CF1F3E /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2347E8F379C9E6FC6C5508 /* HomeView.swift */; };
+		386E1692E146D1D094554CB3 /* SessionDeleteSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 468108B7F94F98B04905A6E0 /* SessionDeleteSheet.swift */; };
+		3957E0AD6C9452ECFEE4098C /* ArtifactPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E0441216B1BBE72A8EB402F /* ArtifactPreviewView.swift */; };
+		3B7509A970F8EB8609758D00 /* LabOSAppMacStub.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E4D7C63CBAF7DFA78404613 /* LabOSAppMacStub.swift */; };
+		43531B3ED8B98DE7BE35D1C9 /* SessionsDrawerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62CE65E4206A9C25DEC9333F /* SessionsDrawerView.swift */; };
+		49C6BE44BAE21640B235DF26 /* KaTeX_Size2-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = BDC64475632A5108467A6488 /* KaTeX_Size2-Regular.woff2 */; };
+		4AA35B45D0B7ABBEFF62FEE8 /* highlight.min.js in Resources */ = {isa = PBXBuildFile; fileRef = ED08A4B17D2F9D7A624CD9FF /* highlight.min.js */; };
+		4B85659EFDDC3B10DC41B08F /* MarkdownMathView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD868C2720E3412B2648601D /* MarkdownMathView.swift */; };
+		55DF02110B1A2C7471985040 /* DeepLinkCodecTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABC2F7238BE0457330703F6A /* DeepLinkCodecTests.swift */; };
+		5A684A338B7C176F9EA3358C /* katex.min.css in Resources */ = {isa = PBXBuildFile; fileRef = DA8C11D2397443BB0731D0E8 /* katex.min.css */; };
+		5E987905566F09D4F180C266 /* AppStoreSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74FBD2DE522DB403555DE56A /* AppStoreSettingsTests.swift */; };
+		619ED2679338A920015779E2 /* github.min.css in Resources */ = {isa = PBXBuildFile; fileRef = 3A6F2C956353F9F947C4A29D /* github.min.css */; };
+		65CA65EC00527C21549EDDA5 /* SanitizedHTMLWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF4E725AC2CE9D1BD3596D1E /* SanitizedHTMLWebView.swift */; };
+		69BA9ED22289FF9936A22AD5 /* APIContract.swift in Sources */ = {isa = PBXBuildFile; fileRef = C108FC01D09EC28BCE24705C /* APIContract.swift */; };
+		6EFAFB4D50249084219EC913 /* KaTeX_Script-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 2548B24CB6CC8ACEA832FD14 /* KaTeX_Script-Regular.woff2 */; };
+		70A837E2A5700B5ED6EE45F4 /* NotebookPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E56CD77B122B4115B6E2777 /* NotebookPreviewView.swift */; };
+		738392A701E15F53E3BAE279 /* MarkdownMathPreprocessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8ADEBF41B77336AD92FB59BD /* MarkdownMathPreprocessor.swift */; };
+		74B8D2B347B4A376AA874F31 /* NotebookDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59F41EE3BD9C29D6B10E3C71 /* NotebookDocument.swift */; };
+		7879A3325E9B8161BCFF565F /* ResultsPageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 159089CD69C77937163DE776 /* ResultsPageView.swift */; };
+		7B29A783D94BC99672B86D9D /* markdown-it.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 68072333E8448431914BAC24 /* markdown-it.min.js */; };
+		838CBFCB75F2F298D73A23B2 /* LabOSCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9A843BC31C423DF184FB7A9B /* LabOSCore.framework */; };
+		943C592F0EE7DB0661AC44E7 /* KaTeX_Main-Italic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = C21B47F7AAFD8B26F87441CC /* KaTeX_Main-Italic.woff2 */; };
+		97DC8BCCC264ADF5B7F83D00 /* markdown-math-renderer.js in Resources */ = {isa = PBXBuildFile; fileRef = 4B73551CDAFFFCFB66EC92FF /* markdown-math-renderer.js */; };
+		9E2520F1FCE123621CC01B9B /* KaTeX_Main-Bold.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 7B4488123F637C3E4BCFE60B /* KaTeX_Main-Bold.woff2 */; };
+		A14B7C4AACA74104F0F3BCA9 /* HubIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB9F6360C65BCE5F8F085497 /* HubIntegrationTests.swift */; };
+		A17DF54F863654BF754E9809 /* Formatters.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73D4585BC5F5526EF14961E1 /* Formatters.swift */; };
+		A41C51299BCE6D56299DA622 /* DeepLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 158785FA49BA6D68BA47E5A9 /* DeepLink.swift */; };
+		A57CF3C8E16286CBE162B438 /* KaTeX_Math-BoldItalic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 023A17F1A8FDEC5A4636957E /* KaTeX_Math-BoldItalic.woff2 */; };
+		A659A450F7F399854EC9A515 /* NotebookDocumentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8058E022BD03DCE69CC0620 /* NotebookDocumentTests.swift */; };
+		AB5C31C8B6EC6390EB633B1A /* LabOSCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9A843BC31C423DF184FB7A9B /* LabOSCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		B49456594FF5B09309E3A61C /* HighlightedCodeWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C3D94B9823EF768A81B9B1E /* HighlightedCodeWebView.swift */; };
+		B735E2ACF5D98D2B9FF2DB73 /* ArtifactsBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BF81010518D22FF803BA957 /* ArtifactsBrowserView.swift */; };
+		B881DE2F319628F4C0EB4E91 /* LabOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC6D41CCA6E1CB44F794FEA1 /* LabOSApp.swift */; };
+		BA1D4AB0B586E5594A964FE0 /* ProjectPageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB06F26440C88FE19E862F0E /* ProjectPageView.swift */; };
+		BB4789CED3582ACF6E5760D9 /* StreamingMarkdownView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3339C56973FA78D4BC9D5B36 /* StreamingMarkdownView.swift */; };
+		BD9B65A52AA069AEE78FCF1F /* KaTeX_Fraktur-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = A626EEC81411153FDA9EA502 /* KaTeX_Fraktur-Regular.woff2 */; };
+		C446ADBE71EEB39A20CD14E1 /* KaTeX_Caligraphic-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 56B9EF69E84951CA0AB6889B /* KaTeX_Caligraphic-Regular.woff2 */; };
+		CBFDEA2BCBAAE9D66F52A1BE /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12C093E585B2F2E43590E4D3 /* Models.swift */; };
+		CE957ACB10348C7F9E7C3C96 /* InlineComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D63405BA7CF1863931018509 /* InlineComposerView.swift */; };
+		CEF273A21FAE33C43D4A2A20 /* KaTeX_Size1-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 43263C860C87506E8E6863F3 /* KaTeX_Size1-Regular.woff2 */; };
+		CFC5AF9552C23D03947C27B9 /* LabOSCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9A843BC31C423DF184FB7A9B /* LabOSCore.framework */; };
+		D0C8A49CEBA0F23A802C3BDE /* BackendClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 145932BF8855354FD1A80F8D /* BackendClient.swift */; };
+		D5DFC47EEA755C1F4EBF5908 /* KaTeX_SansSerif-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 43ABB14972152AC345AAC0DD /* KaTeX_SansSerif-Regular.woff2 */; };
+		D708C455D571F30B9A325704 /* GatewayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEB4C1D7D1F37888E563709C /* GatewayClient.swift */; };
+		D7AE25DD04002541D006AF70 /* RootContainerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C626CE4F122874D5518DE926 /* RootContainerView.swift */; };
+		D841A7CCE6CFAC0E9473CE91 /* python.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 8F875C7DCA032C300F110C79 /* python.min.js */; };
+		DDBB5AFAB04490E65F43EC6B /* KaTeX_SansSerif-Italic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 0BF00E0A8C7D64F3CD08B60A /* KaTeX_SansSerif-Italic.woff2 */; };
+		DEB70226C019576F71D771D7 /* KaTeX_Math-Italic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 889DD25ABE8EC1B218AB82E7 /* KaTeX_Math-Italic.woff2 */; };
+		E1AD2001D831D093B578E2DD /* ProjectsDrawerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F2A63CE55013CFDE15FACCA /* ProjectsDrawerView.swift */; };
+		E3790E020C8F5630B9ACAA93 /* KaTeX_Size3-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 3521D0203F1384F620518026 /* KaTeX_Size3-Regular.woff2 */; };
+		ECD30007D702964E34C826AD /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = 458D033A6A936A607513EBFE /* MarkdownUI */; };
+		ED37E6C0F88B55CC8FA15D0F /* github-dark.min.css in Resources */ = {isa = PBXBuildFile; fileRef = 0D6DBF2B2CDBD9752C2565E4 /* github-dark.min.css */; };
+		F442EEC9D7685A9CA40307FD /* NamePromptSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1688F834B3194EB65F26759 /* NamePromptSheet.swift */; };
+		F99E07EA4F5E0A9F8555620F /* PlanConfirmationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6215F7D415A140E9152CCFD0 /* PlanConfirmationSheet.swift */; };
+		FAF7AA77FB3983E211391E16 /* KaTeX_Main-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 2BD10C70F83D43B573E95BD6 /* KaTeX_Main-Regular.woff2 */; };
+		FBB46FC5A7B24B1EB23B8517 /* LabOSCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9A843BC31C423DF184FB7A9B /* LabOSCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FF3A95AB3F737068533E6F92 /* AppStoreSemanticsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B7ECF3F55555C7D0039EA2E /* AppStoreSemanticsTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		27A81D77394F17570FD321DC /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 81DF874F6AB2A59FAF67954B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = CE3B57FB53F507FC92B79401;
+			remoteInfo = LabOSCore;
+		};
+		BBD544C53C16521429EE057F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 81DF874F6AB2A59FAF67954B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = CE3B57FB53F507FC92B79401;
+			remoteInfo = LabOSCore;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		5F0E829AAA37D49E99013D9E /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				AB5C31C8B6EC6390EB633B1A /* LabOSCore.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9D4CF7FF8DB26002BA9C09B4 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				FBB46FC5A7B24B1EB23B8517 /* LabOSCore.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		023A17F1A8FDEC5A4636957E /* KaTeX_Math-BoldItalic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Math-BoldItalic.woff2"; sourceTree = "<group>"; };
+		0BF00E0A8C7D64F3CD08B60A /* KaTeX_SansSerif-Italic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_SansSerif-Italic.woff2"; sourceTree = "<group>"; };
+		0D6DBF2B2CDBD9752C2565E4 /* github-dark.min.css */ = {isa = PBXFileReference; lastKnownFileType = text.css; path = "github-dark.min.css"; sourceTree = "<group>"; };
+		12C093E585B2F2E43590E4D3 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		145932BF8855354FD1A80F8D /* BackendClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendClient.swift; sourceTree = "<group>"; };
+		158785FA49BA6D68BA47E5A9 /* DeepLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepLink.swift; sourceTree = "<group>"; };
+		159089CD69C77937163DE776 /* ResultsPageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResultsPageView.swift; sourceTree = "<group>"; };
+		2548B24CB6CC8ACEA832FD14 /* KaTeX_Script-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Script-Regular.woff2"; sourceTree = "<group>"; };
+		25C5BF0DD4E3B6E5314952BD /* LabOSProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LabOSProtocol.swift; sourceTree = "<group>"; };
+		2BD10C70F83D43B573E95BD6 /* KaTeX_Main-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Main-Regular.woff2"; sourceTree = "<group>"; };
+		2F2A63CE55013CFDE15FACCA /* ProjectsDrawerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectsDrawerView.swift; sourceTree = "<group>"; };
+		3339C56973FA78D4BC9D5B36 /* StreamingMarkdownView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingMarkdownView.swift; sourceTree = "<group>"; };
+		3521D0203F1384F620518026 /* KaTeX_Size3-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Size3-Regular.woff2"; sourceTree = "<group>"; };
+		3A6F2C956353F9F947C4A29D /* github.min.css */ = {isa = PBXFileReference; lastKnownFileType = text.css; path = github.min.css; sourceTree = "<group>"; };
+		3FB7089EA136E78CEE406EBA /* katex.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = katex.min.js; sourceTree = "<group>"; };
+		43263C860C87506E8E6863F3 /* KaTeX_Size1-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Size1-Regular.woff2"; sourceTree = "<group>"; };
+		43ABB14972152AC345AAC0DD /* KaTeX_SansSerif-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_SansSerif-Regular.woff2"; sourceTree = "<group>"; };
+		441902AFE6E3819C81211088 /* KaTeX_AMS-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_AMS-Regular.woff2"; sourceTree = "<group>"; };
+		468108B7F94F98B04905A6E0 /* SessionDeleteSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDeleteSheet.swift; sourceTree = "<group>"; };
+		4B73551CDAFFFCFB66EC92FF /* markdown-math-renderer.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "markdown-math-renderer.js"; sourceTree = "<group>"; };
+		4E4D7C63CBAF7DFA78404613 /* LabOSAppMacStub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LabOSAppMacStub.swift; sourceTree = "<group>"; };
+		53DFC00E56A1723C4B15FA2B /* KaTeX_Size4-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Size4-Regular.woff2"; sourceTree = "<group>"; };
+		547E78AB6156D09E6412924C /* KaTeX_Caligraphic-Bold.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Caligraphic-Bold.woff2"; sourceTree = "<group>"; };
+		56B9EF69E84951CA0AB6889B /* KaTeX_Caligraphic-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Caligraphic-Regular.woff2"; sourceTree = "<group>"; };
+		59F41EE3BD9C29D6B10E3C71 /* NotebookDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookDocument.swift; sourceTree = "<group>"; };
+		5BF81010518D22FF803BA957 /* ArtifactsBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtifactsBrowserView.swift; sourceTree = "<group>"; };
+		5C3D94B9823EF768A81B9B1E /* HighlightedCodeWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HighlightedCodeWebView.swift; sourceTree = "<group>"; };
+		5E56CD77B122B4115B6E2777 /* NotebookPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookPreviewView.swift; sourceTree = "<group>"; };
+		6215F7D415A140E9152CCFD0 /* PlanConfirmationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanConfirmationSheet.swift; sourceTree = "<group>"; };
+		62CE65E4206A9C25DEC9333F /* SessionsDrawerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsDrawerView.swift; sourceTree = "<group>"; };
+		68072333E8448431914BAC24 /* markdown-it.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "markdown-it.min.js"; sourceTree = "<group>"; };
+		73D4585BC5F5526EF14961E1 /* Formatters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Formatters.swift; sourceTree = "<group>"; };
+		74FBD2DE522DB403555DE56A /* AppStoreSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreSettingsTests.swift; sourceTree = "<group>"; };
+		7B4488123F637C3E4BCFE60B /* KaTeX_Main-Bold.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Main-Bold.woff2"; sourceTree = "<group>"; };
+		7DDDB2CD46E24556B9D896F5 /* LabOSCoreTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = LabOSCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		7E0441216B1BBE72A8EB402F /* ArtifactPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtifactPreviewView.swift; sourceTree = "<group>"; };
+		82559E781F62B7DD85CF3B15 /* KaTeX_Fraktur-Bold.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Fraktur-Bold.woff2"; sourceTree = "<group>"; };
+		82647FFDDB9DF9F05D35DD61 /* auto-render.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "auto-render.min.js"; sourceTree = "<group>"; };
+		889DD25ABE8EC1B218AB82E7 /* KaTeX_Math-Italic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Math-Italic.woff2"; sourceTree = "<group>"; };
+		8ADEBF41B77336AD92FB59BD /* MarkdownMathPreprocessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownMathPreprocessor.swift; sourceTree = "<group>"; };
+		8B7ECF3F55555C7D0039EA2E /* AppStoreSemanticsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreSemanticsTests.swift; sourceTree = "<group>"; };
+		8F875C7DCA032C300F110C79 /* python.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = python.min.js; sourceTree = "<group>"; };
+		92CE6023B893EA9183DFA4D1 /* LabOSApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = LabOSApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		9A5C04B5E8665CAB79907795 /* KaTeX_Main-BoldItalic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Main-BoldItalic.woff2"; sourceTree = "<group>"; };
+		9A843BC31C423DF184FB7A9B /* LabOSCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LabOSCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		9E91F2EFED08A9EAE52D3B0E /* r.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = r.min.js; sourceTree = "<group>"; };
+		A626EEC81411153FDA9EA502 /* KaTeX_Fraktur-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Fraktur-Regular.woff2"; sourceTree = "<group>"; };
+		AB2347E8F379C9E6FC6C5508 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		ABC2F7238BE0457330703F6A /* DeepLinkCodecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepLinkCodecTests.swift; sourceTree = "<group>"; };
+		AD868C2720E3412B2648601D /* MarkdownMathView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownMathView.swift; sourceTree = "<group>"; };
+		B91AA911BAEBDD15F8746A2F /* KaTeX_SansSerif-Bold.woff2 */ = {isa = PBXFileReference; path = "KaTeX_SansSerif-Bold.woff2"; sourceTree = "<group>"; };
+		BC6D41CCA6E1CB44F794FEA1 /* LabOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LabOSApp.swift; sourceTree = "<group>"; };
+		BDC64475632A5108467A6488 /* KaTeX_Size2-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Size2-Regular.woff2"; sourceTree = "<group>"; };
+		BEB4C1D7D1F37888E563709C /* GatewayClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayClient.swift; sourceTree = "<group>"; };
+		C108FC01D09EC28BCE24705C /* APIContract.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIContract.swift; sourceTree = "<group>"; };
+		C21B47F7AAFD8B26F87441CC /* KaTeX_Main-Italic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Main-Italic.woff2"; sourceTree = "<group>"; };
+		C626CE4F122874D5518DE926 /* RootContainerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootContainerView.swift; sourceTree = "<group>"; };
+		CF33BCF594E0FEF19FB1D36E /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
+		D1688F834B3194EB65F26759 /* NamePromptSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NamePromptSheet.swift; sourceTree = "<group>"; };
+		D63405BA7CF1863931018509 /* InlineComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineComposerView.swift; sourceTree = "<group>"; };
+		D8058E022BD03DCE69CC0620 /* NotebookDocumentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookDocumentTests.swift; sourceTree = "<group>"; };
+		D92C4BA96A4950420952E8B8 /* SessionChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionChatView.swift; sourceTree = "<group>"; };
+		DA8C11D2397443BB0731D0E8 /* katex.min.css */ = {isa = PBXFileReference; lastKnownFileType = text.css; path = katex.min.css; sourceTree = "<group>"; };
+		E28E7F4F053654746D1F384B /* KaTeX_Typewriter-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Typewriter-Regular.woff2"; sourceTree = "<group>"; };
+		ED08A4B17D2F9D7A624CD9FF /* highlight.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = highlight.min.js; sourceTree = "<group>"; };
+		EF4E725AC2CE9D1BD3596D1E /* SanitizedHTMLWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SanitizedHTMLWebView.swift; sourceTree = "<group>"; };
+		F297B0CFEBA0A68BF3DFEF3F /* MessageBubbleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubbleView.swift; sourceTree = "<group>"; };
+		FB06F26440C88FE19E862F0E /* ProjectPageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectPageView.swift; sourceTree = "<group>"; };
+		FB9F6360C65BCE5F8F085497 /* HubIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubIntegrationTests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		30D3585D6D3F3254B6060DAC /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CFC5AF9552C23D03947C27B9 /* LabOSCore.framework in Frameworks */,
+				ECD30007D702964E34C826AD /* MarkdownUI in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6E8E1BC68885283085FAD026 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				838CBFCB75F2F298D73A23B2 /* LabOSCore.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		18CF09AEEA5BB90EC4A4D8E4 /* Session */ = {
+			isa = PBXGroup;
+			children = (
+				F297B0CFEBA0A68BF3DFEF3F /* MessageBubbleView.swift */,
+				D92C4BA96A4950420952E8B8 /* SessionChatView.swift */,
+			);
+			path = Session;
+			sourceTree = "<group>";
+		};
+		1C99DB2C47D2780DAB8B0939 /* Drawers */ = {
+			isa = PBXGroup;
+			children = (
+				2F2A63CE55013CFDE15FACCA /* ProjectsDrawerView.swift */,
+				62CE65E4206A9C25DEC9333F /* SessionsDrawerView.swift */,
+			);
+			path = Drawers;
+			sourceTree = "<group>";
+		};
+		1F04511109858D2D5A05C9EA /* katex */ = {
+			isa = PBXGroup;
+			children = (
+				82647FFDDB9DF9F05D35DD61 /* auto-render.min.js */,
+				441902AFE6E3819C81211088 /* KaTeX_AMS-Regular.woff2 */,
+				547E78AB6156D09E6412924C /* KaTeX_Caligraphic-Bold.woff2 */,
+				56B9EF69E84951CA0AB6889B /* KaTeX_Caligraphic-Regular.woff2 */,
+				82559E781F62B7DD85CF3B15 /* KaTeX_Fraktur-Bold.woff2 */,
+				A626EEC81411153FDA9EA502 /* KaTeX_Fraktur-Regular.woff2 */,
+				7B4488123F637C3E4BCFE60B /* KaTeX_Main-Bold.woff2 */,
+				9A5C04B5E8665CAB79907795 /* KaTeX_Main-BoldItalic.woff2 */,
+				C21B47F7AAFD8B26F87441CC /* KaTeX_Main-Italic.woff2 */,
+				2BD10C70F83D43B573E95BD6 /* KaTeX_Main-Regular.woff2 */,
+				023A17F1A8FDEC5A4636957E /* KaTeX_Math-BoldItalic.woff2 */,
+				889DD25ABE8EC1B218AB82E7 /* KaTeX_Math-Italic.woff2 */,
+				B91AA911BAEBDD15F8746A2F /* KaTeX_SansSerif-Bold.woff2 */,
+				0BF00E0A8C7D64F3CD08B60A /* KaTeX_SansSerif-Italic.woff2 */,
+				43ABB14972152AC345AAC0DD /* KaTeX_SansSerif-Regular.woff2 */,
+				2548B24CB6CC8ACEA832FD14 /* KaTeX_Script-Regular.woff2 */,
+				43263C860C87506E8E6863F3 /* KaTeX_Size1-Regular.woff2 */,
+				BDC64475632A5108467A6488 /* KaTeX_Size2-Regular.woff2 */,
+				3521D0203F1384F620518026 /* KaTeX_Size3-Regular.woff2 */,
+				53DFC00E56A1723C4B15FA2B /* KaTeX_Size4-Regular.woff2 */,
+				E28E7F4F053654746D1F384B /* KaTeX_Typewriter-Regular.woff2 */,
+				DA8C11D2397443BB0731D0E8 /* katex.min.css */,
+				3FB7089EA136E78CEE406EBA /* katex.min.js */,
+			);
+			path = katex;
+			sourceTree = "<group>";
+		};
+		34189C1E6B0E165807039164 /* Home */ = {
+			isa = PBXGroup;
+			children = (
+				AB2347E8F379C9E6FC6C5508 /* HomeView.swift */,
+			);
+			path = Home;
+			sourceTree = "<group>";
+		};
+		363D0F47E8CCA81D59A1A6EA /* Results */ = {
+			isa = PBXGroup;
+			children = (
+				7E0441216B1BBE72A8EB402F /* ArtifactPreviewView.swift */,
+				5BF81010518D22FF803BA957 /* ArtifactsBrowserView.swift */,
+				5E56CD77B122B4115B6E2777 /* NotebookPreviewView.swift */,
+				159089CD69C77937163DE776 /* ResultsPageView.swift */,
+			);
+			path = Results;
+			sourceTree = "<group>";
+		};
+		3F5083945108B7CD4C76C89D /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				73D4585BC5F5526EF14961E1 /* Formatters.swift */,
+				5C3D94B9823EF768A81B9B1E /* HighlightedCodeWebView.swift */,
+				D63405BA7CF1863931018509 /* InlineComposerView.swift */,
+				8ADEBF41B77336AD92FB59BD /* MarkdownMathPreprocessor.swift */,
+				AD868C2720E3412B2648601D /* MarkdownMathView.swift */,
+				D1688F834B3194EB65F26759 /* NamePromptSheet.swift */,
+				EF4E725AC2CE9D1BD3596D1E /* SanitizedHTMLWebView.swift */,
+				468108B7F94F98B04905A6E0 /* SessionDeleteSheet.swift */,
+				3339C56973FA78D4BC9D5B36 /* StreamingMarkdownView.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		4B71BE6D166B32E8C9F82922 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				92CE6023B893EA9183DFA4D1 /* LabOSApp.app */,
+				9A843BC31C423DF184FB7A9B /* LabOSCore.framework */,
+				7DDDB2CD46E24556B9D896F5 /* LabOSCoreTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		51F207C02BCF649A09C0E656 /* LabOSCore */ = {
+			isa = PBXGroup;
+			children = (
+				C108FC01D09EC28BCE24705C /* APIContract.swift */,
+				CF33BCF594E0FEF19FB1D36E /* AppStore.swift */,
+				145932BF8855354FD1A80F8D /* BackendClient.swift */,
+				158785FA49BA6D68BA47E5A9 /* DeepLink.swift */,
+				BEB4C1D7D1F37888E563709C /* GatewayClient.swift */,
+				12C093E585B2F2E43590E4D3 /* Models.swift */,
+				59F41EE3BD9C29D6B10E3C71 /* NotebookDocument.swift */,
+				89442CB7CD873C8921DA8133 /* Generated */,
+			);
+			name = LabOSCore;
+			path = Sources/LabOSCore;
+			sourceTree = "<group>";
+		};
+		6CA4334797F68D6B247A7B33 /* highlightjs */ = {
+			isa = PBXGroup;
+			children = (
+				ED08A4B17D2F9D7A624CD9FF /* highlight.min.js */,
+				AA9E7591FE8BD686B78BC9BE /* languages */,
+				793BADE7AFFF40E32B42A305 /* styles */,
+			);
+			path = highlightjs;
+			sourceTree = "<group>";
+		};
+		793BADE7AFFF40E32B42A305 /* styles */ = {
+			isa = PBXGroup;
+			children = (
+				0D6DBF2B2CDBD9752C2565E4 /* github-dark.min.css */,
+				3A6F2C956353F9F947C4A29D /* github.min.css */,
+			);
+			path = styles;
+			sourceTree = "<group>";
+		};
+		7F761B4CD0A7ED199B9F2660 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				C626CE4F122874D5518DE926 /* RootContainerView.swift */,
+				1C99DB2C47D2780DAB8B0939 /* Drawers */,
+				34189C1E6B0E165807039164 /* Home */,
+				826DCD5349090F59F3A33AE6 /* Plan */,
+				B097D193C1FC9CECC947B6F8 /* Project */,
+				363D0F47E8CCA81D59A1A6EA /* Results */,
+				18CF09AEEA5BB90EC4A4D8E4 /* Session */,
+				3F5083945108B7CD4C76C89D /* Shared */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		826DCD5349090F59F3A33AE6 /* Plan */ = {
+			isa = PBXGroup;
+			children = (
+				6215F7D415A140E9152CCFD0 /* PlanConfirmationSheet.swift */,
+			);
+			path = Plan;
+			sourceTree = "<group>";
+		};
+		89442CB7CD873C8921DA8133 /* Generated */ = {
+			isa = PBXGroup;
+			children = (
+				25C5BF0DD4E3B6E5314952BD /* LabOSProtocol.swift */,
+			);
+			path = Generated;
+			sourceTree = "<group>";
+		};
+		AA9E7591FE8BD686B78BC9BE /* languages */ = {
+			isa = PBXGroup;
+			children = (
+				8F875C7DCA032C300F110C79 /* python.min.js */,
+				9E91F2EFED08A9EAE52D3B0E /* r.min.js */,
+			);
+			path = languages;
+			sourceTree = "<group>";
+		};
+		B097D193C1FC9CECC947B6F8 /* Project */ = {
+			isa = PBXGroup;
+			children = (
+				FB06F26440C88FE19E862F0E /* ProjectPageView.swift */,
+			);
+			path = Project;
+			sourceTree = "<group>";
+		};
+		CDA0110EDD5709886DA1B069 /* LabOSCoreTests */ = {
+			isa = PBXGroup;
+			children = (
+				8B7ECF3F55555C7D0039EA2E /* AppStoreSemanticsTests.swift */,
+				74FBD2DE522DB403555DE56A /* AppStoreSettingsTests.swift */,
+				ABC2F7238BE0457330703F6A /* DeepLinkCodecTests.swift */,
+				FB9F6360C65BCE5F8F085497 /* HubIntegrationTests.swift */,
+				D8058E022BD03DCE69CC0620 /* NotebookDocumentTests.swift */,
+			);
+			name = LabOSCoreTests;
+			path = Tests/LabOSCoreTests;
+			sourceTree = "<group>";
+		};
+		CEB7E2D094828F9EDC8C0980 /* markdown */ = {
+			isa = PBXGroup;
+			children = (
+				68072333E8448431914BAC24 /* markdown-it.min.js */,
+				4B73551CDAFFFCFB66EC92FF /* markdown-math-renderer.js */,
+			);
+			path = markdown;
+			sourceTree = "<group>";
+		};
+		DE57D5CD28E854155651798E = {
+			isa = PBXGroup;
+			children = (
+				FA8853312FC3B3D9460B1ED8 /* LabOSApp */,
+				51F207C02BCF649A09C0E656 /* LabOSCore */,
+				CDA0110EDD5709886DA1B069 /* LabOSCoreTests */,
+				4B71BE6D166B32E8C9F82922 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		E1CBECEA7919153A38A45FFF /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				6CA4334797F68D6B247A7B33 /* highlightjs */,
+				1F04511109858D2D5A05C9EA /* katex */,
+				CEB7E2D094828F9EDC8C0980 /* markdown */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		F3285B727EC550357B439143 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				BC6D41CCA6E1CB44F794FEA1 /* LabOSApp.swift */,
+				4E4D7C63CBAF7DFA78404613 /* LabOSAppMacStub.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		FA8853312FC3B3D9460B1ED8 /* LabOSApp */ = {
+			isa = PBXGroup;
+			children = (
+				F3285B727EC550357B439143 /* App */,
+				E1CBECEA7919153A38A45FFF /* Resources */,
+				7F761B4CD0A7ED199B9F2660 /* Views */,
+			);
+			name = LabOSApp;
+			path = Sources/LabOSApp;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		7754C18EF1ACFC7C4CBCC957 /* LabOSCoreTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FEC349835628D881C93038E7 /* Build configuration list for PBXNativeTarget "LabOSCoreTests" */;
+			buildPhases = (
+				5F554D59979104EFA253008B /* Sources */,
+				6E8E1BC68885283085FAD026 /* Frameworks */,
+				9D4CF7FF8DB26002BA9C09B4 /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B0BF6FD78CDEC9AC385D205F /* PBXTargetDependency */,
+			);
+			name = LabOSCoreTests;
+			packageProductDependencies = (
+			);
+			productName = LabOSCoreTests;
+			productReference = 7DDDB2CD46E24556B9D896F5 /* LabOSCoreTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		CE3B57FB53F507FC92B79401 /* LabOSCore */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 4FE04F49E5928C97B167A227 /* Build configuration list for PBXNativeTarget "LabOSCore" */;
+			buildPhases = (
+				674C18B3FF2BCB07E27739F4 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = LabOSCore;
+			packageProductDependencies = (
+			);
+			productName = LabOSCore;
+			productReference = 9A843BC31C423DF184FB7A9B /* LabOSCore.framework */;
+			productType = "com.apple.product-type.framework";
+		};
+		FE8BD5589FB4A902380A5E9B /* LabOSApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2703505672B5B95F41167BCF /* Build configuration list for PBXNativeTarget "LabOSApp" */;
+			buildPhases = (
+				E582B1DFF666D95F3A252103 /* Sources */,
+				290DC8CE920D4497C19B642C /* Resources */,
+				30D3585D6D3F3254B6060DAC /* Frameworks */,
+				5F0E829AAA37D49E99013D9E /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				7AD89FCAD237F1770EF18817 /* PBXTargetDependency */,
+			);
+			name = LabOSApp;
+			packageProductDependencies = (
+				458D033A6A936A607513EBFE /* MarkdownUI */,
+			);
+			productName = LabOSApp;
+			productReference = 92CE6023B893EA9183DFA4D1 /* LabOSApp.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		81DF874F6AB2A59FAF67954B /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+			};
+			buildConfigurationList = B9917E52F71000FE8254FF83 /* Build configuration list for PBXProject "LabOS" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = DE57D5CD28E854155651798E;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				1562FF109BB0C67071745882 /* XCRemoteSwiftPackageReference "MarkdownUI" */,
+			);
+			preferredProjectObjectVersion = 77;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				FE8BD5589FB4A902380A5E9B /* LabOSApp */,
+				CE3B57FB53F507FC92B79401 /* LabOSCore */,
+				7754C18EF1ACFC7C4CBCC957 /* LabOSCoreTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		290DC8CE920D4497C19B642C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				323E5F26CFE57FF6AEF54EC6 /* KaTeX_AMS-Regular.woff2 in Resources */,
+				059175377FB51AE655C9900E /* KaTeX_Caligraphic-Bold.woff2 in Resources */,
+				C446ADBE71EEB39A20CD14E1 /* KaTeX_Caligraphic-Regular.woff2 in Resources */,
+				0D2913848BF392040125C00B /* KaTeX_Fraktur-Bold.woff2 in Resources */,
+				BD9B65A52AA069AEE78FCF1F /* KaTeX_Fraktur-Regular.woff2 in Resources */,
+				9E2520F1FCE123621CC01B9B /* KaTeX_Main-Bold.woff2 in Resources */,
+				1B1AFEAB52520295ACBB661C /* KaTeX_Main-BoldItalic.woff2 in Resources */,
+				943C592F0EE7DB0661AC44E7 /* KaTeX_Main-Italic.woff2 in Resources */,
+				FAF7AA77FB3983E211391E16 /* KaTeX_Main-Regular.woff2 in Resources */,
+				A57CF3C8E16286CBE162B438 /* KaTeX_Math-BoldItalic.woff2 in Resources */,
+				DEB70226C019576F71D771D7 /* KaTeX_Math-Italic.woff2 in Resources */,
+				06995E3F8ACCB2805349FAEA /* KaTeX_SansSerif-Bold.woff2 in Resources */,
+				DDBB5AFAB04490E65F43EC6B /* KaTeX_SansSerif-Italic.woff2 in Resources */,
+				D5DFC47EEA755C1F4EBF5908 /* KaTeX_SansSerif-Regular.woff2 in Resources */,
+				6EFAFB4D50249084219EC913 /* KaTeX_Script-Regular.woff2 in Resources */,
+				CEF273A21FAE33C43D4A2A20 /* KaTeX_Size1-Regular.woff2 in Resources */,
+				49C6BE44BAE21640B235DF26 /* KaTeX_Size2-Regular.woff2 in Resources */,
+				E3790E020C8F5630B9ACAA93 /* KaTeX_Size3-Regular.woff2 in Resources */,
+				215F7FD44374892A5BFAB816 /* KaTeX_Size4-Regular.woff2 in Resources */,
+				138A2C99C574ECB137AAADD3 /* KaTeX_Typewriter-Regular.woff2 in Resources */,
+				32641AB44EF6DDB26A152B6B /* auto-render.min.js in Resources */,
+				ED37E6C0F88B55CC8FA15D0F /* github-dark.min.css in Resources */,
+				619ED2679338A920015779E2 /* github.min.css in Resources */,
+				4AA35B45D0B7ABBEFF62FEE8 /* highlight.min.js in Resources */,
+				5A684A338B7C176F9EA3358C /* katex.min.css in Resources */,
+				150740B092B8326EFCA40CDB /* katex.min.js in Resources */,
+				7B29A783D94BC99672B86D9D /* markdown-it.min.js in Resources */,
+				97DC8BCCC264ADF5B7F83D00 /* markdown-math-renderer.js in Resources */,
+				D841A7CCE6CFAC0E9473CE91 /* python.min.js in Resources */,
+				05A61E4BB013E8BBC4ACE416 /* r.min.js in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		5F554D59979104EFA253008B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FF3A95AB3F737068533E6F92 /* AppStoreSemanticsTests.swift in Sources */,
+				5E987905566F09D4F180C266 /* AppStoreSettingsTests.swift in Sources */,
+				55DF02110B1A2C7471985040 /* DeepLinkCodecTests.swift in Sources */,
+				A14B7C4AACA74104F0F3BCA9 /* HubIntegrationTests.swift in Sources */,
+				A659A450F7F399854EC9A515 /* NotebookDocumentTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		674C18B3FF2BCB07E27739F4 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				69BA9ED22289FF9936A22AD5 /* APIContract.swift in Sources */,
+				21C639B2FD960EBEEFE6F12B /* AppStore.swift in Sources */,
+				D0C8A49CEBA0F23A802C3BDE /* BackendClient.swift in Sources */,
+				A41C51299BCE6D56299DA622 /* DeepLink.swift in Sources */,
+				D708C455D571F30B9A325704 /* GatewayClient.swift in Sources */,
+				229E435623611882336A09B7 /* LabOSProtocol.swift in Sources */,
+				CBFDEA2BCBAAE9D66F52A1BE /* Models.swift in Sources */,
+				74B8D2B347B4A376AA874F31 /* NotebookDocument.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E582B1DFF666D95F3A252103 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3957E0AD6C9452ECFEE4098C /* ArtifactPreviewView.swift in Sources */,
+				B735E2ACF5D98D2B9FF2DB73 /* ArtifactsBrowserView.swift in Sources */,
+				A17DF54F863654BF754E9809 /* Formatters.swift in Sources */,
+				B49456594FF5B09309E3A61C /* HighlightedCodeWebView.swift in Sources */,
+				3572C994A2111777E4CF1F3E /* HomeView.swift in Sources */,
+				CE957ACB10348C7F9E7C3C96 /* InlineComposerView.swift in Sources */,
+				B881DE2F319628F4C0EB4E91 /* LabOSApp.swift in Sources */,
+				3B7509A970F8EB8609758D00 /* LabOSAppMacStub.swift in Sources */,
+				738392A701E15F53E3BAE279 /* MarkdownMathPreprocessor.swift in Sources */,
+				4B85659EFDDC3B10DC41B08F /* MarkdownMathView.swift in Sources */,
+				12626AF484CCB849AEAE3F04 /* MessageBubbleView.swift in Sources */,
+				F442EEC9D7685A9CA40307FD /* NamePromptSheet.swift in Sources */,
+				70A837E2A5700B5ED6EE45F4 /* NotebookPreviewView.swift in Sources */,
+				F99E07EA4F5E0A9F8555620F /* PlanConfirmationSheet.swift in Sources */,
+				BA1D4AB0B586E5594A964FE0 /* ProjectPageView.swift in Sources */,
+				E1AD2001D831D093B578E2DD /* ProjectsDrawerView.swift in Sources */,
+				7879A3325E9B8161BCFF565F /* ResultsPageView.swift in Sources */,
+				D7AE25DD04002541D006AF70 /* RootContainerView.swift in Sources */,
+				65CA65EC00527C21549EDDA5 /* SanitizedHTMLWebView.swift in Sources */,
+				17B429444912E3FFCEDD3E2C /* SessionChatView.swift in Sources */,
+				386E1692E146D1D094554CB3 /* SessionDeleteSheet.swift in Sources */,
+				43531B3ED8B98DE7BE35D1C9 /* SessionsDrawerView.swift in Sources */,
+				BB4789CED3582ACF6E5760D9 /* StreamingMarkdownView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		7AD89FCAD237F1770EF18817 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = CE3B57FB53F507FC92B79401 /* LabOSCore */;
+			targetProxy = BBD544C53C16521429EE057F /* PBXContainerItemProxy */;
+		};
+		B0BF6FD78CDEC9AC385D205F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = CE3B57FB53F507FC92B79401 /* LabOSCore */;
+			targetProxy = 27A81D77394F17570FD321DC /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		2A3F2AEA12C7DB3F496173FC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_ASSET_PATHS = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		4AFB388AADEFA3526C2E301D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "";
+				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				GENERATE_INFOPLIST_FILE = YES;
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = labos.LabOSCore;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VERSIONING_SYSTEM = "apple-generic";
+			};
+			name = Release;
+		};
+		552EF8C83F675E4E9A0B217A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = labos.LabOSCoreTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		82EE054996803908043CC398 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_ASSET_PATHS = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		8D3A41FDE4AFDD25C89A031F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIRequiresFullScreen = NO;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = labos.LabOSApp;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		BDF7391D98E0277B2489100F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "";
+				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				GENERATE_INFOPLIST_FILE = YES;
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = labos.LabOSCore;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VERSIONING_SYSTEM = "apple-generic";
+			};
+			name = Debug;
+		};
+		D6C7F54E0299782EEC3978DC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = labos.LabOSCoreTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		E90AFFA078621B84197AADE2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIRequiresFullScreen = NO;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = labos.LabOSApp;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		2703505672B5B95F41167BCF /* Build configuration list for PBXNativeTarget "LabOSApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8D3A41FDE4AFDD25C89A031F /* Debug */,
+				E90AFFA078621B84197AADE2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		4FE04F49E5928C97B167A227 /* Build configuration list for PBXNativeTarget "LabOSCore" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BDF7391D98E0277B2489100F /* Debug */,
+				4AFB388AADEFA3526C2E301D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B9917E52F71000FE8254FF83 /* Build configuration list for PBXProject "LabOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2A3F2AEA12C7DB3F496173FC /* Debug */,
+				82EE054996803908043CC398 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		FEC349835628D881C93038E7 /* Build configuration list for PBXNativeTarget "LabOSCoreTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D6C7F54E0299782EEC3978DC /* Debug */,
+				552EF8C83F675E4E9A0B217A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		1562FF109BB0C67071745882 /* XCRemoteSwiftPackageReference "MarkdownUI" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/gonzalezreal/MarkdownUI.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.4.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		458D033A6A936A607513EBFE /* MarkdownUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1562FF109BB0C67071745882 /* XCRemoteSwiftPackageReference "MarkdownUI" */;
+			productName = MarkdownUI;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 81DF874F6AB2A59FAF67954B /* Project object */;
+}

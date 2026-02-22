@@ -1,0 +1,8 @@
+packages:
+  - packages/*
+  - tools/*
+
+onlyBuiltDependencies:
+  - esbuild
+  - better-sqlite3
+  - protobufjs

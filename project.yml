@@ -1,0 +1,59 @@
+name: LabOS
+options:
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: 0.1.0
+    DEVELOPMENT_ASSET_PATHS: ""
+
+packages:
+  MarkdownUI:
+    url: https://github.com/gonzalezreal/MarkdownUI.git
+    from: 2.4.1
+
+targets:
+  LabOSCore:
+    type: framework
+    platform: iOS
+    sources:
+      - Sources/LabOSCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: labos.LabOSCore
+        GENERATE_INFOPLIST_FILE: YES
+
+  LabOSApp:
+    type: application
+    platform: iOS
+    sources:
+      - Sources/LabOSApp
+    resources:
+      - path: Sources/LabOSApp/Resources
+        type: folder
+    dependencies:
+      - target: LabOSCore
+      - package: MarkdownUI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: labos.LabOSApp
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIRequiresFullScreen: NO
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
+        TARGETED_DEVICE_FAMILY: "1"
+
+  LabOSCoreTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests/LabOSCoreTests
+    dependencies:
+      - target: LabOSCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: labos.LabOSCoreTests
+        GENERATE_INFOPLIST_FILE: YES
