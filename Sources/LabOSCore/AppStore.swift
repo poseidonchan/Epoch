@@ -111,8 +111,8 @@ public final class AppStore: ObservableObject {
     internal var planService: PlanApprovalService!
     internal var chatService: ChatSessionService!
 
-    private var pendingApprovalsBySession: [UUID: PendingApproval] = [:]
-    private var planSessionByPlanID: [UUID: UUID] = [:]
+    internal var pendingApprovalsBySession: [UUID: PendingApproval] = [:]
+    internal var planSessionByPlanID: [UUID: UUID] = [:]
     private struct PendingLocalUserEcho: Sendable {
         var localId: UUID
         var text: String
@@ -160,14 +160,14 @@ public final class AppStore: ObservableObject {
         }
     }
 
-    private struct GatewayUploadResponse: Decodable, Sendable {
+    internal struct GatewayUploadResponse: Decodable, Sendable {
         var uploadId: String
         var path: String
     }
     private var pendingLocalUserEchosBySession: [UUID: [PendingLocalUserEcho]] = [:]
     internal var artifactContentCache: [String: String] = [:]
     internal var artifactDataCache: [String: Data] = [:]
-    private let backend: BackendClient
+    internal let backend: BackendClient
     internal let defaults: UserDefaults
     internal var gatewayClient: GatewayClient?
     private var gatewayEventsTask: Task<Void, Never>?
@@ -175,10 +175,9 @@ public final class AppStore: ObservableObject {
     private var gatewayEnsureConnectedTask: Task<Bool, Never>?
     internal var gatewayDeviceID: UUID = UUID()
     private var resourcesPollTask: Task<Void, Never>?
-    private var observedTerminalRunIDs: Set<UUID> = []
-    private var sessionHistoryRequestsInFlight: Set<UUID> = []
-    private var sessionHistoryLastFetchedAtBySession: [UUID: Date] = [:]
-    private var sessionHistoryPrefetchTasksByProject: [UUID: Task<Void, Never>] = [:]
+    internal var sessionHistoryRequestsInFlight: Set<UUID> = []
+    internal var sessionHistoryLastFetchedAtBySession: [UUID: Date] = [:]
+    internal var sessionHistoryPrefetchTasksByProject: [UUID: Task<Void, Never>] = [:]
     private let sessionHistoryPrefetchCooldown: TimeInterval = 45
     private let sessionHistoryInteractiveFreshnessWindow: TimeInterval = 8
 
@@ -602,7 +601,7 @@ public final class AppStore: ObservableObject {
         }
     }
 
-    private func gatewayHTTPBaseURL() -> URL? {
+    internal func gatewayHTTPBaseURL() -> URL? {
         guard let wsURL = URL(string: gatewayWSURLString) else { return nil }
         var components = URLComponents(url: wsURL, resolvingAgainstBaseURL: false)
         if components?.scheme == "wss" {
@@ -617,91 +616,11 @@ public final class AppStore: ObservableObject {
     }
 
     private func refreshProjectsFromGateway() async {
-        guard let gatewayClient else { return }
-        struct EmptyParams: Codable, Sendable {}
-        do {
-            let res = try await gatewayClient.request(method: "projects.list", params: EmptyParams())
-            let projects: [Project] = try decodeGatewayPayload(res.payload, key: "projects")
-
-            let sorted = projects.sorted { $0.updatedAt > $1.updatedAt }
-            let projectIDs = Set(sorted.map(\.id))
-            self.projects = sorted
-
-            // Keep existing loaded state to avoid visible "flash back" resets while syncing.
-            // Only prune caches for projects that no longer exist remotely.
-            self.sessionsByProject = self.sessionsByProject.filter { projectIDs.contains($0.key) }
-            self.artifactsByProject = self.artifactsByProject.filter { projectIDs.contains($0.key) }
-            self.runsByProject = self.runsByProject.filter { projectIDs.contains($0.key) }
-            for (prefetchProjectID, task) in self.sessionHistoryPrefetchTasksByProject where !projectIDs.contains(prefetchProjectID) {
-                task.cancel()
-                self.sessionHistoryPrefetchTasksByProject[prefetchProjectID] = nil
-            }
-            let validSessionIDs = Set(self.sessionsByProject.values.flatMap { $0.map(\.id) })
-            self.sessionHistoryRequestsInFlight = self.sessionHistoryRequestsInFlight.filter { validSessionIDs.contains($0) }
-            self.sessionHistoryLastFetchedAtBySession = self.sessionHistoryLastFetchedAtBySession.filter { validSessionIDs.contains($0.key) }
-
-            if let activeProjectID, !projectIDs.contains(activeProjectID) {
-                self.activeProjectID = nil
-                self.activeSessionID = nil
-            }
-        } catch {
-            lastGatewayErrorMessage = error.localizedDescription
-            gatewayConnectionState = .failed(message: error.localizedDescription)
-        }
+        await projectService.refreshProjectsFromGateway()
     }
 
     private func refreshProjectFromGateway(projectID: UUID) async {
-        guard let gatewayClient else { return }
-
-        struct SessionsListParams: Codable, Sendable {
-            var projectId: String
-            var includeArchived: Bool
-        }
-        struct ArtifactsListParams: Codable, Sendable {
-            var projectId: String
-            var prefix: String?
-        }
-        struct RunsListParams: Codable, Sendable {
-            var projectId: String
-        }
-
-        do {
-            let sessionsRes = try await gatewayClient.request(
-                method: "sessions.list",
-                params: SessionsListParams(projectId: Self.gatewayID(projectID), includeArchived: true)
-            )
-            let sessions: [Session] = try decodeGatewayPayload(sessionsRes.payload, key: "sessions")
-            sessionsByProject[projectID] = sessions
-            for session in sessions {
-                ensureComposerPrefs(sessionID: session.id)
-            }
-
-            let artifactsRes = try await gatewayClient.request(
-                method: "artifacts.list",
-                params: ArtifactsListParams(projectId: Self.gatewayID(projectID), prefix: nil)
-            )
-            let artifacts: [Artifact] = try decodeGatewayPayload(artifactsRes.payload, key: "artifacts")
-            artifactsByProject[projectID] = artifacts
-
-            let runsRes = try await gatewayClient.request(method: "runs.list", params: RunsListParams(projectId: Self.gatewayID(projectID)))
-            let runs: [RunRecord] = try decodeGatewayPayload(runsRes.payload, key: "runs")
-            let existing = Dictionary(uniqueKeysWithValues: (runsByProject[projectID] ?? []).map { ($0.id, $0) })
-            let merged = runs.map { remote in
-                var updated = remote
-                if let local = existing[remote.id] {
-                    if updated.activity.isEmpty, !local.activity.isEmpty {
-                        updated.activity = local.activity
-                    }
-                    if updated.stepDetails.isEmpty, !local.stepDetails.isEmpty {
-                        updated.stepDetails = local.stepDetails
-                    }
-                }
-                return updated
-            }
-            runsByProject[projectID] = merged
-        } catch {
-            gatewayConnectionState = .failed(message: error.localizedDescription)
-        }
+        await projectService.refreshProjectFromGateway(projectID: projectID)
     }
 
     private func refreshSessionHistoryFromGateway(
@@ -829,9 +748,7 @@ public final class AppStore: ObservableObject {
     }
 
     private func hasActiveRun(projectID: UUID, sessionID: UUID) -> Bool {
-        (runsByProject[projectID] ?? []).contains { run in
-            run.sessionID == sessionID && (run.status == .queued || run.status == .running)
-        }
+        projectService.hasActiveRun(projectID: projectID, sessionID: sessionID)
     }
 
     static func latestAssistantReplyID(in messages: [ChatMessage]) -> UUID? {
@@ -977,61 +894,19 @@ public final class AppStore: ObservableObject {
     }
 
     private func upsertProject(_ project: Project) {
-        if let idx = projects.firstIndex(where: { $0.id == project.id }) {
-            projects[idx] = project
-        } else {
-            projects.insert(project, at: 0)
-        }
+        projectService.upsertProject(project)
     }
 
     private func upsertSession(_ session: Session) {
-        var sessions = sessionsByProject[session.projectID, default: []]
-        if let idx = sessions.firstIndex(where: { $0.id == session.id }) {
-            sessions[idx] = session
-        } else {
-            sessions.insert(session, at: 0)
-        }
-        sessionsByProject[session.projectID] = sessions
-        ensureComposerPrefs(sessionID: session.id)
+        projectService.upsertSession(session)
     }
 
     private func upsertRun(projectID: UUID, run: RunRecord) {
-        var runs = runsByProject[projectID, default: []]
-        var previousRun: RunRecord?
-        var updatedRun = run
-        if let idx = runs.firstIndex(where: { $0.id == run.id }) {
-            var merged = run
-            let existing = runs[idx]
-            previousRun = existing
-            if merged.activity.isEmpty, !existing.activity.isEmpty {
-                merged.activity = existing.activity
-            }
-            if merged.stepDetails.isEmpty, !existing.stepDetails.isEmpty {
-                merged.stepDetails = existing.stepDetails
-            }
-            runs[idx] = merged
-            updatedRun = merged
-        } else {
-            runs.insert(run, at: 0)
-        }
-        runsByProject[projectID] = runs.sorted { $0.initiatedAt > $1.initiatedAt }
-        if let previousRun {
-            emitRunCompletionSignalIfNeeded(projectID: projectID, previousRun: previousRun, updatedRun: updatedRun)
-        }
+        projectService.upsertRun(projectID: projectID, run: run)
     }
 
     private func upsertArtifact(projectID: UUID, artifact: Artifact) {
-        var artifacts = artifactsByProject[projectID, default: []]
-        if let idx = artifacts.firstIndex(where: { $0.path == artifact.path }) {
-            artifacts[idx] = artifact
-        } else {
-            artifacts.append(artifact)
-        }
-        artifactsByProject[projectID] = artifacts.sorted { $0.path < $1.path }
-
-        let key = "\(projectID.uuidString)::\(artifact.path)"
-        artifactContentCache[key] = nil
-        artifactDataCache[key] = nil
+        projectService.upsertArtifactFromEvent(projectID: projectID, artifact: artifact)
     }
 
     private func applyRemoteMessage(sessionID: UUID, message: ChatMessage) {
@@ -1507,13 +1382,7 @@ public final class AppStore: ObservableObject {
     }
 
     private func applyRunLogDelta(_ payload: RunLogDeltaPayload) {
-        guard var runs = runsByProject[payload.projectId] else { return }
-        guard let idx = runs.firstIndex(where: { $0.id == payload.runId }) else { return }
-        let trimmed = payload.delta.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty {
-            runs[idx].logSnippet = trimmed
-        }
-        runsByProject[payload.projectId] = runs
+        projectService.applyRunLogDelta(payload)
     }
 
     public var context: AppContext {
@@ -1607,38 +1476,27 @@ public final class AppStore: ObservableObject {
     }
 
     public func sessions(for projectID: UUID) -> [Session] {
-        let sessions = sessionsByProject[projectID] ?? []
-        return sessions.sorted { lhs, rhs in
-            if lhs.lifecycle != rhs.lifecycle {
-                return lhs.lifecycle == .active
-            }
-            return lhs.updatedAt > rhs.updatedAt
-        }
+        projectService.sessions(for: projectID)
     }
 
     public func artifacts(for projectID: UUID) -> [Artifact] {
-        (artifactsByProject[projectID] ?? []).sorted { $0.path < $1.path }
+        projectService.artifacts(for: projectID)
     }
 
     public func uploadedArtifacts(for projectID: UUID) -> [Artifact] {
-        artifacts(for: projectID).filter { $0.origin == .userUpload }
+        projectService.uploadedArtifacts(for: projectID)
     }
 
     public func generatedArtifacts(for projectID: UUID) -> [Artifact] {
-        artifacts(for: projectID).filter { $0.origin == .generated }
+        projectService.generatedArtifacts(for: projectID)
     }
 
     public func runs(for projectID: UUID) -> [RunRecord] {
-        (runsByProject[projectID] ?? []).sorted { $0.initiatedAt > $1.initiatedAt }
+        projectService.runs(for: projectID)
     }
 
     public func run(runID: UUID) -> RunRecord? {
-        for runs in runsByProject.values {
-            if let matched = runs.first(where: { $0.id == runID }) {
-                return matched
-            }
-        }
-        return nil
+        projectService.run(runID: runID)
     }
 
     public func messages(for sessionID: UUID) -> [ChatMessage] {
@@ -1972,118 +1830,19 @@ public final class AppStore: ObservableObject {
 
     @discardableResult
     public func createProject(name: String) async -> Project? {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finalName = trimmed.isEmpty ? "Untitled Project" : trimmed
-
-        if isGatewayConfigured {
-            if !isGatewayConnected {
-                let connected = await ensureGatewayConnectedForChat()
-                guard connected else { return nil }
-            }
-
-            guard isGatewayConnected, let gatewayClient else { return nil }
-            struct Params: Codable, Sendable { var name: String }
-            do {
-                let res = try await gatewayClient.request(method: "projects.create", params: Params(name: finalName))
-                let project: Project = try decodeGatewayPayload(res.payload, key: "project")
-                upsertProject(project)
-                sessionsByProject[project.id] = sessionsByProject[project.id] ?? []
-                artifactsByProject[project.id] = artifactsByProject[project.id] ?? []
-                runsByProject[project.id] = runsByProject[project.id] ?? []
-                activeProjectID = project.id
-                activeSessionID = nil
-                return project
-            } catch {
-                gatewayConnectionState = .failed(message: error.localizedDescription)
-                lastGatewayErrorMessage = error.localizedDescription
-                return nil
-            }
-        }
-
-        let project = Project(name: finalName)
-        projects.insert(project, at: 0)
-        sessionsByProject[project.id] = []
-        artifactsByProject[project.id] = []
-        runsByProject[project.id] = []
-
-        activeProjectID = project.id
-        activeSessionID = nil
-        return project
+        await projectService.createProject(name: name)
     }
 
     public func renameProject(projectID: UUID, newName: String) {
-        guard let index = projects.firstIndex(where: { $0.id == projectID }) else { return }
-        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        if isGatewayConnected, let gatewayClient {
-            struct Params: Codable, Sendable {
-                var projectId: String
-                var name: String
-            }
-            Task {
-                _ = try? await gatewayClient.request(method: "projects.rename", params: Params(projectId: Self.gatewayID(projectID), name: trimmed))
-            }
-        }
-
-        projects[index].name = trimmed
-        projects[index].updatedAt = .now
+        projectService.renameProject(projectID: projectID, newName: newName)
     }
 
     public func deleteProject(projectID: UUID) {
-        if isGatewayConnected, let gatewayClient {
-            struct Params: Codable, Sendable { var projectId: String }
-            Task {
-                _ = try? await gatewayClient.request(method: "projects.delete", params: Params(projectId: Self.gatewayID(projectID)))
-            }
-            removeProjectLocally(projectID: projectID)
-            return
-        }
-
-        removeProjectLocally(projectID: projectID)
+        projectService.deleteProject(projectID: projectID)
     }
 
-	    private func removeProjectLocally(projectID: UUID) {
-        let removedSessionIDs = Set((sessionsByProject[projectID] ?? []).map(\.id))
-
-        projects.removeAll { $0.id == projectID }
-        sessionsByProject[projectID] = nil
-        artifactsByProject[projectID] = nil
-        runsByProject[projectID] = nil
-
-	        for sessionID in removedSessionIDs {
-	            messagesBySession[sessionID] = nil
-            composerService.pruneAttachmentPayloads(for: sessionID, keptMessageIDs: [])
-            pendingApprovalsBySession[sessionID] = nil
-            livePlanBySession[sessionID] = nil
-            liveAgentEventsBySession[sessionID] = nil
-            activeInlineProcessBySession[sessionID] = nil
-            sessionContextBySession[sessionID] = nil
-            permissionLevelBySession[sessionID] = nil
-            planModeEnabledBySession[sessionID] = nil
-            selectedModelIdBySession[sessionID] = nil
-            selectedThinkingLevelBySession[sessionID] = nil
-            sessionHistoryRequestsInFlight.remove(sessionID)
-            sessionHistoryLastFetchedAtBySession[sessionID] = nil
-        }
-        persistedProcessSummaryByMessageID = persistedProcessSummaryByMessageID.filter { summary in
-            !removedSessionIDs.contains(summary.value.sessionID)
-        }
-        for (planID, sessionID) in planSessionByPlanID where removedSessionIDs.contains(sessionID) {
-            planSessionByPlanID[planID] = nil
-        }
-
-        sessionHistoryPrefetchTasksByProject[projectID]?.cancel()
-        sessionHistoryPrefetchTasksByProject[projectID] = nil
-
-        if activeProjectID == projectID {
-            activeProjectID = nil
-            activeSessionID = nil
-            isLeftPanelOpen = false
-            isRightPanelOpen = false
-            selectedArtifactPath = nil
-            selectedRunID = nil
-        }
+    private func removeProjectLocally(projectID: UUID) {
+        projectService.removeProjectLocally(projectID: projectID)
     }
 
     public func openProject(projectID: UUID) {
@@ -2130,75 +1889,7 @@ public final class AppStore: ObservableObject {
 
     @discardableResult
     public func createSession(projectID: UUID, title: String? = nil) async -> Session? {
-        if isGatewayConfigured {
-            // Capture a stable local name before any gateway sync potentially replaces `projects`.
-            // This is important for mapping local-only projects to a remote project by name.
-            let fallbackProjectName = projects.first(where: { $0.id == projectID })?.name
-
-            if !isGatewayConnected {
-                let connected = await ensureGatewayConnectedForChat()
-                guard connected else { return nil }
-            }
-
-            guard isGatewayConnected, let gatewayClient else { return nil }
-            struct Params: Codable, Sendable {
-                var projectId: String
-                var title: String?
-            }
-
-            var effectiveProjectID = projectID
-            var retriedWithResolvedProject = false
-
-            while true {
-                do {
-                    let res = try await gatewayClient.request(
-                        method: "sessions.create",
-                        params: Params(projectId: Self.gatewayID(effectiveProjectID), title: title)
-                    )
-                    let session: Session = try decodeGatewayPayload(res.payload, key: "session")
-                    lastGatewayErrorMessage = nil
-                    upsertSession(session)
-                    messagesBySession[session.id] = messagesBySession[session.id] ?? []
-                    activeProjectID = session.projectID
-                    activeSessionID = session.id
-                    return session
-                } catch {
-                    if !retriedWithResolvedProject,
-                       isGatewayProjectNotFoundError(error),
-                       let resolvedProjectID = await resolveGatewayProjectIDForCreate(
-                           requestedProjectID: projectID,
-                           fallbackProjectName: fallbackProjectName
-                       ) {
-                        retriedWithResolvedProject = true
-                        effectiveProjectID = resolvedProjectID
-                        continue
-                    }
-
-                    if shouldSetGatewayFailedState(for: error) {
-                        lastGatewayErrorMessage = error.localizedDescription
-                        gatewayConnectionState = .failed(message: error.localizedDescription)
-                    } else {
-                        lastGatewayErrorMessage = error.localizedDescription
-                    }
-                    return nil
-                }
-            }
-        }
-
-        guard projects.contains(where: { $0.id == projectID }) else { return nil }
-
-        // Local-only mode for demo/testing when gateway is not configured.
-        let sessionCount = (sessionsByProject[projectID] ?? []).count + 1
-        let finalTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let session = Session(projectID: projectID, title: finalTitle?.isEmpty == false ? finalTitle! : "Session \(sessionCount)")
-
-        sessionsByProject[projectID, default: []].insert(session, at: 0)
-        messagesBySession[session.id] = []
-
-        activeProjectID = projectID
-        activeSessionID = session.id
-        ensureComposerPrefs(sessionID: session.id)
-        return session
+        await projectService.createSession(projectID: projectID, title: title)
     }
 
     public func createSessionAndSend(projectID: UUID, firstMessage: String) {
@@ -2210,306 +1901,37 @@ public final class AppStore: ObservableObject {
     }
 
     public func uploadProjectFiles(projectID: UUID, files: [ProjectUploadFile], createdBySessionID: UUID?) async {
-        guard projects.contains(where: { $0.id == projectID }) else { return }
-
-        let cleaned = files.compactMap { file -> ProjectUploadFile? in
-            let name = sanitizeUploadFileName(file.fileName)
-            guard !name.isEmpty, !file.data.isEmpty else { return nil }
-            return ProjectUploadFile(fileName: name, data: file.data, mimeType: file.mimeType)
-        }
-        guard !cleaned.isEmpty else { return }
-
-        if isGatewayConnected, gatewayHTTPBaseURL() != nil {
-            for file in cleaned {
-                let optimisticPath = "uploads/\(file.fileName)"
-                _ = upsertArtifact(
-                    projectID: projectID,
-                    path: optimisticPath,
-                    createdBySessionID: createdBySessionID,
-                    origin: .userUpload,
-                    sizeBytes: file.data.count,
-                    indexStatus: .processing,
-                    indexSummary: nil,
-                    indexedAt: nil
-                )
-
-                do {
-                    let response = try await uploadProjectFileToGateway(projectID: projectID, file: file)
-                    if response.path != optimisticPath {
-                        if var artifacts = artifactsByProject[projectID] {
-                            artifacts.removeAll { $0.path == optimisticPath }
-                            artifactsByProject[projectID] = artifacts
-                        }
-                    }
-                    _ = upsertArtifact(
-                        projectID: projectID,
-                        path: response.path,
-                        createdBySessionID: createdBySessionID,
-                        origin: .userUpload,
-                        sizeBytes: file.data.count,
-                        indexStatus: .processing,
-                        indexSummary: nil,
-                        indexedAt: nil
-                    )
-                } catch {
-                    lastGatewayErrorMessage = error.localizedDescription
-                    _ = upsertArtifact(
-                        projectID: projectID,
-                        path: optimisticPath,
-                        createdBySessionID: createdBySessionID,
-                        origin: .userUpload,
-                        sizeBytes: file.data.count,
-                        indexStatus: .failed,
-                        indexSummary: error.localizedDescription,
-                        indexedAt: nil
-                    )
-                }
-            }
-        } else {
-            addUploadedFiles(projectID: projectID, fileNames: cleaned.map(\.fileName), createdBySessionID: createdBySessionID)
-        }
-
-        if let projectIndex = projects.firstIndex(where: { $0.id == projectID }) {
-            projects[projectIndex].updatedAt = .now
-        }
+        await projectService.uploadProjectFiles(projectID: projectID, files: files, createdBySessionID: createdBySessionID)
     }
 
     public func addUploadedFiles(projectID: UUID, fileNames: [String], createdBySessionID: UUID?) {
-        guard projects.contains(where: { $0.id == projectID }) else { return }
-
-        let cleaned = fileNames
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-
-        guard !cleaned.isEmpty else { return }
-
-        for name in cleaned {
-            let fileName = URL(fileURLWithPath: name).lastPathComponent
-            guard !fileName.isEmpty else { continue }
-
-            let path = "uploads/\(fileName)"
-            _ = upsertArtifact(
-                projectID: projectID,
-                path: path,
-                createdBySessionID: createdBySessionID,
-                origin: .userUpload,
-                indexStatus: .processing
-            )
-        }
-
-        if let projectIndex = projects.firstIndex(where: { $0.id == projectID }) {
-            projects[projectIndex].updatedAt = .now
-        }
+        projectService.addUploadedFiles(projectID: projectID, fileNames: fileNames, createdBySessionID: createdBySessionID)
     }
 
     public func removeUploadedFile(projectID: UUID, path: String) {
-        guard projects.contains(where: { $0.id == projectID }) else { return }
-
-        if var artifacts = artifactsByProject[projectID] {
-            guard artifacts.first(where: { $0.path == path })?.origin == .userUpload else { return }
-            artifacts.removeAll { $0.path == path }
-            artifactsByProject[projectID] = artifacts
-        }
-
-        if var runs = runsByProject[projectID] {
-            for idx in runs.indices {
-                runs[idx].producedArtifactPaths.removeAll { $0 == path }
-            }
-            runsByProject[projectID] = runs
-        }
-
-        if selectedArtifactPath == path {
-            selectedArtifactPath = nil
-        }
-        if highlightedArtifactPath == path {
-            highlightedArtifactPath = nil
-        }
-
-        artifactContentCache["\(projectID.uuidString)::\(path)"] = nil
-        artifactDataCache["\(projectID.uuidString)::\(path)"] = nil
-
-        if let projectIndex = projects.firstIndex(where: { $0.id == projectID }) {
-            projects[projectIndex].updatedAt = .now
-        }
+        projectService.removeUploadedFile(projectID: projectID, path: path)
     }
 
-    private func sanitizeUploadFileName(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            return "upload-\(UUID().uuidString.prefix(8)).bin"
-        }
-        let lastPath = URL(fileURLWithPath: trimmed).lastPathComponent
-        let cleaned = lastPath
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "\\", with: "_")
-        return cleaned.isEmpty ? "upload-\(UUID().uuidString.prefix(8)).bin" : cleaned
-    }
-
-    private func uploadProjectFileToGateway(projectID: UUID, file: ProjectUploadFile) async throws -> GatewayUploadResponse {
-        guard let base = gatewayHTTPBaseURL() else {
-            throw NSError(domain: "LabOS", code: -1, userInfo: [NSLocalizedDescriptionKey: "Gateway URL is not configured"])
-        }
-
-        let boundary = "Boundary-\(UUID().uuidString)"
-        var req = URLRequest(url: base.appendingPathComponent("projects/\(projectID.uuidString)/uploads"))
-        req.httpMethod = "POST"
-        req.setValue("Bearer \(gatewayToken)", forHTTPHeaderField: "Authorization")
-        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        req.httpBody = multipartFormDataBody(file: file, boundary: boundary)
-
-        let (data, response) = try await URLSession.shared.data(for: req)
-        guard let http = response as? HTTPURLResponse else {
-            throw NSError(domain: "LabOS", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unexpected upload response"])
-        }
-        guard (200...299).contains(http.statusCode) else {
-            let serverMessage = String(data: data, encoding: .utf8) ?? "Upload failed"
-            throw NSError(
-                domain: "LabOS",
-                code: http.statusCode,
-                userInfo: [NSLocalizedDescriptionKey: "Upload failed (\(http.statusCode)): \(serverMessage)"]
-            )
-        }
-
-        return try gatewayJSONDecoder.decode(GatewayUploadResponse.self, from: data)
-    }
-
-    private func multipartFormDataBody(file: ProjectUploadFile, boundary: String) -> Data {
-        var body = Data()
-        let lineBreak = "\r\n"
-        let safeName = sanitizeUploadFileName(file.fileName)
-        let mimeType = file.mimeType ?? "application/octet-stream"
-
-        body.append(Data("--\(boundary)\(lineBreak)".utf8))
-        body.append(Data("Content-Disposition: form-data; name=\"file\"; filename=\"\(safeName)\"\(lineBreak)".utf8))
-        body.append(Data("Content-Type: \(mimeType)\(lineBreak)\(lineBreak)".utf8))
-        body.append(file.data)
-        body.append(Data(lineBreak.utf8))
-        body.append(Data("--\(boundary)--\(lineBreak)".utf8))
-        return body
-    }
 
     public func renameSession(projectID: UUID, sessionID: UUID, newTitle: String) {
-        guard var sessions = sessionsByProject[projectID],
-              let index = sessions.firstIndex(where: { $0.id == sessionID })
-        else { return }
-
-        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        if isGatewayConnected, let gatewayClient {
-            struct Params: Codable, Sendable {
-                var projectId: String
-                var sessionId: String
-                var title: String
-            }
-            Task {
-                _ = try? await gatewayClient.request(
-                    method: "sessions.update",
-                    params: Params(projectId: Self.gatewayID(projectID), sessionId: Self.gatewayID(sessionID), title: trimmed)
-                )
-            }
-        }
-
-        sessions[index].title = trimmed
-        sessions[index].updatedAt = .now
-        sessionsByProject[projectID] = sessions
+        projectService.renameSession(projectID: projectID, sessionID: sessionID, newTitle: newTitle)
     }
 
     public func archiveSession(projectID: UUID, sessionID: UUID) {
-        if isGatewayConnected, let gatewayClient {
-            struct Params: Codable, Sendable {
-                var projectId: String
-                var sessionId: String
-                var lifecycle: String
-            }
-            Task {
-                _ = try? await gatewayClient.request(
-                    method: "sessions.update",
-                    params: Params(projectId: Self.gatewayID(projectID), sessionId: Self.gatewayID(sessionID), lifecycle: "archived")
-                )
-            }
-        }
-
-        setSessionLifecycle(projectID: projectID, sessionID: sessionID, lifecycle: .archived)
-        if activeSessionID == sessionID {
-            activeSessionID = nil
-        }
+        projectService.archiveSession(projectID: projectID, sessionID: sessionID)
     }
 
     public func unarchiveSession(projectID: UUID, sessionID: UUID) {
-        if isGatewayConnected, let gatewayClient {
-            struct Params: Codable, Sendable {
-                var projectId: String
-                var sessionId: String
-                var lifecycle: String
-            }
-            Task {
-                _ = try? await gatewayClient.request(
-                    method: "sessions.update",
-                    params: Params(projectId: Self.gatewayID(projectID), sessionId: Self.gatewayID(sessionID), lifecycle: "active")
-                )
-            }
-        }
-
-        setSessionLifecycle(projectID: projectID, sessionID: sessionID, lifecycle: .active)
+        projectService.unarchiveSession(projectID: projectID, sessionID: sessionID)
     }
 
     // Session deletion removes conversation state only. Project artifacts remain untouched.
     public func deleteSession(projectID: UUID, sessionID: UUID) {
-        if isGatewayConnected, let gatewayClient {
-            struct Params: Codable, Sendable {
-                var projectId: String
-                var sessionId: String
-            }
-            Task {
-                _ = try? await gatewayClient.request(
-                    method: "sessions.delete",
-                    params: Params(projectId: Self.gatewayID(projectID), sessionId: Self.gatewayID(sessionID))
-                )
-            }
-            removeSessionLocally(projectID: projectID, sessionID: sessionID)
-            return
-        }
-
-        removeSessionLocally(projectID: projectID, sessionID: sessionID)
+        projectService.deleteSession(projectID: projectID, sessionID: sessionID)
     }
 
     private func removeSessionLocally(projectID: UUID, sessionID: UUID) {
-        guard var sessions = sessionsByProject[projectID] else { return }
-        sessions.removeAll { $0.id == sessionID }
-        sessionsByProject[projectID] = sessions
-
-        messagesBySession[sessionID] = nil
-        composerService.pruneAttachmentPayloads(for: sessionID, keptMessageIDs: [])
-        pendingApprovalsBySession[sessionID] = nil
-        livePlanBySession[sessionID] = nil
-        liveAgentEventsBySession[sessionID] = nil
-        activeInlineProcessBySession[sessionID] = nil
-        persistedProcessSummaryByMessageID = persistedProcessSummaryByMessageID.filter { summary in
-            summary.value.sessionID != sessionID
-        }
-        sessionContextBySession[sessionID] = nil
-        permissionLevelBySession[sessionID] = nil
-        planModeEnabledBySession[sessionID] = nil
-        selectedModelIdBySession[sessionID] = nil
-        selectedThinkingLevelBySession[sessionID] = nil
-        pendingComposerAttachmentsBySession[sessionID] = nil
-        sessionHistoryRequestsInFlight.remove(sessionID)
-        sessionHistoryLastFetchedAtBySession[sessionID] = nil
-        for (planID, mappedSessionID) in planSessionByPlanID where mappedSessionID == sessionID {
-            planSessionByPlanID[planID] = nil
-        }
-
-        if var runs = runsByProject[projectID] {
-            for index in runs.indices where runs[index].sessionID == sessionID {
-                runs[index].sessionID = nil
-            }
-            runsByProject[projectID] = runs
-        }
-
-        if activeSessionID == sessionID {
-            activeSessionID = nil
-        }
+        projectService.removeSessionLocally(projectID: projectID, sessionID: sessionID)
     }
 
     private func makeSessionAttachmentReferences(
@@ -2807,17 +2229,17 @@ public final class AppStore: ObservableObject {
         }
     }
 
-    private func isGatewayProjectNotFoundError(_ error: Error) -> Bool {
+    func isGatewayProjectNotFoundError(_ error: Error) -> Bool {
         let lower = error.localizedDescription.lowercased()
         return lower.contains("project") && (lower.contains("not found") || lower.contains("cannot find"))
     }
 
-    private func isGatewaySessionNotFoundError(_ error: Error) -> Bool {
+    func isGatewaySessionNotFoundError(_ error: Error) -> Bool {
         let lower = error.localizedDescription.lowercased()
         return lower.contains("session") && lower.contains("not found")
     }
 
-    private func shouldSetGatewayFailedState(for error: Error) -> Bool {
+    func shouldSetGatewayFailedState(for error: Error) -> Bool {
         let lower = error.localizedDescription.lowercased()
         if lower.contains("not found") || lower.contains("cannot find") {
             return false
@@ -2828,7 +2250,7 @@ public final class AppStore: ObservableObject {
         return true
     }
 
-    private func resolveGatewayProjectIDForCreate(
+    func resolveGatewayProjectIDForCreate(
         requestedProjectID: UUID,
         fallbackProjectName: String?
     ) async -> UUID? {
@@ -2881,7 +2303,7 @@ public final class AppStore: ObservableObject {
         return nil
     }
 
-    private func createGatewayProjectForMissingLocalProject(name: String) async -> UUID? {
+    func createGatewayProjectForMissingLocalProject(name: String) async -> UUID? {
         guard isGatewayConnected, let gatewayClient else { return nil }
 
         struct Params: Codable, Sendable {
@@ -3048,73 +2470,18 @@ public final class AppStore: ObservableObject {
     }
 
     public func runLabel(for run: RunRecord) -> String {
-        switch run.status {
-        case .queued:
-            return "Queued"
-        case .running:
-            return "Running step \(run.currentStep)/\(max(run.totalSteps, 1))"
-        case .succeeded:
-            return "Succeeded"
-        case .failed:
-            return "Failed"
-        case .canceled:
-            return "Canceled"
-        }
+        projectService.runLabel(for: run)
     }
 
     public func fetchArtifactContent(projectID: UUID, path: String) async -> String {
-        let key = "\(projectID.uuidString)::\(path)"
-        if let cached = artifactContentCache[key] {
-            return cached
-        }
-
-        if isGatewayConnected, let base = gatewayHTTPBaseURL() {
-            var components = URLComponents(url: base.appendingPathComponent("projects/\(projectID.uuidString)/artifacts/content"), resolvingAgainstBaseURL: false)
-            components?.queryItems = [URLQueryItem(name: "path", value: path)]
-            if let url = components?.url {
-                var req = URLRequest(url: url)
-                req.setValue("Bearer \(gatewayToken)", forHTTPHeaderField: "Authorization")
-                if let (data, _) = try? await URLSession.shared.data(for: req) {
-                    let content = String(decoding: data, as: UTF8.self)
-                    artifactContentCache[key] = content
-                    return content
-                }
-            }
-        }
-
-        let content = await backend.fetchArtifactContent(projectID: projectID, path: path)
-        artifactContentCache[key] = content
-        return content
+        await projectService.fetchArtifactContent(projectID: projectID, path: path)
     }
 
-    public func fetchArtifactData(projectID: UUID, path: String) async -> Data? {
-        let key = "\(projectID.uuidString)::\(path)"
-        if let cached = artifactDataCache[key] {
-            return cached
-        }
-
-        guard isGatewayConnected, let base = gatewayHTTPBaseURL() else { return nil }
-
-        var components = URLComponents(url: base.appendingPathComponent("projects/\(projectID.uuidString)/artifacts/raw"), resolvingAgainstBaseURL: false)
-        components?.queryItems = [URLQueryItem(name: "path", value: path)]
-        guard let url = components?.url else { return nil }
-
-        var req = URLRequest(url: url)
-        req.setValue("Bearer \(gatewayToken)", forHTTPHeaderField: "Authorization")
-
-        do {
-            let (data, response) = try await URLSession.shared.data(for: req)
-            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                return nil
-            }
-            artifactDataCache[key] = data
-            return data
-        } catch {
-            return nil
-        }
+        public func fetchArtifactData(projectID: UUID, path: String) async -> Data? {
+        await projectService.fetchArtifactData(projectID: projectID, path: path)
     }
 
-    private func applyAssistantResponse(projectID: UUID, sessionID: UUID, response: AssistantResponse) {
+        private func applyAssistantResponse(projectID: UUID, sessionID: UUID, response: AssistantResponse) {
         clearLiveAgentEvents(sessionID: sessionID)
         let assistant = ChatMessage(
             sessionID: sessionID,
@@ -3264,96 +2631,23 @@ public final class AppStore: ObservableObject {
         indexSummary: String? = nil,
         indexedAt: Date? = nil
     ) -> Artifact {
-        var artifacts = artifactsByProject[projectID, default: []]
-
-        if let idx = artifacts.firstIndex(where: { $0.path == path }) {
-            artifacts[idx].modifiedAt = .now
-            artifacts[idx].createdBySessionID = createdBySessionID
-            artifacts[idx].origin = origin
-            if let sizeBytes {
-                artifacts[idx].sizeBytes = max(sizeBytes, 0)
-            }
-            if let indexStatus {
-                artifacts[idx].indexStatus = indexStatus
-                if indexStatus == .processing {
-                    artifacts[idx].indexSummary = nil
-                    artifacts[idx].indexedAt = nil
-                }
-            }
-            if let indexSummary {
-                artifacts[idx].indexSummary = indexSummary
-            }
-            if let indexedAt {
-                artifacts[idx].indexedAt = indexedAt
-            }
-            let updated = artifacts[idx]
-            artifactsByProject[projectID] = artifacts
-            return updated
-        }
-
-        let artifact = Artifact(
+        projectService.upsertArtifact(
             projectID: projectID,
             path: path,
-            origin: origin,
-            sizeBytes: sizeBytes ?? Int.random(in: 4_096...980_000),
             createdBySessionID: createdBySessionID,
+            origin: origin,
+            sizeBytes: sizeBytes,
             indexStatus: indexStatus,
             indexSummary: indexSummary,
             indexedAt: indexedAt
         )
-        artifacts.append(artifact)
-        artifactsByProject[projectID] = artifacts
-        return artifact
     }
 
     private func mutateRun(projectID: UUID, runID: UUID, mutate: (inout RunRecord) -> Void) {
-        guard var runs = runsByProject[projectID],
-              let idx = runs.firstIndex(where: { $0.id == runID })
-        else {
-            return
-        }
-
-        let previous = runs[idx]
-        mutate(&runs[idx])
-        let updated = runs[idx]
-        runsByProject[projectID] = runs
-        emitRunCompletionSignalIfNeeded(projectID: projectID, previousRun: previous, updatedRun: updated)
+        projectService.mutateRun(projectID: projectID, runID: runID, mutate: mutate)
     }
 
-    private static func isTerminalRunStatus(_ status: RunStatus) -> Bool {
-        switch status {
-        case .succeeded, .failed, .canceled:
-            return true
-        case .queued, .running:
-            return false
-        }
-    }
 
-    private func emitRunCompletionSignalIfNeeded(projectID: UUID, previousRun: RunRecord, updatedRun: RunRecord) {
-        guard !Self.isTerminalRunStatus(previousRun.status),
-              Self.isTerminalRunStatus(updatedRun.status)
-        else {
-            return
-        }
-
-        guard runCompletionNotificationsEnabled else {
-            return
-        }
-
-        guard observedTerminalRunIDs.insert(updatedRun.id).inserted else {
-            return
-        }
-
-        let projectName = projects.first(where: { $0.id == projectID })?.name ?? "LabOS Project"
-        latestRunCompletionSignal = RunCompletionSignal(
-            projectID: projectID,
-            runID: updatedRun.id,
-            sessionID: updatedRun.sessionID,
-            projectName: projectName,
-            status: updatedRun.status,
-            completedAt: updatedRun.completedAt ?? .now
-        )
-    }
 
     private func ensureComposerPrefs(sessionID: UUID) {
         composerService.ensureComposerPrefs(sessionID: sessionID)
@@ -3364,24 +2658,11 @@ public final class AppStore: ObservableObject {
     }
 
     private func setSessionLifecycle(projectID: UUID, sessionID: UUID, lifecycle: SessionLifecycle) {
-        guard var sessions = sessionsByProject[projectID],
-              let idx = sessions.firstIndex(where: { $0.id == sessionID })
-        else { return }
-
-        sessions[idx].lifecycle = lifecycle
-        sessions[idx].updatedAt = .now
-        sessionsByProject[projectID] = sessions
+        projectService.setSessionLifecycle(projectID: projectID, sessionID: sessionID, lifecycle: lifecycle)
     }
 
     private func setTemporaryArtifactHighlight(_ path: String) {
-        highlightedArtifactPath = path
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3))
-            guard let self, self.highlightedArtifactPath == path else { return }
-            await MainActor.run {
-                self.highlightedArtifactPath = nil
-            }
-        }
+        projectService.setTemporaryArtifactHighlight(path)
     }
 
     private func seedDemoData() {
@@ -3544,20 +2825,14 @@ public final class AppStore: ObservableObject {
         summary: String,
         detail: String
     ) {
-        let event = RunActionEvent(type: type, summary: summary, detail: detail)
-        mutateRun(projectID: projectID, runID: runID) { run in
-            run.activity.append(event)
-        }
-        let body = detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? summary
-            : "\(summary)\n\(detail)"
-
-        let message = ChatMessage(
+        projectService.appendRunActivity(
+            projectID: projectID,
+            runID: runID,
             sessionID: sessionID,
-            role: .tool,
-            text: body
+            type: type,
+            summary: summary,
+            detail: detail
         )
-        messagesBySession[sessionID, default: []].append(message)
     }
 
     private func finalReportText(runID: UUID, stepCount: Int, outputPaths: [String]) -> String {
