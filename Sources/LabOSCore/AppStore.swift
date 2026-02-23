@@ -111,8 +111,6 @@ public final class AppStore: ObservableObject {
     internal var planService: PlanApprovalService!
     internal var chatService: ChatSessionService!
 
-    internal var pendingApprovalsBySession: [UUID: PendingApproval] = [:]
-    internal var planSessionByPlanID: [UUID: UUID] = [:]
     private struct PendingLocalUserEcho: Sendable {
         var localId: UUID
         var text: String
@@ -547,8 +545,8 @@ public final class AppStore: ObservableObject {
         gatewayClient?.disconnect()
         gatewayClient = nil
         gatewayConnectionState = .disconnected
-        pendingApprovalsBySession.removeAll()
-        planSessionByPlanID.removeAll()
+        planService.pendingApprovalsBySession.removeAll()
+        planService.planSessionByPlanID.removeAll()
         livePlanBySession.removeAll()
         liveAgentEventsBySession.removeAll()
         activeInlineProcessBySession.removeAll()
@@ -861,23 +859,10 @@ public final class AppStore: ObservableObject {
 	            )
 
 	        case let .approvalRequested(payload):
-	            let pending = PendingApproval(
-	                planId: payload.planId,
-                projectId: payload.projectId,
-                sessionId: payload.sessionId,
-                agentRunId: payload.agentRunId,
-                plan: payload.plan,
-                required: payload.required,
-                judgment: payload.judgment
-            )
-            pendingApprovalsBySession[payload.sessionId] = pending
-            planSessionByPlanID[payload.planId] = payload.sessionId
+            planService.handleApprovalRequested(payload)
 
-        case let .approvalResolved(planID, _):
-            if let sessionID = planSessionByPlanID[planID] {
-                pendingApprovalsBySession[sessionID] = nil
-            }
-            planSessionByPlanID[planID] = nil
+        case let .approvalResolved(planID, decision):
+            planService.handleApprovalResolved(planID: planID, decision: decision)
 
         case let .runsUpdated(projectID, run, change: _):
             upsertRun(projectID: projectID, run: run)
@@ -1004,7 +989,7 @@ public final class AppStore: ObservableObject {
         let summary = payload.summary.isEmpty ? "\(payload.tool) · \(payload.phase)" : payload.summary
         let detail = formattedJSONDetail(payload.detail)
         if let runID = payload.runId {
-            mutateRun(projectID: payload.projectId, runID: runID) { run in
+            projectService.mutateRun(projectID: payload.projectId, runID: runID) { run in
                 run.activity.append(RunActionEvent(type: .toolCall, summary: summary, detail: detail))
             }
         }
@@ -1703,12 +1688,12 @@ public final class AppStore: ObservableObject {
             return keptIDs.contains(summary.key)
         }
 
-        pendingApprovalsBySession[sessionID] = nil
+        planService.pendingApprovalsBySession[sessionID] = nil
         livePlanBySession[sessionID] = nil
         activeInlineProcessBySession[sessionID] = nil
         clearLiveAgentEvents(sessionID: sessionID)
-        for (planID, mappedSessionID) in planSessionByPlanID where mappedSessionID == sessionID {
-            planSessionByPlanID[planID] = nil
+        for (planID, mappedSessionID) in planService.planSessionByPlanID where mappedSessionID == sessionID {
+            planService.planSessionByPlanID[planID] = nil
         }
         streamingSessions.remove(sessionID)
         streamingAssistantMessageIDBySession[sessionID] = nil
@@ -1793,11 +1778,11 @@ public final class AppStore: ObservableObject {
     }
 
     public func pendingApproval(for sessionID: UUID) -> PendingApproval? {
-        pendingApprovalsBySession[sessionID]
+        planService.pendingApproval(for: sessionID)
     }
 
     public func pendingPlan(for sessionID: UUID) -> ExecutionPlan? {
-        pendingApprovalsBySession[sessionID]?.plan
+        planService.pendingPlan(for: sessionID)
     }
 
     public func planModeEnabled(for sessionID: UUID) -> Bool {
@@ -2326,84 +2311,11 @@ public final class AppStore: ObservableObject {
     }
 
     public func cancelPlan(sessionID: UUID) {
-        guard let pending = pendingApprovalsBySession.removeValue(forKey: sessionID) else { return }
-
-        if isGatewayConnected, let gatewayClient {
-            struct Params: Codable, Sendable {
-                var planId: UUID
-                var decision: String
-            }
-            Task {
-                _ = try? await gatewayClient.request(method: "exec.approval.resolve", params: Params(planId: pending.planId, decision: "reject"))
-            }
-            return
-        }
-
-        let cancellation = ChatMessage(
-            sessionID: sessionID,
-            role: .system,
-            text: "Plan canceled. No run was created for project \(pending.projectId.uuidString.prefix(8))."
-        )
-        messagesBySession[sessionID, default: []].append(cancellation)
+        planService.cancelPlan(sessionID: sessionID)
     }
 
     public func approvePlan(sessionID: UUID, judgmentResponses: JudgmentResponses? = nil) {
-        guard let pending = pendingApprovalsBySession.removeValue(forKey: sessionID) else { return }
-
-        if isGatewayConnected, let gatewayClient {
-            struct Params: Codable, Sendable {
-                var planId: UUID
-                var decision: String
-                var judgmentResponses: JudgmentResponses?
-            }
-            Task {
-                _ = try? await gatewayClient.request(
-                    method: "exec.approval.resolve",
-                    params: Params(planId: pending.planId, decision: "approve", judgmentResponses: judgmentResponses)
-                )
-            }
-            return
-        }
-
-        let plan = pending.plan
-        let stepDetails = plan.steps.map { step in
-            formatStepDetail(step: step)
-        }
-
-        let run = RunRecord(
-            projectID: plan.projectID,
-            sessionID: sessionID,
-            status: .queued,
-            currentStep: 0,
-            totalSteps: max(plan.steps.count, 1),
-            logSnippet: "Queued and waiting for execution.",
-            stepTitles: plan.steps.map(\.title),
-            stepDetails: stepDetails,
-            activity: [
-                RunActionEvent(
-                    type: .info,
-                    summary: "Plan approved",
-                    detail: "Execution queued with \(max(plan.steps.count, 1)) steps."
-                )
-            ]
-        )
-
-        runsByProject[plan.projectID, default: []].insert(run, at: 0)
-        selectedRunID = run.id
-
-        appendRunActivity(
-            projectID: plan.projectID,
-            runID: run.id,
-            sessionID: sessionID,
-            type: .info,
-            summary: "Execution started (\(max(plan.steps.count, 1)) planned steps)",
-            detail: "Run is queued and will stream tool calls and command outputs."
-        )
-
-        Task { [weak self] in
-            guard let self else { return }
-            await self.execute(plan: plan, runID: run.id)
-        }
+        planService.approvePlan(sessionID: sessionID, judgmentResponses: judgmentResponses)
     }
 
     public func openResults() {
@@ -2503,148 +2415,8 @@ public final class AppStore: ObservableObject {
                 required: true,
                 judgment: nil
             )
-            pendingApprovalsBySession[sessionID] = pending
+            planService.pendingApprovalsBySession[sessionID] = pending
         }
-    }
-
-    private func execute(plan: ExecutionPlan, runID: UUID) async {
-        let totalSteps = max(plan.steps.count, 1)
-
-        for (idx, step) in plan.steps.enumerated() {
-            let detail = formatStepDetail(step: step)
-
-            mutateRun(projectID: plan.projectID, runID: runID) { run in
-                run.status = .running
-                run.currentStep = idx + 1
-                run.logSnippet = detail
-            }
-
-            appendRunActivity(
-                projectID: plan.projectID,
-                runID: runID,
-                sessionID: plan.sessionID,
-                type: .toolCall,
-                summary: "Tool call · Step \(idx + 1)/\(totalSteps): \(step.runtime.rawValue)",
-                detail: toolResultTrace(for: step)
-            )
-            try? await Task.sleep(for: .milliseconds(120))
-
-            for command in commandTrace(for: step) {
-                appendRunActivity(
-                    projectID: plan.projectID,
-                    runID: runID,
-                    sessionID: plan.sessionID,
-                    type: .command,
-                    summary: "Command executed: \(command)",
-                    detail: commandOutput(for: step, command: command)
-                )
-                try? await Task.sleep(for: .milliseconds(120))
-            }
-
-            if step.outputs.isEmpty {
-                appendRunActivity(
-                    projectID: plan.projectID,
-                    runID: runID,
-                    sessionID: plan.sessionID,
-                    type: .info,
-                    summary: "No artifact output declared",
-                    detail: "Step \(idx + 1) completed with no file output."
-                )
-            } else {
-                for output in step.outputs {
-                    appendRunActivity(
-                        projectID: plan.projectID,
-                        runID: runID,
-                        sessionID: plan.sessionID,
-                        type: .output,
-                        summary: "Output updated: \(output)",
-                        detail: "Artifact written successfully."
-                    )
-                    try? await Task.sleep(for: .milliseconds(80))
-                }
-            }
-
-            try? await Task.sleep(for: .milliseconds(550))
-        }
-
-        let outputPaths = unique(plan.steps.flatMap(\.outputs))
-        let artifacts = outputPaths.map { path in
-            upsertArtifact(
-                projectID: plan.projectID,
-                path: path,
-                createdBySessionID: plan.sessionID,
-                origin: .generated
-            )
-        }
-
-        mutateRun(projectID: plan.projectID, runID: runID) { run in
-            run.status = .succeeded
-            run.currentStep = run.totalSteps
-            run.completedAt = .now
-            run.logSnippet = "Completed all planned steps."
-            run.producedArtifactPaths = outputPaths
-        }
-
-        appendRunActivity(
-            projectID: plan.projectID,
-            runID: runID,
-            sessionID: plan.sessionID,
-            type: .info,
-            summary: "Run completed",
-            detail: "Execution finished successfully."
-        )
-
-        let refs = artifacts.map { artifact in
-            ChatArtifactReference(
-                displayText: artifact.path,
-                projectID: artifact.projectID,
-                path: artifact.path,
-                artifactID: artifact.id
-            )
-        }
-
-        let doneMessage = ChatMessage(
-            sessionID: plan.sessionID,
-            role: .assistant,
-            text: finalReportText(
-                runID: runID,
-                stepCount: max(plan.steps.count, 1),
-                outputPaths: outputPaths
-            ),
-            artifactRefs: refs
-        )
-        messagesBySession[plan.sessionID, default: []].append(doneMessage)
-
-        if let first = refs.first {
-            openArtifactReference(first)
-        }
-    }
-
-    @discardableResult
-    private func upsertArtifact(
-        projectID: UUID,
-        path: String,
-        createdBySessionID: UUID?,
-        origin: ArtifactOrigin,
-        sizeBytes: Int? = nil,
-        indexStatus: ArtifactIndexStatus? = nil,
-        indexSummary: String? = nil,
-        indexedAt: Date? = nil
-    ) -> Artifact {
-        projectService.upsertArtifact(
-            projectID: projectID,
-            path: path,
-            createdBySessionID: createdBySessionID,
-            origin: origin,
-            sizeBytes: sizeBytes,
-            indexStatus: indexStatus,
-            indexSummary: indexSummary,
-            indexedAt: indexedAt
-        )
-    }
-
-    private func mutateRun(projectID: UUID, runID: UUID, mutate: (inout RunRecord) -> Void) {
-        projectService.mutateRun(projectID: projectID, runID: runID, mutate: mutate)
     }
 
 
@@ -2752,109 +2524,6 @@ public final class AppStore: ObservableObject {
         activeSessionID = nil
     }
 
-    private func unique(_ values: [String]) -> [String] {
-        var seen: Set<String> = []
-        var result: [String] = []
-        for value in values where !seen.contains(value) {
-            seen.insert(value)
-            result.append(value)
-        }
-        return result
-    }
-
-    private func formatStepDetail(step: PlanStep) -> String {
-        let runtime = step.runtime.rawValue
-        let inputSummary = step.inputs.isEmpty ? "none" : step.inputs.joined(separator: ", ")
-        let outputSummary = step.outputs.isEmpty ? "none" : step.outputs.joined(separator: ", ")
-        return "\(runtime) runtime. Inputs: \(inputSummary). Outputs: \(outputSummary)."
-    }
-
-    private func commandTrace(for step: PlanStep) -> [String] {
-        let input = step.inputs.first ?? "input.dat"
-        let output = step.outputs.first ?? "artifacts/output.dat"
-
-        switch step.runtime {
-        case .download:
-            return ["curl -L \"\(input)\" -o \(output)"]
-        case .python:
-            return ["python scripts/run_step.py --input \(input) --output \(output)"]
-        case .shell:
-            return ["sh -lc \"\(step.title.lowercased())\""]
-        case .hpcJob:
-            return ["sbatch jobs/step_job.sh --input \(input) --output \(output)"]
-        case .notebook:
-            return ["jupyter nbconvert --execute \(input) --to notebook --output \(output)"]
-        }
-    }
-
-    private func commandOutput(for step: PlanStep, command: String) -> String {
-        switch step.runtime {
-        case .download:
-            return "HTTP 200 OK. Downloaded source data and saved requested output."
-        case .python:
-            return "Python finished successfully. Features computed and written to target artifact."
-        case .shell:
-            return "Shell command exited with code 0."
-        case .hpcJob:
-            return "Job submitted and completed. Exit status 0."
-        case .notebook:
-            return "Notebook executed without errors and produced rendered output."
-        }
-    }
-
-    private func toolResultTrace(for step: PlanStep) -> String {
-        switch step.runtime {
-        case .download:
-            return "Downloader initialized request, validated network path, and staged incoming file."
-        case .python:
-            return "Python tool loaded inputs and executed the requested transformation pipeline."
-        case .shell:
-            return "Shell tool prepared environment and executed scripted operation."
-        case .hpcJob:
-            return "HPC client prepared submission payload and tracked completion."
-        case .notebook:
-            return "Notebook runner executed cells and collected artifacts."
-        }
-    }
-
-    private func appendRunActivity(
-        projectID: UUID,
-        runID: UUID,
-        sessionID: UUID,
-        type: RunActionType,
-        summary: String,
-        detail: String
-    ) {
-        projectService.appendRunActivity(
-            projectID: projectID,
-            runID: runID,
-            sessionID: sessionID,
-            type: type,
-            summary: summary,
-            detail: detail
-        )
-    }
-
-    private func finalReportText(runID: UUID, stepCount: Int, outputPaths: [String]) -> String {
-        let duration = run(runID: runID).map { record in
-            (record.completedAt ?? .now).timeIntervalSince(record.initiatedAt)
-        } ?? 0
-
-        let durationText = durationFormatter.string(from: duration) ?? "under 1m"
-        let outputs = outputPaths.isEmpty
-            ? "- No files were generated."
-            : outputPaths.map { "- `\($0)`" }.joined(separator: "\n")
-
-        return """
-        ## Final report
-        - Status: Succeeded
-        - Completed steps: \(stepCount)/\(stepCount)
-        - Runtime: \(durationText)
-
-        ### Generated outputs
-        \(outputs)
-        """
-    }
 
     internal static func parsePermissionLevel(_ raw: String?) -> SessionPermissionLevel? {
         guard let raw else { return nil }

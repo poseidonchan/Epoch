@@ -104,7 +104,7 @@ internal final class ProjectService {
         for sessionID in removedSessionIDs {
             store.messagesBySession[sessionID] = nil
             store.composerService.pruneAttachmentPayloads(for: sessionID, keptMessageIDs: [])
-            store.pendingApprovalsBySession[sessionID] = nil
+            store.planService.pendingApprovalsBySession[sessionID] = nil
             store.livePlanBySession[sessionID] = nil
             store.liveAgentEventsBySession[sessionID] = nil
             store.activeInlineProcessBySession[sessionID] = nil
@@ -119,8 +119,8 @@ internal final class ProjectService {
         store.persistedProcessSummaryByMessageID = store.persistedProcessSummaryByMessageID.filter { summary in
             !removedSessionIDs.contains(summary.value.sessionID)
         }
-        for (planID, sessionID) in store.planSessionByPlanID where removedSessionIDs.contains(sessionID) {
-            store.planSessionByPlanID[planID] = nil
+        for (planID, sessionID) in store.planService.planSessionByPlanID where removedSessionIDs.contains(sessionID) {
+            store.planService.planSessionByPlanID[planID] = nil
         }
 
         store.sessionHistoryPrefetchTasksByProject[projectID]?.cancel()
@@ -341,7 +341,7 @@ internal final class ProjectService {
 
         store.messagesBySession[sessionID] = nil
         store.composerService.pruneAttachmentPayloads(for: sessionID, keptMessageIDs: [])
-        store.pendingApprovalsBySession[sessionID] = nil
+        store.planService.pendingApprovalsBySession[sessionID] = nil
         store.livePlanBySession[sessionID] = nil
         store.liveAgentEventsBySession[sessionID] = nil
         store.activeInlineProcessBySession[sessionID] = nil
@@ -356,8 +356,8 @@ internal final class ProjectService {
         store.pendingComposerAttachmentsBySession[sessionID] = nil
         store.sessionHistoryRequestsInFlight.remove(sessionID)
         store.sessionHistoryLastFetchedAtBySession[sessionID] = nil
-        for (planID, mappedSessionID) in store.planSessionByPlanID where mappedSessionID == sessionID {
-            store.planSessionByPlanID[planID] = nil
+        for (planID, mappedSessionID) in store.planService.planSessionByPlanID where mappedSessionID == sessionID {
+            store.planService.planSessionByPlanID[planID] = nil
         }
 
         if var runs = store.runsByProject[projectID] {
