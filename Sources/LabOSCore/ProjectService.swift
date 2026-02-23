@@ -113,8 +113,8 @@ internal final class ProjectService {
             store.planModeEnabledBySession[sessionID] = nil
             store.selectedModelIdBySession[sessionID] = nil
             store.selectedThinkingLevelBySession[sessionID] = nil
-            store.sessionHistoryRequestsInFlight.remove(sessionID)
-            store.sessionHistoryLastFetchedAtBySession[sessionID] = nil
+            store.chatService.sessionHistoryRequestsInFlight.remove(sessionID)
+            store.chatService.sessionHistoryLastFetchedAtBySession[sessionID] = nil
         }
         store.persistedProcessSummaryByMessageID = store.persistedProcessSummaryByMessageID.filter { summary in
             !removedSessionIDs.contains(summary.value.sessionID)
@@ -123,8 +123,8 @@ internal final class ProjectService {
             store.planService.planSessionByPlanID[planID] = nil
         }
 
-        store.sessionHistoryPrefetchTasksByProject[projectID]?.cancel()
-        store.sessionHistoryPrefetchTasksByProject[projectID] = nil
+        store.chatService.sessionHistoryPrefetchTasksByProject[projectID]?.cancel()
+        store.chatService.sessionHistoryPrefetchTasksByProject[projectID] = nil
 
         if store.activeProjectID == projectID {
             store.activeProjectID = nil
@@ -150,13 +150,13 @@ internal final class ProjectService {
             store.sessionsByProject = store.sessionsByProject.filter { projectIDs.contains($0.key) }
             store.artifactsByProject = store.artifactsByProject.filter { projectIDs.contains($0.key) }
             store.runsByProject = store.runsByProject.filter { projectIDs.contains($0.key) }
-            for (prefetchProjectID, task) in store.sessionHistoryPrefetchTasksByProject where !projectIDs.contains(prefetchProjectID) {
+            for (prefetchProjectID, task) in store.chatService.sessionHistoryPrefetchTasksByProject where !projectIDs.contains(prefetchProjectID) {
                 task.cancel()
-                store.sessionHistoryPrefetchTasksByProject[prefetchProjectID] = nil
+                store.chatService.sessionHistoryPrefetchTasksByProject[prefetchProjectID] = nil
             }
             let validSessionIDs = Set(store.sessionsByProject.values.flatMap { $0.map(\.id) })
-            store.sessionHistoryRequestsInFlight = store.sessionHistoryRequestsInFlight.filter { validSessionIDs.contains($0) }
-            store.sessionHistoryLastFetchedAtBySession = store.sessionHistoryLastFetchedAtBySession.filter { validSessionIDs.contains($0.key) }
+            store.chatService.sessionHistoryRequestsInFlight = store.chatService.sessionHistoryRequestsInFlight.filter { validSessionIDs.contains($0) }
+            store.chatService.sessionHistoryLastFetchedAtBySession = store.chatService.sessionHistoryLastFetchedAtBySession.filter { validSessionIDs.contains($0.key) }
 
             if let activeProjectID = store.activeProjectID, !projectIDs.contains(activeProjectID) {
                 store.activeProjectID = nil
@@ -354,8 +354,8 @@ internal final class ProjectService {
         store.selectedModelIdBySession[sessionID] = nil
         store.selectedThinkingLevelBySession[sessionID] = nil
         store.pendingComposerAttachmentsBySession[sessionID] = nil
-        store.sessionHistoryRequestsInFlight.remove(sessionID)
-        store.sessionHistoryLastFetchedAtBySession[sessionID] = nil
+        store.chatService.sessionHistoryRequestsInFlight.remove(sessionID)
+        store.chatService.sessionHistoryLastFetchedAtBySession[sessionID] = nil
         for (planID, mappedSessionID) in store.planService.planSessionByPlanID where mappedSessionID == sessionID {
             store.planService.planSessionByPlanID[planID] = nil
         }

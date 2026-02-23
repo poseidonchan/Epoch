@@ -111,40 +111,11 @@ public final class AppStore: ObservableObject {
     internal var planService: PlanApprovalService!
     internal var chatService: ChatSessionService!
 
-    private struct PendingLocalUserEcho: Sendable {
-        var localId: UUID
-        var text: String
-        var createdAt: Date
-        var artifactRefs: [ChatArtifactReference]
-        var attachments: [ComposerAttachment]
-    }
     enum SessionHistoryRefreshTrigger {
         case interactive
         case prefetch
     }
-    private struct GatewayChatSendParams: Codable, Sendable {
-        // NOTE: Encode IDs as lowercase strings for compatibility with case-sensitive backends
-        // (e.g. SQLite TEXT UUIDs created via uuidv4()).
-        var projectId: String
-        var sessionId: String
-        var text: String
-        var overwriteMessageId: String?
-        var attachments: [GatewayChatAttachment]?
-        var modelId: String?
-        var thinkingLevel: ThinkingLevel?
-        var planMode: Bool
-        var permissionLevel: SessionPermissionLevel
-    }
 
-    private struct GatewayChatAttachment: Codable, Sendable {
-        var id: String
-        var scope: String
-        var name: String
-        var path: String
-        var mimeType: String?
-        var inlineDataBase64: String?
-        var byteCount: Int?
-    }
 
     public struct ProjectUploadFile: Sendable {
         public var fileName: String
@@ -162,7 +133,6 @@ public final class AppStore: ObservableObject {
         var uploadId: String
         var path: String
     }
-    private var pendingLocalUserEchosBySession: [UUID: [PendingLocalUserEcho]] = [:]
     internal var artifactContentCache: [String: String] = [:]
     internal var artifactDataCache: [String: Data] = [:]
     internal let backend: BackendClient
@@ -173,11 +143,6 @@ public final class AppStore: ObservableObject {
     private var gatewayEnsureConnectedTask: Task<Bool, Never>?
     internal var gatewayDeviceID: UUID = UUID()
     private var resourcesPollTask: Task<Void, Never>?
-    internal var sessionHistoryRequestsInFlight: Set<UUID> = []
-    internal var sessionHistoryLastFetchedAtBySession: [UUID: Date] = [:]
-    internal var sessionHistoryPrefetchTasksByProject: [UUID: Task<Void, Never>] = [:]
-    private let sessionHistoryPrefetchCooldown: TimeInterval = 45
-    private let sessionHistoryInteractiveFreshnessWindow: TimeInterval = 8
 
     internal let gatewayJSONEncoder: JSONEncoder = {
         let encoder = JSONEncoder()
@@ -532,10 +497,10 @@ public final class AppStore: ObservableObject {
     }
 
     public func disconnectGateway() {
-        for (_, task) in sessionHistoryPrefetchTasksByProject {
+        for (_, task) in chatService.sessionHistoryPrefetchTasksByProject {
             task.cancel()
         }
-        sessionHistoryPrefetchTasksByProject.removeAll()
+        chatService.sessionHistoryPrefetchTasksByProject.removeAll()
         gatewayEventsTask?.cancel()
         gatewayEventsTask = nil
         gatewayStateCancellable?.cancel()
@@ -556,8 +521,8 @@ public final class AppStore: ObservableObject {
         selectedThinkingLevelBySession.removeAll()
         streamingSessions.removeAll()
         streamingAssistantMessageIDBySession.removeAll()
-        sessionHistoryRequestsInFlight.removeAll()
-        sessionHistoryLastFetchedAtBySession.removeAll()
+        chatService.sessionHistoryRequestsInFlight.removeAll()
+        chatService.sessionHistoryLastFetchedAtBySession.removeAll()
     }
 
     private func startGatewayEventLoop() {
@@ -621,132 +586,13 @@ public final class AppStore: ObservableObject {
         await projectService.refreshProjectFromGateway(projectID: projectID)
     }
 
-    private func refreshSessionHistoryFromGateway(
-        projectID: UUID,
-        sessionID: UUID,
-        trigger: SessionHistoryRefreshTrigger = .interactive
-    ) async {
-        guard let gatewayClient else { return }
-        let now = Date()
-        let hasLocalMessages = !(messagesBySession[sessionID]?.isEmpty ?? true)
-        if Self.shouldSkipSessionHistoryRefresh(
-            trigger: trigger,
-            hasInFlightRequest: sessionHistoryRequestsInFlight.contains(sessionID),
-            hasLocalMessages: hasLocalMessages,
-            lastFetchedAt: sessionHistoryLastFetchedAtBySession[sessionID],
-            now: now,
-            prefetchCooldown: sessionHistoryPrefetchCooldown,
-            interactiveFreshnessWindow: sessionHistoryInteractiveFreshnessWindow
-        ) {
-            return
-        }
-
-        sessionHistoryRequestsInFlight.insert(sessionID)
-        defer { sessionHistoryRequestsInFlight.remove(sessionID) }
-
-        struct HistoryParams: Codable, Sendable {
-            var projectId: String
-            var sessionId: String
-            var beforeTs: Date?
-            var limit: Int
-        }
-        struct ContextParams: Codable, Sendable {
-            var projectId: String
-            var sessionId: String
-        }
-
-        do {
-            let res = try await gatewayClient.request(
-                method: "chat.history",
-                params: HistoryParams(projectId: Self.gatewayID(projectID), sessionId: Self.gatewayID(sessionID), beforeTs: nil, limit: 200)
-            )
-            let messages: [ChatMessage] = try decodeGatewayPayload(res.payload, key: "messages")
-            applySessionHistorySnapshot(
-                projectID: projectID,
-                sessionID: sessionID,
-                messages: messages,
-                fetchedAt: now
-            )
-
-            if let contextRes = try? await gatewayClient.request(
-                method: "sessions.context.get",
-                params: ContextParams(projectId: Self.gatewayID(projectID), sessionId: Self.gatewayID(sessionID))
-            ) {
-                if let context: SessionContextState = try? decodeGatewayPayload(contextRes.payload, key: "context") {
-                    sessionContextBySession[sessionID] = context
-                    if let level = Self.parsePermissionLevel(context.permissionLevel) {
-                        permissionLevelBySession[sessionID] = level
-                    }
-                }
-            }
-        } catch {
-            gatewayConnectionState = .failed(message: error.localizedDescription)
-        }
-    }
-
     func applySessionHistorySnapshot(
         projectID: UUID,
         sessionID: UUID,
         messages: [ChatMessage],
         fetchedAt: Date
     ) {
-        let sortedMessages = messages.sorted(by: Self.messageDisplayOrder)
-        messagesBySession[sessionID] = sortedMessages
-        pruneAttachmentPayloads(for: sessionID, keptMessageIDs: Set(sortedMessages.map(\.id)))
-        sessionHistoryLastFetchedAtBySession[sessionID] = fetchedAt
-        reconcileInlineProcessAfterHistorySync(projectID: projectID, sessionID: sessionID, messages: sortedMessages)
-    }
-
-    private func reconcileInlineProcessAfterHistorySync(
-        projectID: UUID,
-        sessionID: UUID,
-        messages: [ChatMessage]
-    ) {
-        guard activeInlineProcessBySession[sessionID] != nil else { return }
-        let hasPendingLocalEcho = !(pendingLocalUserEchosBySession[sessionID]?.isEmpty ?? true)
-        guard !hasActiveRun(projectID: projectID, sessionID: sessionID) else { return }
-
-        if let assistantMessageID = Self.latestAssistantReplyID(in: messages) {
-            if hasPendingLocalEcho {
-                pendingLocalUserEchosBySession[sessionID] = nil
-            }
-            if var process = activeInlineProcessBySession[sessionID] {
-                let currentlyBoundAssistantID = process.assistantMessageID
-                let isBoundAssistantStillPresent = currentlyBoundAssistantID.map { currentID in
-                    messages.contains { $0.id == currentID }
-                } ?? false
-                if !isBoundAssistantStillPresent {
-                    process.assistantMessageID = assistantMessageID
-                    activeInlineProcessBySession[sessionID] = process
-                }
-            }
-            finalizeInlineProcess(
-                sessionID: sessionID,
-                failed: false,
-                assistantMessageIDFallback: assistantMessageID
-            )
-            streamingAssistantMessageIDBySession[sessionID] = nil
-            streamingSessions.remove(sessionID)
-            clearLiveAgentEvents(sessionID: sessionID)
-            return
-        }
-
-        if hasPendingLocalEcho {
-            return
-        }
-
-        if let lastMessage = messages.last, lastMessage.role == .user {
-            return
-        }
-
-        streamingAssistantMessageIDBySession[sessionID] = nil
-        streamingSessions.remove(sessionID)
-        activeInlineProcessBySession[sessionID] = nil
-        clearLiveAgentEvents(sessionID: sessionID)
-    }
-
-    private func hasActiveRun(projectID: UUID, sessionID: UUID) -> Bool {
-        projectService.hasActiveRun(projectID: projectID, sessionID: sessionID)
+        chatService.applySessionHistorySnapshot(projectID: projectID, sessionID: sessionID, messages: messages, fetchedAt: fetchedAt)
     }
 
     static func latestAssistantReplyID(in messages: [ChatMessage]) -> UUID? {
@@ -761,37 +607,6 @@ public final class AppStore: ObservableObject {
             return sorted[index].id
         }
         return nil
-    }
-
-    private func scheduleSessionHistoryPrefetch(projectID: UUID) {
-        guard isGatewayConnected else { return }
-        let loadedSessionIDs = Set(
-            messagesBySession.compactMap { sessionID, messages in
-                messages.isEmpty ? nil : sessionID
-            }
-        )
-        let candidates = Self.sessionHistoryPrefetchCandidates(
-            sessions: sessions(for: projectID),
-            activeSessionID: activeSessionID,
-            loadedMessageSessionIDs: loadedSessionIDs,
-            inFlightSessionIDs: sessionHistoryRequestsInFlight,
-            lastFetchedAtBySession: sessionHistoryLastFetchedAtBySession,
-            now: .now,
-            cooldown: sessionHistoryPrefetchCooldown
-        )
-        guard !candidates.isEmpty else { return }
-        let targetSessionIDs = Array(candidates.prefix(8))
-
-        sessionHistoryPrefetchTasksByProject[projectID]?.cancel()
-        let task = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { self.sessionHistoryPrefetchTasksByProject[projectID] = nil }
-            for sessionID in targetSessionIDs {
-                guard !Task.isCancelled else { return }
-                await self.refreshSessionHistoryFromGateway(projectID: projectID, sessionID: sessionID, trigger: .prefetch)
-            }
-        }
-        sessionHistoryPrefetchTasksByProject[projectID] = task
     }
 
     internal func decodeGatewayPayload<T: Decodable>(_ payload: [String: JSONValue]?, key: String) throws -> T {
@@ -833,15 +648,14 @@ public final class AppStore: ObservableObject {
         case let .sessionPermissionUpdated(payload):
             composerService.handleSessionPermissionUpdated(payload)
 
-        case let .chatMessageCreated(projectID, sessionID, message):
-            _ = projectID
-            applyRemoteMessage(sessionID: sessionID, message: message)
+        case let .chatMessageCreated(_, sessionID, message):
+            chatService.applyRemoteMessage(sessionID: sessionID, message: message)
 
         case let .assistantDelta(payload):
-            applyAssistantDelta(payload)
+            chatService.applyAssistantDelta(payload)
 
         case let .toolEvent(payload):
-            applyToolEvent(payload)
+            chatService.applyToolEvent(payload)
 
 	        case let .planUpdated(payload):
 	            livePlanBySession[payload.sessionId] = payload
@@ -868,13 +682,13 @@ public final class AppStore: ObservableObject {
             upsertRun(projectID: projectID, run: run)
 
         case let .runsLogDelta(payload):
-            applyRunLogDelta(payload)
+            projectService.applyRunLogDelta(payload)
 
         case let .artifactsUpdated(projectID, artifact, change: _):
             upsertArtifact(projectID: projectID, artifact: artifact)
 
         case let .lifecycle(payload):
-            applyLifecycle(payload)
+            chatService.applyLifecycle(payload)
         }
     }
 
@@ -892,482 +706,6 @@ public final class AppStore: ObservableObject {
 
     private func upsertArtifact(projectID: UUID, artifact: Artifact) {
         projectService.upsertArtifactFromEvent(projectID: projectID, artifact: artifact)
-    }
-
-    private func applyRemoteMessage(sessionID: UUID, message: ChatMessage) {
-        var messages = messagesBySession[sessionID, default: []]
-        var resolvedMessage = message
-
-        // If we optimistically inserted a local user message, replace it with the server's
-        // canonical message to avoid "first message swallowed" UX and prevent duplicates.
-        if resolvedMessage.role == .user {
-            let normalized = resolvedMessage.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !normalized.isEmpty, var pending = pendingLocalUserEchosBySession[sessionID] {
-                let matchIdx =
-                    pending.firstIndex(where: { $0.text == normalized && abs($0.createdAt.timeIntervalSince(resolvedMessage.createdAt)) < 30 })
-                    ?? pending.firstIndex(where: { $0.text == normalized })
-                if let matchIdx {
-                    let pendingEcho = pending[matchIdx]
-                    resolvedMessage.artifactRefs = Self.mergeArtifactRefsPreservingInlineForGatewayEcho(
-                        remoteArtifactRefs: resolvedMessage.artifactRefs,
-                        localArtifactRefs: pendingEcho.artifactRefs
-                    )
-                    let localId = pendingEcho.localId
-                    let transferredAttachments = pendingEcho.attachments.isEmpty
-                        ? attachmentPayload(for: sessionID, messageID: localId)
-                        : pendingEcho.attachments
-                    if !transferredAttachments.isEmpty {
-                        setAttachmentPayload(
-                            for: sessionID,
-                            messageID: resolvedMessage.id,
-                            attachments: transferredAttachments
-                        )
-                    }
-                    if localId != resolvedMessage.id {
-                        setAttachmentPayload(for: sessionID, messageID: localId, attachments: [])
-                    }
-                    messages.removeAll { $0.id == localId }
-                    pending.remove(at: matchIdx)
-                    pendingLocalUserEchosBySession[sessionID] = pending.isEmpty ? nil : pending
-                }
-            }
-        }
-
-        if let idx = messages.firstIndex(where: { $0.id == resolvedMessage.id }) {
-            messages[idx] = resolvedMessage
-        } else {
-            messages.append(resolvedMessage)
-        }
-        messagesBySession[sessionID] = messages.sorted(by: Self.messageDisplayOrder)
-
-        if resolvedMessage.role == .assistant,
-           var process = activeInlineProcessBySession[sessionID],
-           process.assistantMessageID == nil {
-            process.assistantMessageID = resolvedMessage.id
-            activeInlineProcessBySession[sessionID] = process
-        }
-
-        if resolvedMessage.role == .assistant {
-            streamingSessions.remove(sessionID)
-            streamingAssistantMessageIDBySession[sessionID] = nil
-            finalizeInlineProcess(sessionID: sessionID, failed: false, assistantMessageIDFallback: resolvedMessage.id)
-            clearLiveAgentEvents(sessionID: sessionID)
-        }
-    }
-
-    private func applyAssistantDelta(_ payload: AssistantDeltaPayload) {
-        let sessionID = payload.sessionId
-        var messages = messagesBySession[sessionID, default: []]
-
-        streamingSessions.insert(sessionID)
-        streamingAssistantMessageIDBySession[sessionID] = payload.messageId
-        transitionInlineProcessToResponding(sessionID: sessionID, messageID: payload.messageId)
-
-        if let idx = messages.firstIndex(where: { $0.id == payload.messageId }) {
-            messages[idx].text += payload.delta
-        } else {
-            var msg = ChatMessage(
-                id: payload.messageId,
-                sessionID: sessionID,
-                role: .assistant,
-                text: payload.delta,
-                createdAt: .now
-            )
-            msg.proposedPlan = nil
-            messages.append(msg)
-        }
-
-        messagesBySession[sessionID] = messages.sorted(by: Self.messageDisplayOrder)
-    }
-
-    private func applyToolEvent(_ payload: ToolEventPayload) {
-        let phase = payload.phase.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if shouldIgnoreLateToolEvent(payload: payload, phase: phase) {
-            return
-        }
-
-        let summary = payload.summary.isEmpty ? "\(payload.tool) · \(payload.phase)" : payload.summary
-        let detail = formattedJSONDetail(payload.detail)
-        if let runID = payload.runId {
-            projectService.mutateRun(projectID: payload.projectId, runID: runID) { run in
-                run.activity.append(RunActionEvent(type: .toolCall, summary: summary, detail: detail))
-            }
-        }
-
-        applyInlineToolEvent(payload, fallbackSummary: summary)
-
-        let liveSummary = switch phase {
-        case "start":
-            "Calling tool: \(payload.tool)"
-        case "update":
-            "Tool update: \(payload.tool)"
-        case "end":
-            "Tool finished: \(payload.tool)"
-        case "error":
-            "Tool failed: \(payload.tool)"
-        default:
-            "Tool event: \(payload.tool)"
-        }
-
-        let liveDetail = detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? summary : detail
-        appendLiveAgentEvent(
-            sessionID: payload.sessionId,
-            type: .toolCall,
-            summary: liveSummary,
-            detail: liveDetail
-        )
-        streamingSessions.insert(payload.sessionId)
-    }
-
-    private func appendLiveAgentEvent(
-        sessionID: UUID,
-        type: AgentLiveEventType,
-        summary: String,
-        detail: String? = nil
-    ) {
-        let trimmedSummary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedSummary.isEmpty else { return }
-
-        let normalizedDetail = detail?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        var events = liveAgentEventsBySession[sessionID] ?? []
-        if let last = events.last,
-           last.type == type,
-           last.summary == trimmedSummary,
-           last.detail == normalizedDetail {
-            return
-        }
-
-        events.append(
-            AgentLiveEvent(
-                sessionID: sessionID,
-                type: type,
-                summary: trimmedSummary,
-                detail: normalizedDetail
-            )
-        )
-
-        if events.count > 12 {
-            events.removeFirst(events.count - 12)
-        }
-        liveAgentEventsBySession[sessionID] = events
-    }
-
-    private func shouldIgnoreLateToolEvent(payload: ToolEventPayload, phase: String) -> Bool {
-        guard phase == "start" || phase == "update" || phase == "end" || phase == "error" else {
-            return false
-        }
-        guard activeInlineProcessBySession[payload.sessionId] == nil else {
-            return false
-        }
-        guard pendingLocalUserEchosBySession[payload.sessionId]?.isEmpty ?? true else {
-            return false
-        }
-        guard !hasActiveRun(projectID: payload.projectId, sessionID: payload.sessionId) else {
-            return false
-        }
-
-        let latestTurnRole = messages(for: payload.sessionId)
-            .last(where: { $0.role == .user || $0.role == .assistant })?
-            .role
-        return latestTurnRole == .assistant
-    }
-
-    private func clearLiveAgentEvents(sessionID: UUID) {
-        liveAgentEventsBySession[sessionID] = []
-    }
-
-    private func formattedJSONDetail(_ detail: [String: JSONValue]) -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(detail),
-              let text = String(data: data, encoding: .utf8)
-        else {
-            return String(describing: detail)
-        }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.count > 1_500 {
-            return String(trimmed.prefix(1_500)) + "\n…"
-        }
-        return trimmed
-    }
-
-    private func applyLifecycle(_ payload: LifecyclePayload) {
-        let phase = payload.phase.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        switch phase {
-        case "start":
-            streamingSessions.insert(payload.sessionId)
-            beginInlineProcess(sessionID: payload.sessionId, runID: payload.agentRunId)
-        case "end", "error":
-            streamingSessions.remove(payload.sessionId)
-            streamingAssistantMessageIDBySession[payload.sessionId] = nil
-            if phase == "error", let err = payload.error {
-                let text = "Run failed (\(err.code)): \(err.message)"
-                messagesBySession[payload.sessionId, default: []].append(
-                    ChatMessage(sessionID: payload.sessionId, role: .system, text: text)
-                )
-            }
-            finalizeInlineProcess(sessionID: payload.sessionId, failed: phase == "error")
-            clearLiveAgentEvents(sessionID: payload.sessionId)
-        default:
-            break
-        }
-    }
-
-    private func beginInlineProcess(sessionID: UUID, runID: UUID) {
-        activeInlineProcessBySession[sessionID] = ActiveInlineProcess(
-            sessionID: sessionID,
-            agentRunID: runID,
-            assistantMessageID: nil,
-            phase: .thinking,
-            activeLine: nil,
-            entries: [],
-            familyCounts: [:]
-        )
-    }
-
-    private func transitionInlineProcessToResponding(sessionID: UUID, messageID: UUID) {
-        guard var process = activeInlineProcessBySession[sessionID] else { return }
-        if process.assistantMessageID == nil {
-            process.assistantMessageID = messageID
-        }
-        process.phase = .responding
-        process.activeLine = nil
-        activeInlineProcessBySession[sessionID] = process
-    }
-
-    private func applyInlineToolEvent(_ payload: ToolEventPayload, fallbackSummary: String) {
-        let phase = payload.phase.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        var process = activeInlineProcessBySession[payload.sessionId]
-            ?? ActiveInlineProcess(
-                sessionID: payload.sessionId,
-                agentRunID: payload.agentRunId,
-                phase: .thinking,
-                activeLine: nil,
-                entries: [],
-                familyCounts: [:]
-            )
-
-        let family = toolActionFamily(tool: payload.tool, summary: fallbackSummary)
-        let activeText = activeToolPhrase(family: family, fallback: fallbackSummary)
-        let completedText = completedToolPhrase(family: family, fallback: fallbackSummary)
-
-        switch phase {
-        case "start", "update":
-            if let idx = process.entries.lastIndex(where: {
-                $0.toolCallID == payload.toolCallId && $0.state == .active
-            }) {
-                process.entries[idx].family = family
-                process.entries[idx].activeText = activeText
-                process.entries[idx].completedText = completedText
-            } else {
-                process.entries.append(
-                    ProcessEntry(
-                        toolCallID: payload.toolCallId,
-                        family: family,
-                        activeText: activeText,
-                        completedText: completedText,
-                        state: .active
-                    )
-                )
-            }
-            process.phase = .toolCalling
-            process.activeLine = activeText
-        case "end":
-            if let idx = process.entries.lastIndex(where: {
-                $0.toolCallID == payload.toolCallId && $0.state == .active
-            }) {
-                process.entries[idx].state = .completed
-                process.entries[idx].completedText = completedText
-                process.familyCounts[family, default: 0] += 1
-            } else {
-                process.entries.append(
-                    ProcessEntry(
-                        toolCallID: payload.toolCallId,
-                        family: family,
-                        activeText: activeText,
-                        completedText: completedText,
-                        state: .completed
-                    )
-                )
-                process.familyCounts[family, default: 0] += 1
-            }
-
-            if process.assistantMessageID == nil {
-                process.phase = .thinking
-                process.activeLine = nil
-            } else {
-                process.phase = .responding
-                process.activeLine = nil
-            }
-        case "error":
-            if let idx = process.entries.lastIndex(where: {
-                $0.toolCallID == payload.toolCallId && $0.state == .active
-            }) {
-                process.entries[idx].state = .failed
-                process.entries[idx].completedText = completedText
-            } else {
-                process.entries.append(
-                    ProcessEntry(
-                        toolCallID: payload.toolCallId,
-                        family: family,
-                        activeText: activeText,
-                        completedText: completedText,
-                        state: .failed
-                    )
-                )
-            }
-            if process.assistantMessageID == nil {
-                process.phase = .thinking
-                process.activeLine = nil
-            } else {
-                process.phase = .responding
-                process.activeLine = nil
-            }
-        default:
-            break
-        }
-
-        activeInlineProcessBySession[payload.sessionId] = process
-    }
-
-    private func finalizeInlineProcess(
-        sessionID: UUID,
-        failed: Bool,
-        assistantMessageIDFallback: UUID? = nil
-    ) {
-        guard var process = activeInlineProcessBySession[sessionID] else { return }
-        if process.assistantMessageID == nil, let assistantMessageIDFallback {
-            process.assistantMessageID = assistantMessageIDFallback
-        }
-        process.phase = failed ? .failed : .completed
-
-        if let assistantMessageID = process.assistantMessageID,
-           !process.entries.isEmpty {
-            let headline = summaryHeadline(from: process.familyCounts, fallbackEntryCount: process.entries.count)
-            persistedProcessSummaryByMessageID[assistantMessageID] = AssistantProcessSummary(
-                sessionID: sessionID,
-                assistantMessageID: assistantMessageID,
-                headline: headline,
-                entries: process.entries,
-                familyCounts: process.familyCounts
-            )
-        }
-
-        activeInlineProcessBySession[sessionID] = nil
-    }
-
-    private func summaryHeadline(
-        from familyCounts: [ProcessActionFamily: Int],
-        fallbackEntryCount: Int
-    ) -> String {
-        let displayOrder: [ProcessActionFamily] = [.search, .list, .read, .write, .exec, .other]
-        let parts = displayOrder.compactMap { family -> String? in
-            guard let count = familyCounts[family], count > 0 else { return nil }
-            return "\(count) \(label(for: family, count: count))"
-        }
-        if parts.isEmpty {
-            return "Explored \(fallbackEntryCount) steps"
-        }
-        return "Explored " + parts.joined(separator: ", ")
-    }
-
-    private func label(for family: ProcessActionFamily, count: Int) -> String {
-        switch family {
-        case .search:
-            return count == 1 ? "search" : "searches"
-        case .list:
-            return count == 1 ? "list" : "lists"
-        case .read:
-            return count == 1 ? "read" : "reads"
-        case .write:
-            return count == 1 ? "write" : "writes"
-        case .exec:
-            return count == 1 ? "command" : "commands"
-        case .other:
-            return count == 1 ? "step" : "steps"
-        }
-    }
-
-    private func toolActionFamily(tool: String, summary: String) -> ProcessActionFamily {
-        let text = "\(tool) \(summary)".lowercased()
-        if text.contains("search") || text.contains("query") || text.contains("find") {
-            return .search
-        }
-        if text.contains("list") || text.contains("ls") || text.contains("scan") {
-            return .list
-        }
-        if text.contains("read") || text.contains("open") || text.contains("cat") {
-            return .read
-        }
-        if text.contains("write") || text.contains("patch") || text.contains("edit") {
-            return .write
-        }
-        if text.contains("exec") || text.contains("shell") || text.contains("python") || text.contains("command") {
-            return .exec
-        }
-        return .other
-    }
-
-    private func activeToolPhrase(family: ProcessActionFamily, fallback: String) -> String {
-        switch family {
-        case .search:
-            return "Searching..."
-        case .list:
-            return "Listing files..."
-        case .read:
-            return "Reading files..."
-        case .write:
-            return "Writing changes..."
-        case .exec:
-            return "Running command..."
-        case .other:
-            return normalizeActiveFallback(fallback)
-        }
-    }
-
-    private func completedToolPhrase(family: ProcessActionFamily, fallback: String) -> String {
-        switch family {
-        case .search:
-            return "Searched ..."
-        case .list:
-            return "Listed files ..."
-        case .read:
-            return "Read files ..."
-        case .write:
-            return "Wrote changes ..."
-        case .exec:
-            return "Ran command ..."
-        case .other:
-            return normalizeCompletedFallback(fallback)
-        }
-    }
-
-    private func normalizeActiveFallback(_ fallback: String) -> String {
-        let trimmed = fallback.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return "Exploring..." }
-        if trimmed.hasSuffix("...") { return trimmed }
-        return trimmed + "..."
-    }
-
-    private func normalizeCompletedFallback(_ fallback: String) -> String {
-        let active = normalizeActiveFallback(fallback)
-        let lower = active.lowercased()
-        if lower.hasSuffix("ing..."), active.count > 6 {
-            let stem = String(active.dropLast(6))
-            return stem + "ed ..."
-        }
-        if active.hasSuffix("..."), active.count > 3 {
-            let stem = String(active.dropLast(3)).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !stem.isEmpty {
-                return "Completed \(stem) ..."
-            }
-        }
-        return "Completed ..."
-    }
-
-    private func applyRunLogDelta(_ payload: RunLogDeltaPayload) {
-        projectService.applyRunLogDelta(payload)
     }
 
     public var context: AppContext {
@@ -1485,7 +823,7 @@ public final class AppStore: ObservableObject {
     }
 
     public func messages(for sessionID: UUID) -> [ChatMessage] {
-        (messagesBySession[sessionID] ?? []).sorted(by: Self.messageDisplayOrder)
+        chatService.messages(for: sessionID)
     }
 
     public func pendingComposerAttachments(for sessionID: UUID) -> [ComposerAttachment] {
@@ -1504,27 +842,7 @@ public final class AppStore: ObservableObject {
         composerService.clearPendingComposerAttachments(sessionID: sessionID)
     }
 
-    private func attachmentPayload(for sessionID: UUID, messageID: UUID) -> [ComposerAttachment] {
-        composerService.attachmentPayload(for: sessionID, messageID: messageID)
-    }
-
-    private func attachmentsFromArtifactRefs(_ refs: [ChatArtifactReference]) -> [ComposerAttachment] {
-        composerService.attachmentsFromArtifactRefs(refs)
-    }
-
-    private func setAttachmentPayload(
-        for sessionID: UUID,
-        messageID: UUID,
-        attachments: [ComposerAttachment]
-    ) {
-        composerService.setAttachmentPayload(for: sessionID, messageID: messageID, attachments: attachments)
-    }
-
-    private func pruneAttachmentPayloads(for sessionID: UUID, keptMessageIDs: Set<UUID>) {
-        composerService.pruneAttachmentPayloads(for: sessionID, keptMessageIDs: keptMessageIDs)
-    }
-
-    private static func messageDisplayOrder(_ lhs: ChatMessage, _ rhs: ChatMessage) -> Bool {
+    static func messageDisplayOrder(_ lhs: ChatMessage, _ rhs: ChatMessage) -> Bool {
         if lhs.createdAt != rhs.createdAt {
             return lhs.createdAt < rhs.createdAt
         }
@@ -1576,58 +894,27 @@ public final class AppStore: ObservableObject {
     }
 
     public func liveAgentEvents(for sessionID: UUID) -> [AgentLiveEvent] {
-        (liveAgentEventsBySession[sessionID] ?? []).sorted { $0.createdAt < $1.createdAt }
+        chatService.liveAgentEvents(for: sessionID)
     }
 
     public func activeInlineProcess(for sessionID: UUID) -> ActiveInlineProcess? {
-        activeInlineProcessBySession[sessionID]
+        chatService.activeInlineProcess(for: sessionID)
     }
 
     public func pendingInlineProcess(for sessionID: UUID) -> ActiveInlineProcess? {
-        guard let process = activeInlineProcessBySession[sessionID],
-              process.assistantMessageID == nil
-        else { return nil }
-        return process
+        chatService.pendingInlineProcess(for: sessionID)
     }
 
     public func activeInlineProcess(for sessionID: UUID, assistantMessageID: UUID) -> ActiveInlineProcess? {
-        guard let process = activeInlineProcessBySession[sessionID],
-              process.assistantMessageID == assistantMessageID
-        else { return nil }
-        return process
+        chatService.activeInlineProcess(for: sessionID, assistantMessageID: assistantMessageID)
     }
 
     public func persistedProcessSummary(for assistantMessageID: UUID) -> AssistantProcessSummary? {
-        persistedProcessSummaryByMessageID[assistantMessageID]
-    }
-
-    private func retrySource(for messageID: UUID, in sessionID: UUID) -> (text: String, userMessageID: UUID?)? {
-        let sessionMessages = messages(for: sessionID)
-        guard let index = sessionMessages.firstIndex(where: { $0.id == messageID }) else { return nil }
-        let message = sessionMessages[index]
-
-        let source: String
-        let sourceUserMessageID: UUID?
-        switch message.role {
-        case .user:
-            source = message.text
-            sourceUserMessageID = nil
-        case .assistant:
-            let previous = sessionMessages[..<index].last(where: { $0.role == .user })
-            source = previous?.text ?? message.text
-            sourceUserMessageID = previous?.id
-        case .tool, .system:
-            source = message.text
-            sourceUserMessageID = nil
-        }
-
-        let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        return (trimmed, sourceUserMessageID)
+        chatService.persistedProcessSummary(for: assistantMessageID)
     }
 
     public func retrySourceText(for messageID: UUID, in sessionID: UUID) -> String? {
-        retrySource(for: messageID, in: sessionID)?.text
+        chatService.retrySourceText(for: messageID, in: sessionID)
     }
 
     public func retryMessage(
@@ -1636,24 +923,7 @@ public final class AppStore: ObservableObject {
         fromMessageID messageID: UUID,
         modelIdOverride: String? = nil
     ) {
-        if let modelIdOverride {
-            let trimmed = modelIdOverride.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                setSelectedModelId(for: sessionID, modelId: trimmed)
-            }
-        }
-
-        guard let source = retrySource(for: messageID, in: sessionID) else { return }
-        if let userMessageID = source.userMessageID {
-            overwriteUserMessage(
-                projectID: projectID,
-                sessionID: sessionID,
-                messageID: userMessageID,
-                text: source.text
-            )
-            return
-        }
-        sendMessage(projectID: projectID, sessionID: sessionID, text: source.text)
+        chatService.retryMessage(projectID: projectID, sessionID: sessionID, fromMessageID: messageID, modelIdOverride: modelIdOverride)
     }
 
     public func overwriteUserMessage(
@@ -1662,81 +932,7 @@ public final class AppStore: ObservableObject {
         messageID: UUID,
         text: String
     ) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        var messages = messages(for: sessionID)
-        guard let editIndex = messages.firstIndex(where: { $0.id == messageID }) else { return }
-        guard messages[editIndex].role == .user else { return }
-        let existingArtifactRefs = messages[editIndex].artifactRefs
-        let existingAttachments = attachmentPayload(for: sessionID, messageID: messageID)
-        let effectiveAttachments = existingAttachments.isEmpty ? attachmentsFromArtifactRefs(existingArtifactRefs) : existingAttachments
-
-        messages[editIndex].text = trimmed
-        messages[editIndex].artifactRefs = existingArtifactRefs
-        messages[editIndex].proposedPlan = nil
-
-        let keptMessages = Array(messages.prefix(editIndex + 1))
-        let keptIDs = Set(keptMessages.map(\.id))
-        messagesBySession[sessionID] = keptMessages
-        pruneAttachmentPayloads(for: sessionID, keptMessageIDs: keptIDs)
-        setAttachmentPayload(for: sessionID, messageID: messageID, attachments: effectiveAttachments)
-        persistedProcessSummaryByMessageID = persistedProcessSummaryByMessageID.filter { summary in
-            if summary.value.sessionID != sessionID {
-                return true
-            }
-            return keptIDs.contains(summary.key)
-        }
-
-        planService.pendingApprovalsBySession[sessionID] = nil
-        livePlanBySession[sessionID] = nil
-        activeInlineProcessBySession[sessionID] = nil
-        clearLiveAgentEvents(sessionID: sessionID)
-        for (planID, mappedSessionID) in planService.planSessionByPlanID where mappedSessionID == sessionID {
-            planService.planSessionByPlanID[planID] = nil
-        }
-        streamingSessions.remove(sessionID)
-        streamingAssistantMessageIDBySession[sessionID] = nil
-
-        var pendingEchos = pendingLocalUserEchosBySession[sessionID] ?? []
-        pendingEchos.removeAll { !keptIDs.contains($0.localId) }
-        if isGatewayConfigured {
-            pendingEchos.removeAll { $0.localId == messageID }
-            pendingEchos.append(
-                PendingLocalUserEcho(
-                    localId: messageID,
-                    text: trimmed,
-                    createdAt: .now,
-                    artifactRefs: existingArtifactRefs,
-                    attachments: effectiveAttachments
-                )
-            )
-        }
-        pendingLocalUserEchosBySession[sessionID] = pendingEchos.isEmpty ? nil : pendingEchos
-
-        if isGatewayConfigured {
-            sendGatewayChatMessage(
-                projectID: projectID,
-                sessionID: sessionID,
-                text: trimmed,
-                attachmentRefs: existingArtifactRefs,
-                attachments: effectiveAttachments,
-                overwriteMessageID: messageID
-            )
-            return
-        }
-
-        let existingArtifacts = artifactsByProject[projectID] ?? []
-        Task { [weak self] in
-            guard let self else { return }
-            let response = await backend.generateAssistantResponse(
-                projectID: projectID,
-                sessionID: sessionID,
-                userText: trimmed,
-                existingArtifacts: existingArtifacts
-            )
-            self.applyAssistantResponse(projectID: projectID, sessionID: sessionID, response: response)
-        }
+        chatService.overwriteUserMessage(projectID: projectID, sessionID: sessionID, messageID: messageID, text: text)
     }
 
     @discardableResult
@@ -1746,35 +942,7 @@ public final class AppStore: ObservableObject {
         fromMessageID messageID: UUID,
         modelIdOverride: String? = nil
     ) async -> Session? {
-        guard let text = retrySourceText(for: messageID, in: sessionID) else { return nil }
-
-        let sourceTitle = sessions(for: projectID).first(where: { $0.id == sessionID })?.title
-        let branchTitle = sourceTitle.map { "\($0) (Branch)" }
-
-        guard let branched = await createSession(projectID: projectID, title: branchTitle) else { return nil }
-
-        let selectedModel = selectedModelId(for: sessionID)
-        let selectedThinking = selectedThinkingLevel(for: sessionID)
-        let selectedPlanMode = planModeEnabled(for: sessionID)
-        let selectedPermission = permissionLevel(for: sessionID)
-
-        if let modelIdOverride {
-            let trimmed = modelIdOverride.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                setSelectedModelId(for: branched.id, modelId: trimmed)
-            } else if !selectedModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                setSelectedModelId(for: branched.id, modelId: selectedModel)
-            }
-        } else if !selectedModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            setSelectedModelId(for: branched.id, modelId: selectedModel)
-        }
-
-        setSelectedThinkingLevel(for: branched.id, level: selectedThinking)
-        setPlanModeEnabled(for: branched.id, enabled: selectedPlanMode)
-        setPermissionLevel(projectID: branched.projectID, sessionID: branched.id, level: selectedPermission)
-
-        sendMessage(projectID: branched.projectID, sessionID: branched.id, text: text)
-        return branched
+        await chatService.branchFromMessage(projectID: projectID, sessionID: sessionID, fromMessageID: messageID, modelIdOverride: modelIdOverride)
     }
 
     public func pendingApproval(for sessionID: UUID) -> PendingApproval? {
@@ -1835,17 +1003,17 @@ public final class AppStore: ObservableObject {
         activeProjectID = projectID
         activeSessionID = nil
 
-        for (id, task) in sessionHistoryPrefetchTasksByProject where id != projectID {
+        for (id, task) in chatService.sessionHistoryPrefetchTasksByProject where id != projectID {
             task.cancel()
-            sessionHistoryPrefetchTasksByProject[id] = nil
+            chatService.sessionHistoryPrefetchTasksByProject[id] = nil
         }
 
         if isGatewayConnected {
-            scheduleSessionHistoryPrefetch(projectID: projectID)
+            chatService.scheduleSessionHistoryPrefetch(projectID: projectID)
             Task { [weak self] in
                 guard let self else { return }
                 await self.refreshProjectFromGateway(projectID: projectID)
-                self.scheduleSessionHistoryPrefetch(projectID: projectID)
+                self.chatService.scheduleSessionHistoryPrefetch(projectID: projectID)
             }
         }
     }
@@ -1858,7 +1026,7 @@ public final class AppStore: ObservableObject {
 
         if isGatewayConnected {
             Task { [weak self] in
-                await self?.refreshSessionHistoryFromGateway(projectID: projectID, sessionID: sessionID, trigger: .interactive)
+                await self?.chatService.refreshSessionHistoryFromGateway(projectID: projectID, sessionID: sessionID, trigger: .interactive)
             }
         }
     }
@@ -1881,7 +1049,7 @@ public final class AppStore: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             guard let session = await createSession(projectID: projectID, title: nil) else { return }
-            sendMessage(projectID: session.projectID, sessionID: session.id, text: firstMessage)
+            chatService.sendMessage(projectID: session.projectID, sessionID: session.id, text: firstMessage)
         }
     }
 
@@ -1919,271 +1087,13 @@ public final class AppStore: ObservableObject {
         projectService.removeSessionLocally(projectID: projectID, sessionID: sessionID)
     }
 
-    private func makeSessionAttachmentReferences(
-        projectID: UUID,
-        sessionID: UUID,
-        attachments: [ComposerAttachment]
-    ) -> [ChatArtifactReference] {
-        composerService.makeSessionAttachmentReferences(projectID: projectID, sessionID: sessionID, attachments: attachments)
-    }
-
     public func sendMessage(
         projectID: UUID,
         sessionID: UUID,
         text: String,
         attachments: [ComposerAttachment]? = nil
     ) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        let effectiveAttachments = attachments ?? pendingComposerAttachments(for: sessionID)
-        let attachmentRefs = makeSessionAttachmentReferences(
-            projectID: projectID,
-            sessionID: sessionID,
-            attachments: effectiveAttachments
-        )
-
-        beginInlineProcess(sessionID: sessionID, runID: UUID())
-        clearLiveAgentEvents(sessionID: sessionID)
-
-        if isGatewayConfigured {
-            // Gateway-configured mode (real backend): never silently fall back to mock.
-            let localUserMessage = ChatMessage(sessionID: sessionID, role: .user, text: trimmed, artifactRefs: attachmentRefs)
-            messagesBySession[sessionID, default: []].append(localUserMessage)
-            pendingLocalUserEchosBySession[sessionID, default: []].append(
-                PendingLocalUserEcho(
-                    localId: localUserMessage.id,
-                    text: trimmed,
-                    createdAt: localUserMessage.createdAt,
-                    artifactRefs: attachmentRefs,
-                    attachments: effectiveAttachments
-                )
-            )
-            setAttachmentPayload(
-                for: sessionID,
-                messageID: localUserMessage.id,
-                attachments: effectiveAttachments
-            )
-            sendGatewayChatMessage(
-                projectID: projectID,
-                sessionID: sessionID,
-                text: trimmed,
-                attachmentRefs: attachmentRefs,
-                attachments: effectiveAttachments
-            )
-            clearPendingComposerAttachments(sessionID: sessionID)
-            return
-        }
-
-        let userMessage = ChatMessage(sessionID: sessionID, role: .user, text: trimmed, artifactRefs: attachmentRefs)
-        messagesBySession[sessionID, default: []].append(userMessage)
-        setAttachmentPayload(
-            for: sessionID,
-            messageID: userMessage.id,
-            attachments: effectiveAttachments
-        )
-        clearPendingComposerAttachments(sessionID: sessionID)
-
-        let existingArtifacts = artifactsByProject[projectID] ?? []
-
-        Task { [weak self] in
-            guard let self else { return }
-            let response = await backend.generateAssistantResponse(
-                projectID: projectID,
-                sessionID: sessionID,
-                userText: trimmed,
-                existingArtifacts: existingArtifacts
-            )
-            self.applyAssistantResponse(projectID: projectID, sessionID: sessionID, response: response)
-        }
-    }
-
-    private func sendGatewayChatMessage(
-        projectID: UUID,
-        sessionID: UUID,
-        text: String,
-        attachmentRefs: [ChatArtifactReference] = [],
-        attachments: [ComposerAttachment] = [],
-        overwriteMessageID: UUID? = nil
-    ) {
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            let connected = await self.ensureGatewayConnectedForChat()
-            guard connected, self.isGatewayConnected, let gatewayClient = self.gatewayClient else {
-                self.appendGatewayConnectionError(sessionID: sessionID)
-                return
-            }
-
-            let params = self.makeGatewayChatParams(
-                projectID: projectID,
-                sessionID: sessionID,
-                text: text,
-                attachmentRefs: attachmentRefs,
-                attachments: attachments,
-                overwriteMessageID: overwriteMessageID
-            )
-            do {
-                _ = try await gatewayClient.request(
-                    method: "chat.send",
-                    params: params
-                )
-                self.lastGatewayErrorMessage = nil
-            } catch {
-                self.lastGatewayErrorMessage = error.localizedDescription
-                let recovered = await self.recoverMissingGatewaySessionAndResend(
-                    error: error,
-                    projectID: projectID,
-                    sessionID: sessionID,
-                    text: text,
-                    attachmentRefs: attachmentRefs,
-                    attachments: attachments,
-                    overwriteMessageID: overwriteMessageID,
-                    gatewayClient: gatewayClient
-                )
-                guard !recovered else { return }
-                self.finalizeInlineProcess(sessionID: sessionID, failed: true)
-                self.clearLiveAgentEvents(sessionID: sessionID)
-                let sys = ChatMessage(
-                    sessionID: sessionID,
-                    role: .system,
-                    text: "Send failed: \(error.localizedDescription)"
-                )
-                self.messagesBySession[sessionID, default: []].append(sys)
-            }
-        }
-    }
-
-    private func makeGatewayChatParams(
-        projectID: UUID,
-        sessionID: UUID,
-        text: String,
-        attachmentRefs: [ChatArtifactReference] = [],
-        attachments: [ComposerAttachment] = [],
-        overwriteMessageID: UUID? = nil
-    ) -> GatewayChatSendParams {
-        let modelIdRaw = selectedModelId(for: sessionID).trimmingCharacters(in: .whitespacesAndNewlines)
-        let modelId = modelIdRaw.isEmpty ? nil : modelIdRaw
-        let thinking = selectedThinkingLevel(for: sessionID)
-        let planMode = planModeEnabled(for: sessionID)
-        let permissionLevel = permissionLevel(for: sessionID)
-        let payloadAttachments: [GatewayChatAttachment]? = attachmentRefs.isEmpty ? nil : attachmentRefs.enumerated().map { index, ref in
-            let source: ComposerAttachment? = {
-                if let artifactID = ref.artifactID {
-                    if let direct = attachments.first(where: { $0.id == artifactID }) {
-                        return direct
-                    }
-                }
-                if attachments.indices.contains(index) {
-                    return attachments[index]
-                }
-                return attachments.first(where: { $0.displayName == ref.displayText })
-            }()
-            return GatewayChatAttachment(
-                id: ref.artifactID?.uuidString ?? source?.id.uuidString ?? UUID().uuidString,
-                scope: ref.scope ?? "session",
-                name: ref.displayText,
-                path: ref.path,
-                mimeType: source?.mimeType ?? ref.mimeType,
-                inlineDataBase64: source?.inlineDataBase64 ?? ref.inlineDataBase64,
-                byteCount: source?.byteCount ?? ref.byteCount
-            )
-        }
-        return GatewayChatSendParams(
-            projectId: Self.gatewayID(projectID),
-            sessionId: Self.gatewayID(sessionID),
-            text: text,
-            overwriteMessageId: overwriteMessageID.map(Self.gatewayID),
-            attachments: payloadAttachments,
-            modelId: modelId,
-            thinkingLevel: thinking,
-            planMode: planMode,
-            permissionLevel: permissionLevel
-        )
-    }
-
-    private func appendGatewayConnectionError(sessionID: UUID) {
-        activeInlineProcessBySession[sessionID] = nil
-        clearLiveAgentEvents(sessionID: sessionID)
-        let detail: String
-        switch gatewayConnectionState {
-        case .disconnected:
-            detail = "Disconnected"
-        case .connecting:
-            detail = "Connecting…"
-        case let .failed(message):
-            detail = "Failed: \(message)"
-        case .connected:
-            detail = "Connected"
-        }
-        let sys = ChatMessage(
-            sessionID: sessionID,
-            role: .system,
-            text: "Gateway not connected (\(detail)). Open Settings and connect to your Hub (e.g. ws://127.0.0.1:8787/ws)."
-        )
-        messagesBySession[sessionID, default: []].append(sys)
-    }
-
-    private func recoverMissingGatewaySessionAndResend(
-        error: Error,
-        projectID: UUID,
-        sessionID: UUID,
-        text: String,
-        attachmentRefs: [ChatArtifactReference],
-        attachments: [ComposerAttachment],
-        overwriteMessageID: UUID?,
-        gatewayClient: GatewayClient
-    ) async -> Bool {
-        guard isGatewaySessionNotFoundError(error) else { return false }
-        _ = overwriteMessageID
-        let nonSystemMessageCount = localNonSystemMessageCount(for: sessionID)
-        guard Self.shouldAutoRecoverMissingGatewaySession(localNonSystemMessageCount: nonSystemMessageCount) else {
-            return false
-        }
-
-        let previousActiveProjectID = activeProjectID
-        let previousActiveSessionID = activeSessionID
-
-        let title = sessions(for: projectID).first(where: { $0.id == sessionID })?.title
-        let modelId = selectedModelId(for: sessionID)
-        let thinking = selectedThinkingLevel(for: sessionID)
-        let planMode = planModeEnabled(for: sessionID)
-        let permission = permissionLevel(for: sessionID)
-
-        guard let recovered = await createSession(projectID: projectID, title: title) else {
-            return false
-        }
-
-        if !modelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            setSelectedModelId(for: recovered.id, modelId: modelId)
-        }
-        setSelectedThinkingLevel(for: recovered.id, level: thinking)
-        setPlanModeEnabled(for: recovered.id, enabled: planMode)
-        setPermissionLevel(projectID: recovered.projectID, sessionID: recovered.id, level: permission)
-
-        let params = makeGatewayChatParams(
-            projectID: recovered.projectID,
-            sessionID: recovered.id,
-            text: text,
-            attachmentRefs: attachmentRefs,
-            attachments: attachments,
-            overwriteMessageID: nil
-        )
-        do {
-            _ = try await gatewayClient.request(method: "chat.send", params: params)
-            messagesBySession[recovered.id, default: []].append(
-                ChatMessage(
-                    sessionID: recovered.id,
-                    role: .system,
-                    text: "Recovered broken session state and resent your message."
-                )
-            )
-            return true
-        } catch {
-            if activeSessionID == recovered.id {
-                activeProjectID = previousActiveProjectID
-                activeSessionID = previousActiveSessionID
-            }
-            return false
-        }
+        chatService.sendMessage(projectID: projectID, sessionID: sessionID, text: text, attachments: attachments)
     }
 
     static func shouldAutoRecoverMissingGatewaySession(localNonSystemMessageCount: Int) -> Bool {
@@ -2204,14 +1114,6 @@ public final class AppStore: ObservableObject {
 
     nonisolated public static func shouldAutoScrollWhenStreamingCompletes() -> Bool {
         false
-    }
-
-    private func localNonSystemMessageCount(for sessionID: UUID) -> Int {
-        (messagesBySession[sessionID] ?? []).reduce(into: 0) { count, message in
-            if message.role != .system {
-                count += 1
-            }
-        }
     }
 
     func isGatewayProjectNotFoundError(_ error: Error) -> Bool {
@@ -2391,32 +1293,6 @@ public final class AppStore: ObservableObject {
 
         public func fetchArtifactData(projectID: UUID, path: String) async -> Data? {
         await projectService.fetchArtifactData(projectID: projectID, path: path)
-    }
-
-        private func applyAssistantResponse(projectID: UUID, sessionID: UUID, response: AssistantResponse) {
-        clearLiveAgentEvents(sessionID: sessionID)
-        let assistant = ChatMessage(
-            sessionID: sessionID,
-            role: .assistant,
-            text: response.text,
-            artifactRefs: response.artifactRefs,
-            proposedPlan: response.proposedPlan
-        )
-
-        messagesBySession[sessionID, default: []].append(assistant)
-        finalizeInlineProcess(sessionID: sessionID, failed: false, assistantMessageIDFallback: assistant.id)
-        if let plan = response.proposedPlan {
-            let pending = PendingApproval(
-                planId: plan.id,
-                projectId: projectID,
-                sessionId: sessionID,
-                agentRunId: UUID(),
-                plan: plan,
-                required: true,
-                judgment: nil
-            )
-            planService.pendingApprovalsBySession[sessionID] = pending
-        }
     }
 
 
