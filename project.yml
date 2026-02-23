@@ -40,6 +40,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: labos.LabOSApp
         GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSCameraUsageDescription: LabOS uses the camera to capture photos you attach to chat messages.
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: LabOS uses your photo library so you can attach recent photos to chat messages.
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIRequiresFullScreen: NO
