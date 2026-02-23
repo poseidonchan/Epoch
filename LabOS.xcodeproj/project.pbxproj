@@ -23,6 +23,7 @@
 		215F7FD44374892A5BFAB816 /* KaTeX_Size4-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 53DFC00E56A1723C4B15FA2B /* KaTeX_Size4-Regular.woff2 */; };
 		21C639B2FD960EBEEFE6F12B /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF33BCF594E0FEF19FB1D36E /* AppStore.swift */; };
 		229E435623611882336A09B7 /* LabOSProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25C5BF0DD4E3B6E5314952BD /* LabOSProtocol.swift */; };
+		288DBD6FD8C135D54CA196F1 /* ChatSessionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F5EB56B6AA0DF224C9B8547 /* ChatSessionService.swift */; };
 		28ECED3E2461C9B1BCA8CD52 /* E2EHarnessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7BB43E2ADD6A46C3DD4680A /* E2EHarnessTests.swift */; };
 		2B7CA07414DBD4A7F9341A7B /* E2EUIHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5883672F6E6FC27274EFDDD2 /* E2EUIHelpers.swift */; };
 		323E5F26CFE57FF6AEF54EC6 /* KaTeX_AMS-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 441902AFE6E3819C81211088 /* KaTeX_AMS-Regular.woff2 */; };
@@ -38,6 +39,7 @@
 		49C6BE44BAE21640B235DF26 /* KaTeX_Size2-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = BDC64475632A5108467A6488 /* KaTeX_Size2-Regular.woff2 */; };
 		4AA35B45D0B7ABBEFF62FEE8 /* highlight.min.js in Resources */ = {isa = PBXBuildFile; fileRef = ED08A4B17D2F9D7A624CD9FF /* highlight.min.js */; };
 		4B85659EFDDC3B10DC41B08F /* MarkdownMathView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD868C2720E3412B2648601D /* MarkdownMathView.swift */; };
+		4EA2C3A78A8E5B15BF1EC4D4 /* PlanApprovalService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97A7E282A296EC2D7DA787CB /* PlanApprovalService.swift */; };
 		55DF02110B1A2C7471985040 /* DeepLinkCodecTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABC2F7238BE0457330703F6A /* DeepLinkCodecTests.swift */; };
 		56A2115CDBE138DB963C1A28 /* GatewayClientReliabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6C58EED796865ECDDBEDAA1 /* GatewayClientReliabilityTests.swift */; };
 		5A684A338B7C176F9EA3358C /* katex.min.css in Resources */ = {isa = PBXBuildFile; fileRef = DA8C11D2397443BB0731D0E8 /* katex.min.css */; };
@@ -56,6 +58,7 @@
 		7879A3325E9B8161BCFF565F /* ResultsPageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 159089CD69C77937163DE776 /* ResultsPageView.swift */; };
 		7B29A783D94BC99672B86D9D /* markdown-it.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 68072333E8448431914BAC24 /* markdown-it.min.js */; };
 		838CBFCB75F2F298D73A23B2 /* LabOSCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9A843BC31C423DF184FB7A9B /* LabOSCore.framework */; };
+		8C4D1865574A909B58FF4E46 /* ProjectService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35D2CBD7AECD6011FDEE5F1E /* ProjectService.swift */; };
 		8D2D98B77FB7B5555812C46A /* E2EPhotoAttachmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28F4311CC547CC29B42EF9FD /* E2EPhotoAttachmentTests.swift */; };
 		943C592F0EE7DB0661AC44E7 /* KaTeX_Main-Italic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = C21B47F7AAFD8B26F87441CC /* KaTeX_Main-Italic.woff2 */; };
 		97DC8BCCC264ADF5B7F83D00 /* markdown-math-renderer.js in Resources */ = {isa = PBXBuildFile; fileRef = 4B73551CDAFFFCFB66EC92FF /* markdown-math-renderer.js */; };
@@ -90,6 +93,7 @@
 		DEB70226C019576F71D771D7 /* KaTeX_Math-Italic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 889DD25ABE8EC1B218AB82E7 /* KaTeX_Math-Italic.woff2 */; };
 		E1AD2001D831D093B578E2DD /* ProjectsDrawerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F2A63CE55013CFDE15FACCA /* ProjectsDrawerView.swift */; };
 		E3790E020C8F5630B9ACAA93 /* KaTeX_Size3-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 3521D0203F1384F620518026 /* KaTeX_Size3-Regular.woff2 */; };
+		E8680185E3100A5214C5B21B /* ComposerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 829FEF7F456D1B161770311D /* ComposerService.swift */; };
 		ECD30007D702964E34C826AD /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = 458D033A6A936A607513EBFE /* MarkdownUI */; };
 		ED37E6C0F88B55CC8FA15D0F /* github-dark.min.css in Resources */ = {isa = PBXBuildFile; fileRef = 0D6DBF2B2CDBD9752C2565E4 /* github-dark.min.css */; };
 		F002F285DFA8639FB84C4CC9 /* AppStoreMessageActionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83E22632C22AAC7281260589 /* AppStoreMessageActionsTests.swift */; };
@@ -171,6 +175,7 @@
 		338B5238E0B8D823517C31E8 /* E2EStepRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = E2EStepRunner.swift; sourceTree = "<group>"; };
 		3504441E2680132F455E0B91 /* AppStoreLiveActivityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreLiveActivityTests.swift; sourceTree = "<group>"; };
 		3521D0203F1384F620518026 /* KaTeX_Size3-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Size3-Regular.woff2"; sourceTree = "<group>"; };
+		35D2CBD7AECD6011FDEE5F1E /* ProjectService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectService.swift; sourceTree = "<group>"; };
 		3A6F2C956353F9F947C4A29D /* github.min.css */ = {isa = PBXFileReference; lastKnownFileType = text.css; path = github.min.css; sourceTree = "<group>"; };
 		3FB7089EA136E78CEE406EBA /* katex.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = katex.min.js; sourceTree = "<group>"; };
 		43263C860C87506E8E6863F3 /* KaTeX_Size1-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Size1-Regular.woff2"; sourceTree = "<group>"; };
@@ -201,6 +206,7 @@
 		7E0441216B1BBE72A8EB402F /* ArtifactPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtifactPreviewView.swift; sourceTree = "<group>"; };
 		82559E781F62B7DD85CF3B15 /* KaTeX_Fraktur-Bold.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Fraktur-Bold.woff2"; sourceTree = "<group>"; };
 		82647FFDDB9DF9F05D35DD61 /* auto-render.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = "auto-render.min.js"; sourceTree = "<group>"; };
+		829FEF7F456D1B161770311D /* ComposerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerService.swift; sourceTree = "<group>"; };
 		83E22632C22AAC7281260589 /* AppStoreMessageActionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreMessageActionsTests.swift; sourceTree = "<group>"; };
 		880A05505B9B8F7875A1B4B9 /* E2EProjectLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = E2EProjectLifecycleTests.swift; sourceTree = "<group>"; };
 		889DD25ABE8EC1B218AB82E7 /* KaTeX_Math-Italic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Math-Italic.woff2"; sourceTree = "<group>"; };
@@ -209,9 +215,11 @@
 		8D8629BBAB929B267ACA5A59 /* E2ETestAttachmentFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = E2ETestAttachmentFactory.swift; sourceTree = "<group>"; };
 		8F875C7DCA032C300F110C79 /* python.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = python.min.js; sourceTree = "<group>"; };
 		92CE6023B893EA9183DFA4D1 /* LabOSApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = LabOSApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		97A7E282A296EC2D7DA787CB /* PlanApprovalService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanApprovalService.swift; sourceTree = "<group>"; };
 		9A5C04B5E8665CAB79907795 /* KaTeX_Main-BoldItalic.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Main-BoldItalic.woff2"; sourceTree = "<group>"; };
 		9A843BC31C423DF184FB7A9B /* LabOSCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = LabOSCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		9E91F2EFED08A9EAE52D3B0E /* r.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = r.min.js; sourceTree = "<group>"; };
+		9F5EB56B6AA0DF224C9B8547 /* ChatSessionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatSessionService.swift; sourceTree = "<group>"; };
 		A626EEC81411153FDA9EA502 /* KaTeX_Fraktur-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Fraktur-Regular.woff2"; sourceTree = "<group>"; };
 		A6C58EED796865ECDDBEDAA1 /* GatewayClientReliabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayClientReliabilityTests.swift; sourceTree = "<group>"; };
 		A6E262B87B8743CD4AA62E60 /* GatewayContract.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayContract.swift; sourceTree = "<group>"; };
@@ -385,10 +393,14 @@
 				C108FC01D09EC28BCE24705C /* APIContract.swift */,
 				CF33BCF594E0FEF19FB1D36E /* AppStore.swift */,
 				145932BF8855354FD1A80F8D /* BackendClient.swift */,
+				9F5EB56B6AA0DF224C9B8547 /* ChatSessionService.swift */,
+				829FEF7F456D1B161770311D /* ComposerService.swift */,
 				158785FA49BA6D68BA47E5A9 /* DeepLink.swift */,
 				BEB4C1D7D1F37888E563709C /* GatewayClient.swift */,
 				12C093E585B2F2E43590E4D3 /* Models.swift */,
 				59F41EE3BD9C29D6B10E3C71 /* NotebookDocument.swift */,
+				97A7E282A296EC2D7DA787CB /* PlanApprovalService.swift */,
+				35D2CBD7AECD6011FDEE5F1E /* ProjectService.swift */,
 				89442CB7CD873C8921DA8133 /* Generated */,
 			);
 			name = LabOSCore;
@@ -730,12 +742,16 @@
 				69BA9ED22289FF9936A22AD5 /* APIContract.swift in Sources */,
 				21C639B2FD960EBEEFE6F12B /* AppStore.swift in Sources */,
 				D0C8A49CEBA0F23A802C3BDE /* BackendClient.swift in Sources */,
+				288DBD6FD8C135D54CA196F1 /* ChatSessionService.swift in Sources */,
+				E8680185E3100A5214C5B21B /* ComposerService.swift in Sources */,
 				A41C51299BCE6D56299DA622 /* DeepLink.swift in Sources */,
 				D708C455D571F30B9A325704 /* GatewayClient.swift in Sources */,
 				FFD1602C8B45C81B373D596C /* GatewayContract.swift in Sources */,
 				229E435623611882336A09B7 /* LabOSProtocol.swift in Sources */,
 				CBFDEA2BCBAAE9D66F52A1BE /* Models.swift in Sources */,
 				74B8D2B347B4A376AA874F31 /* NotebookDocument.swift in Sources */,
+				4EA2C3A78A8E5B15BF1EC4D4 /* PlanApprovalService.swift in Sources */,
+				8C4D1865574A909B58FF4E46 /* ProjectService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -996,15 +1012,15 @@
 		8D3A41FDE4AFDD25C89A031F /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-					ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-					CODE_SIGN_IDENTITY = "iPhone Developer";
-					GENERATE_INFOPLIST_FILE = YES;
-					INFOPLIST_KEY_NSCameraUsageDescription = "LabOS uses the camera to capture photos you attach to chat messages.";
-					INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "LabOS uses your photo library so you can attach recent photos to chat messages.";
-					INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-					INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-					INFOPLIST_KEY_UIRequiresFullScreen = NO;
-					INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "LabOS uses the camera to capture photos you attach to chat messages.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "LabOS uses your photo library so you can attach recent photos to chat messages.";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIRequiresFullScreen = NO;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1057,15 +1073,15 @@
 		E90AFFA078621B84197AADE2 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-					ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-					CODE_SIGN_IDENTITY = "iPhone Developer";
-					GENERATE_INFOPLIST_FILE = YES;
-					INFOPLIST_KEY_NSCameraUsageDescription = "LabOS uses the camera to capture photos you attach to chat messages.";
-					INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "LabOS uses your photo library so you can attach recent photos to chat messages.";
-					INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-					INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-					INFOPLIST_KEY_UIRequiresFullScreen = NO;
-					INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "LabOS uses the camera to capture photos you attach to chat messages.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "LabOS uses your photo library so you can attach recent photos to chat messages.";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIRequiresFullScreen = NO;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
