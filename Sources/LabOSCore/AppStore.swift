@@ -1295,18 +1295,8 @@ public final class AppStore: ObservableObject {
         await projectService.fetchArtifactData(projectID: projectID, path: path)
     }
 
-
-
     private func ensureComposerPrefs(sessionID: UUID) {
         composerService.ensureComposerPrefs(sessionID: sessionID)
-    }
-
-    private func normalizeThinkingPrefs(sessionID: UUID) {
-        composerService.ensureComposerPrefs(sessionID: sessionID)
-    }
-
-    private func setSessionLifecycle(projectID: UUID, sessionID: UUID, lifecycle: SessionLifecycle) {
-        projectService.setSessionLifecycle(projectID: projectID, sessionID: sessionID, lifecycle: lifecycle)
     }
 
     private func setTemporaryArtifactHighlight(_ path: String) {
