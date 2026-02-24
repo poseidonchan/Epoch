@@ -476,6 +476,13 @@ function normalizeNonEmptyString(raw: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function normalizeNullableString(raw: unknown): string | null {
+  if (raw == null) return null;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function normalizeNonNegativeInteger(raw: unknown): number | null {
   if (typeof raw === "number" && Number.isFinite(raw)) {
     const next = Math.floor(raw);
@@ -500,15 +507,16 @@ function stripEngineOverride(params: Record<string, unknown>): Record<string, un
 export async function maybePersistThreadFromResponse(repository: CodexRepository, response: Record<string, unknown>, engine: string) {
   const threadRaw = (response.thread ?? null) as Record<string, unknown> | null;
   if (!threadRaw || typeof threadRaw.id !== "string") return;
+  const threadId = String(threadRaw.id);
   const scopedIds = engine === "codex-app-server";
 
-  const existing = await repository.getThreadRecord(threadRaw.id);
+  const existing = await repository.getThreadRecord(threadId);
   const createdAt = Number(threadRaw.createdAt ?? nowUnixSeconds());
   const updatedAt = Number(threadRaw.updatedAt ?? createdAt);
 
   if (!existing) {
     await repository.createThread({
-      id: threadRaw.id,
+      id: threadId,
       projectId: null,
       cwd: normalizeNonEmptyString(threadRaw.cwd) ?? process.cwd(),
       modelProvider: normalizeNonEmptyString(threadRaw.modelProvider) ?? "unknown",
@@ -519,7 +527,7 @@ export async function maybePersistThreadFromResponse(repository: CodexRepository
       createdAt,
     });
     if (updatedAt !== createdAt) {
-      await repository.updateThread({ id: threadRaw.id, updatedAt });
+      await repository.updateThread({ id: threadId, updatedAt });
     }
     return;
   }
@@ -545,15 +553,15 @@ export async function maybePersistThreadFromResponse(repository: CodexRepository
   // PK collisions in LabOS storage while keeping wire payloads unchanged.
   const scopedTurns = normalizedTurns.map((turn) => ({
     ...turn,
-    id: scopedTurnId(threadRaw.id, turn.id, scopedIds),
+    id: scopedTurnId(threadId, turn.id, scopedIds),
   }));
 
-  const existingTurns = await repository.listTurnRecords(threadRaw.id);
+  const existingTurns = await repository.listTurnRecords(threadId);
   const existingTurnIds = new Set(existingTurns.map((turn) => turn.id));
   const desiredTurnIds = new Set(scopedTurns.map((turn) => turn.id));
   const staleTurnIds = existingTurns.map((turn) => turn.id).filter((id) => !desiredTurnIds.has(id));
   if (staleTurnIds.length > 0) {
-    await repository.removeTurns(threadRaw.id, staleTurnIds);
+    await repository.removeTurns(threadId, staleTurnIds);
   }
 
   const createdAtBase = nowUnixSeconds();
@@ -562,7 +570,7 @@ export async function maybePersistThreadFromResponse(repository: CodexRepository
     if (!existingTurnIds.has(turn.id)) {
       await repository.createTurn({
         id: turn.id,
-        threadId: threadRaw.id,
+        threadId,
         status: turn.status,
         error: turn.error,
         createdAt: turnCreatedAt,
@@ -574,15 +582,15 @@ export async function maybePersistThreadFromResponse(repository: CodexRepository
         status: turn.status,
         error: turn.error,
         completedAt: turn.status === "inProgress" ? null : nowUnixSeconds(),
-        touchThreadId: threadRaw.id,
+        touchThreadId: threadId,
       });
     }
 
     for (const item of turn.items) {
       const rawItemId = String(item.id);
       await repository.upsertItem({
-        id: scopedItemId(threadRaw.id, rawItemId, scopedIds),
-        threadId: threadRaw.id,
+        id: scopedItemId(threadId, rawItemId, scopedIds),
+        threadId,
         turnId: turn.id,
         type: String(item.type),
         payload: item,

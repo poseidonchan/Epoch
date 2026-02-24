@@ -432,6 +432,7 @@ public struct CodexPendingPrompt: Identifiable, Hashable, Sendable {
     public var threadId: String
     public var turnId: String?
     public var prompt: String?
+    public var questions: [CodexPromptQuestion]
     public var rawParams: JSONValue?
 
     public init(
@@ -440,6 +441,7 @@ public struct CodexPendingPrompt: Identifiable, Hashable, Sendable {
         threadId: String,
         turnId: String?,
         prompt: String?,
+        questions: [CodexPromptQuestion] = [],
         rawParams: JSONValue?
     ) {
         self.requestID = requestID
@@ -447,6 +449,64 @@ public struct CodexPendingPrompt: Identifiable, Hashable, Sendable {
         self.threadId = threadId
         self.turnId = turnId
         self.prompt = prompt
+        self.questions = questions
         self.rawParams = rawParams
+    }
+}
+
+public struct CodexPromptQuestion: Hashable, Sendable {
+    public var id: String
+    public var prompt: String
+    public var options: [CodexPromptOption]
+
+    public init(id: String, prompt: String, options: [CodexPromptOption]) {
+        self.id = id
+        self.prompt = prompt
+        self.options = options
+    }
+}
+
+public struct CodexPromptOption: Hashable, Sendable {
+    public var id: String
+    public var label: String
+    public var description: String?
+    public var isOther: Bool
+
+    public init(id: String, label: String, description: String? = nil, isOther: Bool = false) {
+        self.id = id
+        self.label = label
+        self.description = description
+        self.isOther = isOther
+    }
+}
+
+public enum CodexSteerQueueItemStatus: String, Hashable, Sendable {
+    case queued
+    case sending
+    case failed
+}
+
+public struct CodexSteerQueueItem: Identifiable, Hashable, Sendable {
+    public var id: UUID
+    public var sessionID: UUID
+    public var text: String
+    public var createdAt: Date
+    public var status: CodexSteerQueueItemStatus
+    public var error: String?
+
+    public init(
+        id: UUID = UUID(),
+        sessionID: UUID,
+        text: String,
+        createdAt: Date = .now,
+        status: CodexSteerQueueItemStatus = .queued,
+        error: String? = nil
+    ) {
+        self.id = id
+        self.sessionID = sessionID
+        self.text = text
+        self.createdAt = createdAt
+        self.status = status
+        self.error = error
     }
 }

@@ -200,7 +200,6 @@ private struct HomeSettingsSheet: View {
 
     @State private var wsURLString = ""
     @State private var token = ""
-    @State private var backendEngine = "pi"
     @State private var hpcPartition = ""
     @State private var hpcAccount = ""
     @State private var hpcQos = ""
@@ -254,40 +253,16 @@ private struct HomeSettingsSheet: View {
                 }
 
                 Section("Backend") {
-                    Picker("Engine", selection: $backendEngine) {
-                        Text("Pi Adapter").tag("pi")
-                        Text("Codex App Server").tag("codex-app-server")
-                    }
-                    .pickerStyle(.segmented)
-                    .accessibilityIdentifier("settings.backend.engine")
-                    .onChange(of: backendEngine) { _, value in
-                        store.savePreferredBackendEngine(value)
-                        backendEngine = store.preferredBackendEngine
-                        Task { @MainActor in
-                            if let activeProjectID = store.activeProjectID,
-                               let activeSessionID = store.activeSessionID {
-                                await store.updateSessionBackend(
-                                    projectID: activeProjectID,
-                                    sessionID: activeSessionID,
-                                    backendEngine: store.preferredBackendEngine
-                                )
-                                showToast("Backend applied to current session")
-                            } else {
-                                showToast("Backend saved for new sessions")
-                            }
-                        }
-                    }
-
+                    LabeledContent("Engine", value: "Codex App Server")
+                        .accessibilityIdentifier("settings.backend.engine")
                     LabeledContent("Codex RPC", value: codexConnectionStatusText)
 
                     if let activeSession = store.activeSession {
-                        let activeBackend = store.backendEngine(for: activeSession.id) ?? "pi"
                         LabeledContent("Active session", value: activeSession.title)
-                        LabeledContent("Session backend", value: backendDisplayName(activeBackend))
+                        LabeledContent("Session backend", value: "Codex App Server")
                     } else if let activeProject = store.activeProject {
-                        let activeBackend = normalizedBackend(activeProject.backendEngine)
                         LabeledContent("Active project", value: activeProject.name)
-                        LabeledContent("Project backend", value: backendDisplayName(activeBackend))
+                        LabeledContent("Project backend", value: "Codex App Server")
                     } else {
                         LabeledContent("Scope", value: "Used for new projects/sessions")
                     }
@@ -363,7 +338,6 @@ private struct HomeSettingsSheet: View {
             .onAppear {
                 wsURLString = store.gatewayWSURLString
                 token = store.gatewayToken
-                backendEngine = store.preferredBackendEngine
                 hpcPartition = store.hpcPartition
                 hpcAccount = store.hpcAccount
                 hpcQos = store.hpcQos
@@ -415,23 +389,6 @@ private struct HomeSettingsSheet: View {
         let a = hpc.account?.isEmpty == false ? hpc.account! : "—"
         let q = hpc.qos?.isEmpty == false ? hpc.qos! : "—"
         return "p=\(p) a=\(a) q=\(q)"
-    }
-
-    private func backendDisplayName(_ backend: String) -> String {
-        switch backend {
-        case "codex-app-server":
-            return "Codex App Server"
-        default:
-            return "Pi Adapter"
-        }
-    }
-
-    private func normalizedBackend(_ backend: String?) -> String {
-        let value = backend?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        if value == "codex" || value == "codex-app-server" {
-            return "codex-app-server"
-        }
-        return "pi"
     }
 
     private func formatTres(_ tres: HPCStatus.Tres?) -> String {

@@ -41,16 +41,18 @@ internal final class ChatSessionService {
         var threadId: String
         var input: [CodexTurnInputPart]
         var model: String?
+        var planMode: Bool
+    }
+
+    private struct CodexTurnSteerParams: Codable, Sendable {
+        var threadId: String
+        var turnId: String
+        var text: String
     }
 
     private struct CodexThreadReadParams: Codable, Sendable {
         var threadId: String
         var includeTurns: Bool
-    }
-
-    private struct CodexThreadRollbackParams: Codable, Sendable {
-        var threadId: String
-        var numTurns: Int
     }
 
     private struct CodexSessionReadParams: Codable, Sendable {
@@ -90,6 +92,10 @@ internal final class ChatSessionService {
         store.messagesBySession[sessionID] = nil
         store.streamingSessions.remove(sessionID)
         store.streamingAssistantMessageIDBySession[sessionID] = nil
+        store.codexActiveTurnIDBySession[sessionID] = nil
+        store.codexSteerQueueBySession[sessionID] = nil
+        store.codexPendingApprovalsBySession[sessionID] = nil
+        store.codexPendingPromptBySession[sessionID] = nil
         store.sessionContextBySession[sessionID] = nil
         store.liveAgentEventsBySession[sessionID] = nil
         store.activeInlineProcessBySession[sessionID] = nil
@@ -159,6 +165,16 @@ internal final class ChatSessionService {
             attachments: effectiveAttachments
         )
 
+        if store.sessionUsesCodex(sessionID: sessionID), store.streamingSessions.contains(sessionID) {
+            if hasText {
+                enqueueCodexSteerInput(sessionID: sessionID, text: trimmed)
+                store.clearPendingComposerAttachments(sessionID: sessionID)
+            } else if hasAttachments {
+                store.lastGatewayErrorMessage = "Steer messages can only include text while a turn is running."
+            }
+            return
+        }
+
         beginInlineProcess(sessionID: sessionID, runID: UUID())
         clearLiveAgentEvents(sessionID: sessionID)
 
@@ -224,6 +240,85 @@ internal final class ChatSessionService {
         }
     }
 
+    func steerQueuedCodexInput(sessionID: UUID, queueItemID: UUID) {
+        guard store.sessionUsesCodex(sessionID: sessionID) else { return }
+        guard var queue = store.codexSteerQueueBySession[sessionID],
+              let itemIndex = queue.firstIndex(where: { $0.id == queueItemID })
+        else { return }
+
+        var item = queue[itemIndex]
+        let steerText = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !steerText.isEmpty else {
+            queue[itemIndex].status = .failed
+            queue[itemIndex].error = "Steer text cannot be empty."
+            store.codexSteerQueueBySession[sessionID] = queue
+            return
+        }
+
+        guard let threadId = store.codexThreadBySession[sessionID],
+              let turnId = store.codexActiveTurnIDBySession[sessionID]
+        else {
+            queue[itemIndex].status = .failed
+            queue[itemIndex].error = "No active turn is available yet. Retry once the turn starts."
+            store.codexSteerQueueBySession[sessionID] = queue
+            return
+        }
+
+        queue[itemIndex].status = .sending
+        queue[itemIndex].error = nil
+        store.codexSteerQueueBySession[sessionID] = queue
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.store.requestCodex(
+                    method: "turn/steer",
+                    params: CodexTurnSteerParams(
+                        threadId: threadId,
+                        turnId: turnId,
+                        text: steerText
+                    )
+                )
+                await MainActor.run {
+                    guard var updatedQueue = self.store.codexSteerQueueBySession[sessionID] else { return }
+                    updatedQueue.removeAll { $0.id == queueItemID }
+                    self.store.codexSteerQueueBySession[sessionID] = updatedQueue.isEmpty ? nil : updatedQueue
+                }
+            } catch {
+                await MainActor.run {
+                    guard var updatedQueue = self.store.codexSteerQueueBySession[sessionID],
+                          let updatedIndex = updatedQueue.firstIndex(where: { $0.id == queueItemID })
+                    else { return }
+                    updatedQueue[updatedIndex].status = .failed
+                    updatedQueue[updatedIndex].error = error.localizedDescription
+                    self.store.codexSteerQueueBySession[sessionID] = updatedQueue
+                }
+            }
+        }
+    }
+
+    func removeQueuedCodexInput(sessionID: UUID, queueItemID: UUID) {
+        guard var queue = store.codexSteerQueueBySession[sessionID] else { return }
+        queue.removeAll { $0.id == queueItemID }
+        store.codexSteerQueueBySession[sessionID] = queue.isEmpty ? nil : queue
+    }
+
+    private func enqueueCodexSteerInput(sessionID: UUID, text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        var queue = store.codexSteerQueueBySession[sessionID] ?? []
+        queue.append(
+            CodexSteerQueueItem(
+                sessionID: sessionID,
+                text: trimmed,
+                status: .queued,
+                error: nil
+            )
+        )
+        store.codexSteerQueueBySession[sessionID] = queue
+    }
+
     private func sendCodexTurnMessage(
         projectID: UUID,
         sessionID: UUID,
@@ -232,6 +327,7 @@ internal final class ChatSessionService {
     ) {
         store.streamingSessions.insert(sessionID)
         store.codexStatusTextBySession[sessionID] = "connecting"
+        store.codexPendingThreadBindingSessions.insert(sessionID)
 
         Task { [weak self] in
             guard let self else { return }
@@ -239,14 +335,20 @@ internal final class ChatSessionService {
             guard codexReady else {
                 self.store.lastGatewayErrorMessage = "Codex backend is selected, but /codex is not connected."
                 self.store.codexStatusTextBySession[sessionID] = "failed"
+                self.store.codexActiveTurnIDBySession[sessionID] = nil
+                self.store.codexSteerQueueBySession[sessionID] = nil
                 self.store.streamingSessions.remove(sessionID)
+                self.store.codexPendingThreadBindingSessions.remove(sessionID)
                 return
             }
 
             guard let threadId = await self.resolveCodexThreadId(projectID: projectID, sessionID: sessionID) else {
                 self.store.lastGatewayErrorMessage = "Session is missing codex thread mapping."
                 self.store.codexStatusTextBySession[sessionID] = "failed"
+                self.store.codexActiveTurnIDBySession[sessionID] = nil
+                self.store.codexSteerQueueBySession[sessionID] = nil
                 self.store.streamingSessions.remove(sessionID)
+                self.store.codexPendingThreadBindingSessions.remove(sessionID)
                 return
             }
 
@@ -257,17 +359,24 @@ internal final class ChatSessionService {
             guard !input.isEmpty else {
                 self.store.lastGatewayErrorMessage = "No Codex-compatible input was provided."
                 self.store.codexStatusTextBySession[sessionID] = "failed"
+                self.store.codexActiveTurnIDBySession[sessionID] = nil
+                self.store.codexSteerQueueBySession[sessionID] = nil
                 self.store.streamingSessions.remove(sessionID)
+                self.store.codexPendingThreadBindingSessions.remove(sessionID)
                 return
             }
+
+            self.appendLocalCodexUserEcho(sessionID: sessionID, from: input)
             let model = self.store.selectedModelId(for: sessionID).trimmingCharacters(in: .whitespacesAndNewlines)
+            let planMode = self.store.planModeEnabled(for: sessionID)
             do {
                 let response = try await self.store.requestCodex(
                     method: "turn/start",
                     params: CodexTurnStartParams(
                         threadId: threadId,
                         input: input,
-                        model: model.isEmpty ? nil : model
+                        model: model.isEmpty ? nil : model,
+                        planMode: planMode
                     )
                 )
                 if let payload = response.result?.objectValue {
@@ -284,11 +393,20 @@ internal final class ChatSessionService {
                        let status = turn["status"]?.stringValue {
                         self.store.codexStatusTextBySession[sessionID] = status
                     }
+                    if let turn = payload["turn"]?.objectValue,
+                       let turnId = turn["id"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !turnId.isEmpty {
+                        self.store.codexActiveTurnIDBySession[sessionID] = turnId
+                    }
                 }
+                self.store.codexPendingThreadBindingSessions.remove(sessionID)
             } catch {
                 self.store.lastGatewayErrorMessage = error.localizedDescription
                 self.store.codexStatusTextBySession[sessionID] = "failed"
+                self.store.codexActiveTurnIDBySession[sessionID] = nil
+                self.store.codexSteerQueueBySession[sessionID] = nil
                 self.store.streamingSessions.remove(sessionID)
+                self.store.codexPendingThreadBindingSessions.remove(sessionID)
             }
         }
     }
@@ -348,6 +466,25 @@ internal final class ChatSessionService {
         }
 
         return parts
+    }
+
+    private func appendLocalCodexUserEcho(sessionID: UUID, from input: [CodexTurnInputPart]) {
+        let content = Self.codexUserInputs(from: input)
+        guard !content.isEmpty else { return }
+
+        let item = CodexThreadItem.userMessage(
+            CodexUserMessageItem(
+                type: "userMessage",
+                id: "\(AppStore.codexLocalUserItemPrefix)\(UUID().uuidString.lowercased())",
+                content: content
+            )
+        )
+
+        let existing = store.codexItemsBySession[sessionID] ?? []
+        store.codexItemsBySession[sessionID] = AppStore.upsertCodexItemPreservingLocalEchoes(
+            items: existing,
+            incoming: item
+        )
     }
 
     private func stageAttachmentImageLocally(data: Data, fileName: String) -> String? {
@@ -482,122 +619,6 @@ internal final class ChatSessionService {
             return
         }
         sendMessage(projectID: projectID, sessionID: sessionID, text: source.text)
-    }
-
-    func retryCodexAgentMessage(
-        projectID: UUID,
-        sessionID: UUID,
-        assistantItemID: String,
-        assistantText: String? = nil,
-        modelIdOverride: String? = nil
-    ) {
-        if let modelIdOverride {
-            let trimmed = modelIdOverride.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                store.setSelectedModelId(for: sessionID, modelId: trimmed)
-            }
-        }
-
-        let normalizedAssistantItemID = assistantItemID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedAssistantItemID.isEmpty else { return }
-
-        beginInlineProcess(sessionID: sessionID, runID: UUID())
-        clearLiveAgentEvents(sessionID: sessionID)
-        store.streamingSessions.insert(sessionID)
-        store.codexStatusTextBySession[sessionID] = "thinking"
-
-        Task { [weak self] in
-            guard let self else { return }
-
-            let codexReady = await self.store.ensureCodexConnectedForChat()
-            guard codexReady else {
-                self.store.lastGatewayErrorMessage = "Codex backend is selected, but /codex is not connected."
-                self.store.codexStatusTextBySession[sessionID] = "failed"
-                self.store.streamingSessions.remove(sessionID)
-                return
-            }
-
-            guard let threadId = await self.resolveCodexThreadId(projectID: projectID, sessionID: sessionID) else {
-                self.store.lastGatewayErrorMessage = "Session is missing codex thread mapping."
-                self.store.codexStatusTextBySession[sessionID] = "failed"
-                self.store.streamingSessions.remove(sessionID)
-                return
-            }
-
-            do {
-                let threadResponse = try await self.store.requestCodex(
-                    method: "thread/read",
-                    params: CodexThreadReadParams(threadId: threadId, includeTurns: true)
-                )
-                let thread: CodexThread = try self.store.decodeCodexResult(threadResponse.result, key: "thread")
-
-                guard let plan = Self.codexRegeneratePlan(
-                    thread: thread,
-                    assistantItemID: normalizedAssistantItemID,
-                    assistantText: assistantText
-                ) else {
-                    self.store.lastGatewayErrorMessage = "Unable to regenerate from the selected message."
-                    self.store.codexStatusTextBySession[sessionID] = "failed"
-                    self.store.streamingSessions.remove(sessionID)
-                    return
-                }
-
-                let rollbackResponse = try await self.store.requestCodex(
-                    method: "thread/rollback",
-                    params: CodexThreadRollbackParams(
-                        threadId: thread.id,
-                        numTurns: plan.numTurnsToRollback
-                    )
-                )
-                let rolledThread: CodexThread = try self.store.decodeCodexResult(rollbackResponse.result, key: "thread")
-
-                if thread.id != rolledThread.id {
-                    self.store.codexSessionByThread[thread.id] = nil
-                }
-                self.store.codexThreadBySession[sessionID] = rolledThread.id
-                self.store.codexSessionByThread[rolledThread.id] = sessionID
-                self.store.codexItemsBySession[sessionID] = Self.flattenCodexTurns(rolledThread.turns)
-                self.store.codexPendingApprovalsBySession[sessionID] = []
-                self.store.codexPendingPromptBySession[sessionID] = nil
-
-                let turnInput = Self.codexTurnInputParts(from: plan.sourceInput)
-                guard !turnInput.isEmpty else {
-                    self.store.lastGatewayErrorMessage = "Regenerate source input was empty."
-                    self.store.codexStatusTextBySession[sessionID] = "failed"
-                    self.store.streamingSessions.remove(sessionID)
-                    return
-                }
-
-                let model = self.store.selectedModelId(for: sessionID).trimmingCharacters(in: .whitespacesAndNewlines)
-                let response = try await self.store.requestCodex(
-                    method: "turn/start",
-                    params: CodexTurnStartParams(
-                        threadId: rolledThread.id,
-                        input: turnInput,
-                        model: model.isEmpty ? nil : model
-                    )
-                )
-                if let payload = response.result?.objectValue {
-                    if let returnedThreadId = payload["threadId"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
-                       !returnedThreadId.isEmpty {
-                        let previousThreadId = self.store.codexThreadBySession[sessionID]
-                        if let previousThreadId, previousThreadId != returnedThreadId {
-                            self.store.codexSessionByThread[previousThreadId] = nil
-                        }
-                        self.store.codexThreadBySession[sessionID] = returnedThreadId
-                        self.store.codexSessionByThread[returnedThreadId] = sessionID
-                    }
-                    if let turn = payload["turn"]?.objectValue,
-                       let status = turn["status"]?.stringValue {
-                        self.store.codexStatusTextBySession[sessionID] = status
-                    }
-                }
-            } catch {
-                self.store.lastGatewayErrorMessage = error.localizedDescription
-                self.store.codexStatusTextBySession[sessionID] = "failed"
-                self.store.streamingSessions.remove(sessionID)
-            }
-        }
     }
 
     func retrySourceText(for messageID: UUID, in sessionID: UUID) -> String? {
@@ -830,10 +851,16 @@ internal final class ChatSessionService {
         guard let gatewayClient = store.gatewayClient else { return }
         let now = Date()
         let hasLocalMessages = !(store.messagesBySession[sessionID]?.isEmpty ?? true)
+        let hasStreamingState = store.streamingSessions.contains(sessionID)
+        let hasInProgressStatus = false
+        let hasTransientIncomplete = store.streamingAssistantMessageIDBySession[sessionID] != nil
         if AppStore.shouldSkipSessionHistoryRefresh(
             trigger: trigger,
             hasInFlightRequest: sessionHistoryRequestsInFlight.contains(sessionID),
             hasLocalMessages: hasLocalMessages,
+            hasStreamingState: hasStreamingState,
+            hasInProgressStatus: hasInProgressStatus,
+            hasTransientIncomplete: hasTransientIncomplete,
             lastFetchedAt: sessionHistoryLastFetchedAtBySession[sessionID],
             now: now,
             prefetchCooldown: sessionHistoryPrefetchCooldown,
@@ -892,10 +919,20 @@ internal final class ChatSessionService {
     ) async {
         let now = Date()
         let hasLocalItems = !(store.codexItemsBySession[sessionID]?.isEmpty ?? true)
+        let hasStreamingState = store.streamingSessions.contains(sessionID)
+        let statusRaw = store.codexStatusTextBySession[sessionID]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let hasInProgressStatus = statusRaw == "inprogress" || statusRaw == "in_progress" || statusRaw == "thinking"
+        let hasTransientIncomplete =
+            store.streamingAssistantMessageIDBySession[sessionID] != nil
+            || store.codexPendingPromptBySession[sessionID] != nil
+            || !(store.codexPendingApprovalsBySession[sessionID] ?? []).isEmpty
         if AppStore.shouldSkipSessionHistoryRefresh(
             trigger: trigger,
             hasInFlightRequest: sessionHistoryRequestsInFlight.contains(sessionID),
             hasLocalMessages: hasLocalItems,
+            hasStreamingState: hasStreamingState,
+            hasInProgressStatus: hasInProgressStatus,
+            hasTransientIncomplete: hasTransientIncomplete,
             lastFetchedAt: sessionHistoryLastFetchedAtBySession[sessionID],
             now: now,
             prefetchCooldown: sessionHistoryPrefetchCooldown,
@@ -960,14 +997,36 @@ internal final class ChatSessionService {
                 }
                 store.codexThreadBySession[sessionID] = thread.id
                 store.codexSessionByThread[thread.id] = sessionID
-                store.codexItemsBySession[sessionID] = Self.flattenCodexTurns(thread.turns)
+                let fetchedItems = Self.flattenCodexTurns(thread.turns)
+                let existingItems = store.codexItemsBySession[sessionID] ?? []
+                let latestTurnStatus = thread.turns.last?.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let fetchedTurnInProgress = latestTurnStatus == "inprogress" || latestTurnStatus == "in_progress"
+                let keepLocalInFlightItems =
+                    fetchedTurnInProgress
+                    || (latestTurnStatus == nil && store.streamingSessions.contains(sessionID))
+                store.codexItemsBySession[sessionID] = keepLocalInFlightItems
+                    ? Self.mergeHistoryItemsPreservingInFlightLocals(local: existingItems, fetched: fetchedItems)
+                    : fetchedItems
                 if let lastStatus = thread.turns.last?.status {
                     store.codexStatusTextBySession[sessionID] = lastStatus
-                    if lastStatus == "inProgress" {
+                    let normalizedStatus = lastStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    if normalizedStatus == "inprogress" || normalizedStatus == "in_progress" {
                         store.streamingSessions.insert(sessionID)
+                        if let activeTurnID = thread.turns.last?.id.trimmingCharacters(in: .whitespacesAndNewlines),
+                           !activeTurnID.isEmpty {
+                            store.codexActiveTurnIDBySession[sessionID] = activeTurnID
+                        }
                     } else {
                         store.streamingSessions.remove(sessionID)
+                        store.streamingAssistantMessageIDBySession[sessionID] = nil
+                        store.codexActiveTurnIDBySession[sessionID] = nil
+                        store.codexSteerQueueBySession[sessionID] = nil
                     }
+                } else if !keepLocalInFlightItems {
+                    store.streamingSessions.remove(sessionID)
+                    store.streamingAssistantMessageIDBySession[sessionID] = nil
+                    store.codexActiveTurnIDBySession[sessionID] = nil
+                    store.codexSteerQueueBySession[sessionID] = nil
                 }
             } else {
                 store.codexItemsBySession[sessionID] = store.codexItemsBySession[sessionID] ?? []
@@ -1010,7 +1069,7 @@ internal final class ChatSessionService {
 
         let targetTurnIndexByID: Int? = {
             guard !normalizedAssistantItemID.isEmpty else { return nil }
-            return thread.turns.firstIndex(where: { turn in
+            return thread.turns.lastIndex(where: { turn in
                 turn.items.contains { item in
                     if case let .agentMessage(agent) = item {
                         return agent.id.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedAssistantItemID
@@ -1137,6 +1196,74 @@ internal final class ChatSessionService {
             }
         }
         return parts
+    }
+
+    private static func codexUserInputs(from inputParts: [CodexTurnInputPart]) -> [CodexUserInput] {
+        var result: [CodexUserInput] = []
+        for part in inputParts {
+            let type = part.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            switch type {
+            case "text":
+                let text = part.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !text.isEmpty {
+                    result.append(CodexUserInput(type: "text", text: text, url: nil, path: nil))
+                }
+            case "localimage":
+                let path = part.path?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !path.isEmpty {
+                    result.append(CodexUserInput(type: "localImage", text: nil, url: nil, path: path))
+                }
+            case "image":
+                let url = part.url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !url.isEmpty {
+                    result.append(CodexUserInput(type: "image", text: nil, url: url, path: nil))
+                }
+            default:
+                continue
+            }
+        }
+        return result
+    }
+
+    internal static func mergeHistoryItemsPreservingInFlightLocals(
+        local: [CodexThreadItem],
+        fetched: [CodexThreadItem]
+    ) -> [CodexThreadItem] {
+        guard !local.isEmpty else { return fetched }
+        guard !fetched.isEmpty else { return local }
+
+        var merged = fetched
+        let fetchedIDs = Set(fetched.map(\.id))
+        let fetchedUserSignatures = Set(
+            fetched.compactMap { item -> String? in
+                guard case let .userMessage(user) = item else { return nil }
+                let signature = AppStore.codexUserContentSignature(user.content)
+                return signature.isEmpty ? nil : signature
+            }
+        )
+
+        for localItem in local {
+            if fetchedIDs.contains(localItem.id) {
+                guard case let .agentMessage(localAgent) = localItem,
+                      let fetchedIndex = merged.firstIndex(where: { $0.id == localItem.id }),
+                      case let .agentMessage(fetchedAgent) = merged[fetchedIndex],
+                      localAgent.text.count > fetchedAgent.text.count
+                else { continue }
+                merged[fetchedIndex] = .agentMessage(localAgent)
+                continue
+            }
+
+            if case let .userMessage(localUser) = localItem,
+               localUser.id.hasPrefix(AppStore.codexLocalUserItemPrefix) {
+                let signature = AppStore.codexUserContentSignature(localUser.content)
+                if !signature.isEmpty, fetchedUserSignatures.contains(signature) {
+                    continue
+                }
+            }
+
+            merged.append(localItem)
+        }
+        return merged
     }
 
     private static func flattenCodexTurns(_ turns: [CodexTurn]) -> [CodexThreadItem] {

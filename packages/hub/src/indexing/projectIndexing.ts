@@ -74,21 +74,37 @@ export async function runProjectUploadIndexing(input: IndexUploadInput, deps: In
     if (chunks.length === 0) throw new Error("No chunks were generated for extracted text");
 
     const apiKey = await deps.getOpenAIApiKey();
-    if (!apiKey) throw new Error("OpenAI API key is required for file embedding");
+    let embeddingModel: string | null = null;
+    let chunkEmbeddings: number[][] = [];
 
-    const embeddingsResult = await embedTextsWithOpenAI(chunks, { apiKey });
-    if (embeddingsResult.vectors.length !== chunks.length) {
-      throw new Error(`Embedding count mismatch: expected ${chunks.length}, got ${embeddingsResult.vectors.length}`);
+    if (apiKey) {
+      try {
+        const embeddingsResult = await embedTextsWithOpenAI(chunks, { apiKey });
+        if (embeddingsResult.vectors.length !== chunks.length) {
+          throw new Error(`Embedding count mismatch: expected ${chunks.length}, got ${embeddingsResult.vectors.length}`);
+        }
+        embeddingModel = embeddingsResult.model;
+        chunkEmbeddings = embeddingsResult.vectors;
+      } catch {
+        // Keep indexing available without remote embeddings by falling back to
+        // lexical-only retrieval (empty vectors).
+        chunkEmbeddings = chunks.map(() => []);
+      }
+    } else {
+      // No embedding key configured; still index chunks so lexical retrieval works.
+      chunkEmbeddings = chunks.map(() => []);
     }
 
     let summaryModel: string | null = null;
     let summaryText = fallbackExtractiveSummary(extractedText);
-    try {
-      const summaryResult = await summarizeTextWithOpenAI(extractedText, { apiKey });
-      summaryModel = summaryResult.model;
-      summaryText = summaryResult.summary || summaryText;
-    } catch {
-      // Keep extractive fallback summary when model summarization fails.
+    if (apiKey) {
+      try {
+        const summaryResult = await summarizeTextWithOpenAI(extractedText, { apiKey });
+        summaryModel = summaryResult.model;
+        summaryText = summaryResult.summary || summaryText;
+      } catch {
+        // Keep extractive fallback summary when model summarization fails.
+      }
     }
 
     const indexedAt = new Date().toISOString();
@@ -96,7 +112,7 @@ export async function runProjectUploadIndexing(input: IndexUploadInput, deps: In
 
     for (let idx = 0; idx < chunks.length; idx += 1) {
       const content = chunks[idx];
-      const embedding = embeddingsResult.vectors[idx] ?? [];
+      const embedding = chunkEmbeddings[idx] ?? [];
       await deps.pool.query(
         `INSERT INTO project_file_chunk (
             project_id, artifact_path, chunk_index, content, token_estimate, embedding_json, created_at
@@ -113,7 +129,7 @@ export async function runProjectUploadIndexing(input: IndexUploadInput, deps: In
       );
     }
 
-    const embeddingDim = embeddingsResult.vectors[0]?.length ?? 0;
+    const embeddingDim = chunkEmbeddings[0]?.length ?? 0;
     await deps.pool.query(
       `UPDATE project_file_index SET
           status='indexed',
@@ -135,7 +151,7 @@ export async function runProjectUploadIndexing(input: IndexUploadInput, deps: In
         extractedText,
         summaryText,
         summaryModel,
-        embeddingsResult.model,
+        embeddingModel,
         embeddingDim,
         chunks.length,
         indexedAt,

@@ -14,17 +14,35 @@ final class AppStoreSemanticsTests: XCTestCase {
             return
         }
 
-        store.sendMessage(projectID: project.id, sessionID: session.id, text: "download data and run analysis")
-        try await waitUntil(timeoutSeconds: 2.0) {
-            store.pendingPlan(for: session.id) != nil
-        }
-
-        XCTAssertEqual(store.runs(for: project.id).count, 0, "Run should not exist until plan is approved")
-
-        store.approvePlan(sessionID: session.id)
-        try await waitUntil(timeoutSeconds: 5.0) {
-            store.runs(for: project.id).contains(where: { $0.status == .succeeded })
-        }
+        store.messagesBySession[session.id] = [
+            ChatMessage(sessionID: session.id, role: .user, text: "hello")
+        ]
+        store.codexItemsBySession[session.id] = [
+            .userMessage(
+                CodexUserMessageItem(
+                    type: "userMessage",
+                    id: "item_user_1",
+                    content: [CodexUserInput(type: "text", text: "hello", url: nil, path: nil)]
+                )
+            )
+        ]
+        store.runsByProject[project.id] = [
+            RunRecord(
+                projectID: project.id,
+                sessionID: session.id,
+                status: .succeeded,
+                currentStep: 1,
+                totalSteps: 1,
+                logSnippet: "ok",
+                stepTitles: ["step"]
+            )
+        ]
+        _ = store.projectService.upsertArtifact(
+            projectID: project.id,
+            path: "artifacts/result.txt",
+            createdBySessionID: session.id,
+            origin: .generated
+        )
 
         let artifactsBeforeDelete = store.artifacts(for: project.id)
         XCTAssertFalse(artifactsBeforeDelete.isEmpty)
@@ -35,6 +53,7 @@ final class AppStoreSemanticsTests: XCTestCase {
         XCTAssertEqual(artifactsAfterDelete.count, artifactsBeforeDelete.count)
         XCTAssertTrue(store.sessions(for: project.id).isEmpty)
         XCTAssertTrue(store.messages(for: session.id).isEmpty)
+        XCTAssertTrue(store.codexItems(for: session.id).isEmpty)
 
         let detachedRuns = store.runs(for: project.id)
         XCTAssertTrue(detachedRuns.allSatisfy { $0.sessionID == nil }, "Run references should be detached from deleted session")
@@ -51,15 +70,26 @@ final class AppStoreSemanticsTests: XCTestCase {
             return
         }
 
-        store.sendMessage(projectID: project.id, sessionID: session.id, text: "run full analysis")
-        try await waitUntil(timeoutSeconds: 2.0) {
-            store.pendingPlan(for: session.id) != nil
-        }
-        store.approvePlan(sessionID: session.id)
-
-        try await waitUntil(timeoutSeconds: 5.0) {
-            store.runs(for: project.id).contains(where: { $0.status == .succeeded })
-        }
+        store.messagesBySession[session.id] = [
+            ChatMessage(sessionID: session.id, role: .assistant, text: "done")
+        ]
+        store.runsByProject[project.id] = [
+            RunRecord(
+                projectID: project.id,
+                sessionID: session.id,
+                status: .succeeded,
+                currentStep: 1,
+                totalSteps: 1,
+                logSnippet: "ok",
+                stepTitles: ["step"]
+            )
+        ]
+        _ = store.projectService.upsertArtifact(
+            projectID: project.id,
+            path: "artifacts/report.txt",
+            createdBySessionID: session.id,
+            origin: .generated
+        )
 
         XCTAssertFalse(store.sessions(for: project.id).isEmpty)
         XCTAssertFalse(store.artifacts(for: project.id).isEmpty)
@@ -84,10 +114,29 @@ final class AppStoreSemanticsTests: XCTestCase {
             return
         }
 
-        store.sendMessage(projectID: project.id, sessionID: session.id, text: "execute pipeline")
-        try await waitUntil(timeoutSeconds: 2.0) {
-            store.pendingPlan(for: session.id) != nil
-        }
+        let plan = ExecutionPlan(
+            projectID: project.id,
+            sessionID: session.id,
+            steps: [
+                PlanStep(
+                    title: "Execute pipeline",
+                    runtime: .shell,
+                    inputs: [],
+                    outputs: ["artifacts/output.txt"]
+                )
+            ]
+        )
+        let pending = PendingApproval(
+            planId: UUID(),
+            projectId: project.id,
+            sessionId: session.id,
+            agentRunId: UUID(),
+            plan: plan,
+            required: true,
+            judgment: nil
+        )
+        store.planService.pendingApprovalsBySession[session.id] = pending
+        store.planService.planSessionByPlanID[pending.planId] = session.id
 
         store.cancelPlan(sessionID: session.id)
 
@@ -117,15 +166,18 @@ final class AppStoreSemanticsTests: XCTestCase {
         XCTAssertTrue(uploadedBeforeRun.allSatisfy { $0.path.hasPrefix("uploads/") })
         XCTAssertTrue(store.generatedArtifacts(for: project.id).isEmpty)
 
-        store.sendMessage(projectID: project.id, sessionID: session.id, text: "download and run analysis")
-        try await waitUntil(timeoutSeconds: 2.0) {
-            store.pendingPlan(for: session.id) != nil
-        }
-        store.approvePlan(sessionID: session.id)
-
-        try await waitUntil(timeoutSeconds: 5.0) {
-            store.runs(for: project.id).contains(where: { $0.status == .succeeded })
-        }
+        _ = store.projectService.upsertArtifact(
+            projectID: project.id,
+            path: "uploads/source.csv",
+            createdBySessionID: session.id,
+            origin: .generated
+        )
+        _ = store.projectService.upsertArtifact(
+            projectID: project.id,
+            path: "artifacts/summary.json",
+            createdBySessionID: session.id,
+            origin: .generated
+        )
 
         let uploadedAfterRun = store.uploadedArtifacts(for: project.id)
         let generatedAfterRun = store.generatedArtifacts(for: project.id)
@@ -150,16 +202,49 @@ final class AppStoreSemanticsTests: XCTestCase {
             sessionID: session.id,
             attachments: [
                 ComposerAttachment(displayName: "notes.txt", mimeType: "text/plain"),
-                ComposerAttachment(displayName: "figure.png", mimeType: "image/png")
+                ComposerAttachment(
+                    displayName: "figure.png",
+                    mimeType: "image/png",
+                    inlineDataBase64: Self.tinyPNGBase64,
+                    byteCount: 68
+                )
             ]
         )
 
-        store.sendMessage(projectID: project.id, sessionID: session.id, text: "Use my attachments")
+        let refs = store.composerService.makeSessionAttachmentReferences(
+            projectID: project.id,
+            sessionID: session.id,
+            attachments: store.pendingComposerAttachments(for: session.id)
+        )
+        XCTAssertEqual(refs.count, 2)
+        XCTAssertTrue(refs.allSatisfy { $0.scope == "session" })
 
-        let lastUserMessage = store.messages(for: session.id).last(where: { $0.role == .user })
-        XCTAssertNotNil(lastUserMessage)
-        XCTAssertEqual(lastUserMessage?.artifactRefs.count, 2)
-        XCTAssertTrue((lastUserMessage?.artifactRefs.allSatisfy { $0.scope == "session" }) ?? false)
+        makeCodexReady(store: store, sessionID: session.id, threadID: "thread_attach_1")
+        var capturedParams: JSONValue?
+        store.codexRequestOverrideForTests = { method, params in
+            if method == "turn/start" {
+                capturedParams = params
+            }
+            return CodexRPCResponse(
+                id: .string("turn_start_ok"),
+                result: .object([
+                    "threadId": .string("thread_attach_1"),
+                    "turn": .object([
+                        "id": .string("turn_attach_1"),
+                        "status": .string("inProgress"),
+                    ]),
+                ]),
+                error: nil
+            )
+        }
+
+        store.sendMessage(projectID: project.id, sessionID: session.id, text: "Use my attachments")
+        try await waitUntil(timeoutSeconds: 2.0) {
+            capturedParams != nil
+        }
+
+        let inputParts = capturedParams?.objectValue?["input"]?.arrayValue ?? []
+        XCTAssertTrue(inputParts.contains(where: { $0.objectValue?["type"]?.stringValue == "localImage" }))
         XCTAssertTrue(store.uploadedArtifacts(for: project.id).isEmpty, "Session composer attachments must not become project uploads")
         XCTAssertTrue(store.pendingComposerAttachments(for: session.id).isEmpty, "Pending attachments should clear after send")
     }
@@ -175,17 +260,61 @@ final class AppStoreSemanticsTests: XCTestCase {
             return
         }
 
+        makeCodexReady(store: store, sessionID: session.id, threadID: "thread_attach_2")
+
+        var capturedParams: JSONValue?
+        store.codexRequestOverrideForTests = { method, params in
+            if method == "turn/start" {
+                capturedParams = params
+            }
+            return CodexRPCResponse(
+                id: .string("turn_start_ok"),
+                result: .object([
+                    "threadId": .string("thread_attach_2"),
+                    "turn": .object([
+                        "id": .string("turn_attach_2"),
+                        "status": .string("inProgress"),
+                    ]),
+                ]),
+                error: nil
+            )
+        }
+
         let pending = [
-            ComposerAttachment(displayName: "draft.pdf", mimeType: "application/pdf")
+            ComposerAttachment(
+                displayName: "draft.png",
+                mimeType: "image/png",
+                inlineDataBase64: Self.tinyPNGBase64,
+                byteCount: 68
+            )
         ]
 
         store.sendMessage(projectID: project.id, sessionID: session.id, text: "Check this", attachments: pending)
+        try await waitUntil(timeoutSeconds: 2.0) {
+            capturedParams != nil
+        }
 
-        let lastUserMessage = store.messages(for: session.id).last(where: { $0.role == .user })
-        XCTAssertEqual(lastUserMessage?.artifactRefs.map(\.displayText), ["draft.pdf"])
-        XCTAssertEqual(lastUserMessage?.artifactRefs.first?.scope, "session")
+        let inputParts = capturedParams?.objectValue?["input"]?.arrayValue ?? []
+        XCTAssertTrue(inputParts.contains(where: { $0.objectValue?["type"]?.stringValue == "localImage" }))
+
+        let latestUser = store.codexItems(for: session.id).compactMap { item -> CodexUserMessageItem? in
+            if case let .userMessage(user) = item {
+                return user
+            }
+            return nil
+        }.last
+        XCTAssertNotNil(latestUser)
+        XCTAssertTrue((latestUser?.content.contains { $0.type == "localImage" }) ?? false)
         XCTAssertTrue(store.uploadedArtifacts(for: project.id).isEmpty)
     }
+
+    private func makeCodexReady(store: AppStore, sessionID: UUID, threadID: String) {
+        store.codexConnectionState = .connected
+        store.codexThreadBySession[sessionID] = threadID
+        store.codexSessionByThread[threadID] = sessionID
+    }
+
+    private static let tinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5GZfQAAAAASUVORK5CYII="
 
     private func waitUntil(
         timeoutSeconds: TimeInterval,

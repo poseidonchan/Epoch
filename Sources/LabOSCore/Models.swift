@@ -59,6 +59,9 @@ public struct Session: Identifiable, Hashable, Codable, Sendable {
     public var codexApprovalPolicy: String?
     public var codexSandbox: JSONValue?
     public var hpcWorkspaceState: String?
+    public var hasPendingUserInput: Bool?
+    public var pendingUserInputCount: Int?
+    public var pendingUserInputKind: String?
 
     public init(
         id: UUID = UUID(),
@@ -73,7 +76,10 @@ public struct Session: Identifiable, Hashable, Codable, Sendable {
         codexModelProvider: String? = nil,
         codexApprovalPolicy: String? = nil,
         codexSandbox: JSONValue? = nil,
-        hpcWorkspaceState: String? = nil
+        hpcWorkspaceState: String? = nil,
+        hasPendingUserInput: Bool? = nil,
+        pendingUserInputCount: Int? = nil,
+        pendingUserInputKind: String? = nil
     ) {
         self.id = id
         self.projectID = projectID
@@ -88,6 +94,9 @@ public struct Session: Identifiable, Hashable, Codable, Sendable {
         self.codexApprovalPolicy = codexApprovalPolicy
         self.codexSandbox = codexSandbox
         self.hpcWorkspaceState = hpcWorkspaceState
+        self.hasPendingUserInput = hasPendingUserInput
+        self.pendingUserInputCount = pendingUserInputCount
+        self.pendingUserInputKind = pendingUserInputKind
     }
 }
 

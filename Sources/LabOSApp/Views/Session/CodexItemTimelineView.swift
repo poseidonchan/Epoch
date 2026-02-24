@@ -7,159 +7,23 @@ struct CodexItemTimelineView: View {
     let items: [CodexThreadItem]
     let statusText: String?
     var isStreaming: Bool = false
-    var modelOptions: [GatewayModelInfo] = []
-    var selectedModelId: String = ""
     var showAssistantActionBar: Bool = true
     var onEditUserMessage: (CodexUserMessageItem) -> Void = { _ in }
-    var onRetryAgentMessage: (CodexAgentMessageItem, String?) -> Void = { _, _ in }
     var onBranchAgentMessage: (CodexAgentMessageItem) -> Void = { _ in }
 
-    private struct AgentSegment: Identifiable {
-        let id: String
-        let text: String
-        let isStreaming: Bool
-    }
+    @State private var expandedTurnIDs: Set<String> = []
+    @State private var expandedGroupIDs: Set<String> = []
+    @State private var expandedLeafIDs: Set<String> = []
+    @State private var turnStartByID: [String: Date] = [:]
+    @State private var finalizedDurationByID: [String: Int] = [:]
+    @State private var wasStreamingByTurnID: [String: Bool] = [:]
+    @State private var pendingAutoCollapseTokenByTurnID: [String: UUID] = [:]
 
-    private struct AgentGroup: Identifiable {
-        let id: String
-        let segments: [AgentSegment]
-        let actionTarget: CodexAgentMessageItem?
-        let isActionTargetStreaming: Bool
-    }
+    private static let autoCollapseDelayNanoseconds: UInt64 = 420_000_000
+    private static let autoCollapseAnimation = Animation.easeInOut(duration: 0.2)
 
-    private enum TimelineEntry: Identifiable {
-        case item(CodexThreadItem)
-        case agentGroup(AgentGroup)
-
-        var id: String {
-            switch self {
-            case let .item(item):
-                return "item:\(item.id)"
-            case let .agentGroup(group):
-                return "group:\(group.id)"
-            }
-        }
-    }
-
-    var body: some View {
-        LazyVStack(spacing: 10) {
-            ForEach(timelineEntries) { entry in
-                timelineRow(for: entry)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func timelineRow(for entry: TimelineEntry) -> some View {
-        switch entry {
-        case let .item(item):
-            switch item {
-            case let .userMessage(userItem):
-                userBubble(item: userItem)
-            case let .plan(planItem):
-                bubble(title: "Plan", text: planItem.text)
-            case let .commandExecution(commandItem):
-                CodexCommandExecutionCard(item: commandItem)
-            case let .fileChange(fileItem):
-                CodexFileChangeCard(item: fileItem)
-            case let .mcpToolCall(toolItem):
-                bubble(title: "Tool \(toolItem.tool)", text: toolItem.status)
-            case let .unknown(unknown):
-                bubble(title: unknown.type, text: unknownText(unknown))
-            case let .agentMessage(agentItem):
-                // Agent items should normally be coalesced in `timelineEntries`.
-                agentGroup(
-                    AgentGroup(
-                        id: agentItem.id,
-                        segments: [
-                            AgentSegment(
-                                id: agentItem.id,
-                                text: normalizedAgentSegmentText(agentItem.text),
-                                isStreaming: isStreaming && agentItem.id == latestStreamingAgentMessageID
-                            )
-                        ],
-                        actionTarget: agentItem,
-                        isActionTargetStreaming: isStreaming && agentItem.id == latestStreamingAgentMessageID
-                    )
-                )
-            }
-        case let .agentGroup(group):
-            agentGroup(group)
-        }
-    }
-
-    private var timelineEntries: [TimelineEntry] {
-        var entries: [TimelineEntry] = []
-        var pendingSegments: [AgentSegment] = []
-        var pendingActionTarget: CodexAgentMessageItem?
-        var pendingActionTargetStreaming = false
-
-        func shouldAppend(_ text: String, to existing: [AgentSegment]) -> Bool {
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return false }
-            guard let last = existing.last else { return true }
-            return last.text != trimmed
-        }
-
-        func flushPendingGroup() {
-            guard !pendingSegments.isEmpty || pendingActionTarget != nil else { return }
-            let groupId = pendingActionTarget?.id ?? pendingSegments.first?.id ?? UUID().uuidString
-            entries.append(
-                .agentGroup(
-                    AgentGroup(
-                        id: groupId,
-                        segments: pendingSegments,
-                        actionTarget: pendingActionTarget,
-                        isActionTargetStreaming: pendingActionTargetStreaming
-                    )
-                )
-            )
-            pendingSegments.removeAll()
-            pendingActionTarget = nil
-            pendingActionTargetStreaming = false
-        }
-
-        for item in items {
-            switch item {
-            case let .agentMessage(agentItem):
-                let text = normalizedAgentSegmentText(agentItem.text)
-                if shouldAppend(text, to: pendingSegments) {
-                    pendingSegments.append(
-                        AgentSegment(
-                            id: agentItem.id,
-                            text: text,
-                            isStreaming: isStreaming && agentItem.id == latestStreamingAgentMessageID
-                        )
-                    )
-                }
-
-                if !agentItem.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    pendingActionTarget = agentItem
-                    pendingActionTargetStreaming = isStreaming && agentItem.id == latestStreamingAgentMessageID
-                }
-
-            case let .unknown(unknown) where isReasoningItem(unknown):
-                let text = normalizeReasoningCopy(reasoningText(unknown))
-                if shouldAppend(text, to: pendingSegments) {
-                    pendingSegments.append(AgentSegment(id: unknown.id, text: text, isStreaming: false))
-                }
-
-            default:
-                flushPendingGroup()
-                entries.append(.item(item))
-            }
-        }
-
-        flushPendingGroup()
-        return entries
-    }
-
-    private func normalizedAgentSegmentText(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            return "Thinking..."
-        }
-        return trimmed
+    private var turns: [CodexTrajectoryTurn] {
+        CodexTrajectoryAssembler.assemble(from: items, isStreaming: isStreaming)
     }
 
     private var latestStreamingAgentMessageID: String? {
@@ -170,6 +34,291 @@ struct CodexItemTimelineView: View {
             }
         }
         return nil
+    }
+
+    private var agentMessageByID: [String: CodexAgentMessageItem] {
+        var map: [String: CodexAgentMessageItem] = [:]
+        for item in items {
+            if case let .agentMessage(agent) = item {
+                map[agent.id] = agent
+            }
+        }
+        return map
+    }
+
+    private var latestFinalTurnActionTarget: CodexAssistantActionTarget? {
+        CodexAssistantActionTargets.latestFinalTurnTarget(in: turns)
+    }
+
+    private var preTurnItems: [CodexThreadItem] {
+        guard let firstUserIndex = items.firstIndex(where: Self.isUserMessage) else {
+            return items
+        }
+        guard firstUserIndex > 0 else { return [] }
+        return Array(items.prefix(firstUserIndex))
+    }
+
+    var body: some View {
+        LazyVStack(spacing: 10) {
+            ForEach(preTurnItems, id: \.id) { item in
+                fallbackRow(for: item)
+            }
+
+            ForEach(turns) { turn in
+                turnRow(turn)
+            }
+
+            if turns.isEmpty,
+               preTurnItems.isEmpty,
+               let status = displayStatus(statusText) {
+                statusPill(status)
+            }
+        }
+        .onAppear {
+            syncTrajectoryState(with: turns)
+        }
+        .onChange(of: trajectoryStateSignature) { _, _ in
+            syncTrajectoryState(with: turns)
+        }
+    }
+
+    private var trajectoryStateSignature: [String] {
+        turns.map { turn in
+            [
+                turn.id,
+                turn.finalAnswerItemID ?? "",
+                String(turn.isStreaming),
+                String(turn.trajectoryLeaves.count),
+                String(turn.groups.count),
+            ].joined(separator: "|")
+        }
+    }
+
+    @ViewBuilder
+    private func turnRow(_ turn: CodexTrajectoryTurn) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            userBubble(item: turn.userMessage)
+
+            if turn.hasTrajectorySummary {
+                CodexTrajectorySummaryBar(
+                    turnID: turn.id,
+                    isExpanded: expandedTurnIDs.contains(turn.id),
+                    isStreaming: turn.isStreaming,
+                    startedAt: turnStartByID[turn.id],
+                    completedDurationMs: finalizedDurationByID[turn.id],
+                    estimatedDurationMs: turn.estimatedDurationMs,
+                    onToggle: {
+                        toggleTurn(turn.id)
+                    }
+                )
+
+                if expandedTurnIDs.contains(turn.id) {
+                    trajectoryDetails(for: turn)
+                        .transition(.opacity)
+                }
+            }
+
+            if let finalID = turn.finalAnswerItemID,
+               let finalText = turn.finalAnswerText,
+               !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                finalAnswerBlock(turn: turn, finalID: finalID, finalText: finalText)
+            } else if turn.isStreaming || turn.hasThinkingStatus {
+                Text("Thinking...")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("codex.turn.thinking.\(turn.id.lowercased())")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 4)
+        .animation(Self.autoCollapseAnimation, value: expandedTurnIDs.contains(turn.id))
+        .accessibilityIdentifier("codex.turn.\(turn.id.lowercased())")
+    }
+
+    private func finalAnswerBlock(turn: CodexTrajectoryTurn, finalID: String, finalText: String) -> some View {
+        let actionItem = agentMessageByID[finalID]
+        let targetStreaming = turn.isStreaming && finalID == latestStreamingAgentMessageID
+        let canShowActions = showAssistantActionBar
+            && actionItem != nil
+            && actionTargetIsActionable(turnID: turn.id, actionItem: actionItem)
+            && !targetStreaming
+
+        return VStack(alignment: .leading, spacing: 6) {
+            codexMarkdownText(finalText, isStreaming: targetStreaming)
+                .accessibilityIdentifier("codex.final.answer.\(finalID.lowercased())")
+
+            if canShowActions, let actionItem {
+                assistantActionBar(item: actionItem)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contextMenu {
+            if !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button {
+                    copyToPasteboard(finalText)
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+            }
+
+            if canShowActions, let actionItem {
+                Button {
+                    onBranchAgentMessage(actionItem)
+                } label: {
+                    Label("Fork", systemImage: "arrow.triangle.branch")
+                }
+            }
+        }
+    }
+
+    private func trajectoryDetails(for turn: CodexTrajectoryTurn) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if turn.hasThinkingStatus {
+                Text("Thinking...")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("codex.trajectory.thinking.\(turn.id.lowercased())")
+            }
+
+            ForEach(turn.groups) { group in
+                CodexTrajectoryGroupView(
+                    group: group,
+                    isExpanded: expandedGroupIDs.contains(group.id),
+                    isLeafExpanded: { leafID in
+                        expandedLeafIDs.contains(leafID)
+                    },
+                    onToggleGroup: {
+                        toggleGroup(group.id)
+                    },
+                    onToggleLeaf: { leafID in
+                        toggleLeaf(leafID)
+                    }
+                )
+            }
+        }
+        .padding(.leading, 2)
+        .accessibilityIdentifier("codex.trajectory.details.\(turn.id.lowercased())")
+    }
+
+    @ViewBuilder
+    private func fallbackRow(for item: CodexThreadItem) -> some View {
+        switch item {
+        case let .userMessage(userItem):
+            userBubble(item: userItem)
+        case let .plan(planItem):
+            bubble(title: "Plan", text: planItem.text)
+        case let .commandExecution(commandItem):
+            CodexCommandExecutionCard(item: commandItem)
+        case let .fileChange(fileItem):
+            CodexFileChangeCard(item: fileItem)
+        case let .mcpToolCall(toolItem):
+            bubble(title: "Tool \(toolItem.tool)", text: toolItem.status)
+        case let .unknown(unknown):
+            if isReasoningItem(unknown) {
+                Text("Thinking...")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+            } else {
+                bubble(title: unknown.type, text: unknownText(unknown))
+            }
+        case let .agentMessage(agentItem):
+            codexMarkdownText(agentItem.text, isStreaming: false)
+        }
+    }
+
+    private static func isUserMessage(_ item: CodexThreadItem) -> Bool {
+        if case .userMessage = item {
+            return true
+        }
+        return false
+    }
+
+    private func toggleTurn(_ turnID: String) {
+        if expandedTurnIDs.contains(turnID) {
+            expandedTurnIDs.remove(turnID)
+        } else {
+            expandedTurnIDs.insert(turnID)
+        }
+    }
+
+    private func toggleGroup(_ groupID: String) {
+        if expandedGroupIDs.contains(groupID) {
+            expandedGroupIDs.remove(groupID)
+        } else {
+            expandedGroupIDs.insert(groupID)
+        }
+    }
+
+    private func toggleLeaf(_ leafID: String) {
+        if expandedLeafIDs.contains(leafID) {
+            expandedLeafIDs.remove(leafID)
+        } else {
+            expandedLeafIDs.insert(leafID)
+        }
+    }
+
+    private func syncTrajectoryState(with turns: [CodexTrajectoryTurn]) {
+        let now = Date()
+        let activeTurnIDs = Set(turns.map(\.id))
+
+        for turn in turns {
+            if turn.hasTrajectorySummary, turnStartByID[turn.id] == nil {
+                turnStartByID[turn.id] = now
+            }
+
+            let wasStreaming = wasStreamingByTurnID[turn.id] ?? false
+
+            if turn.isStreaming {
+                expandedTurnIDs.insert(turn.id)
+                pendingAutoCollapseTokenByTurnID.removeValue(forKey: turn.id)
+            } else if wasStreaming {
+                if turn.hasTrajectorySummary, turn.finalAnswerItemID != nil {
+                    scheduleAutoCollapse(for: turn.id)
+                } else {
+                    pendingAutoCollapseTokenByTurnID.removeValue(forKey: turn.id)
+                }
+            }
+
+            wasStreamingByTurnID[turn.id] = turn.isStreaming
+        }
+
+        expandedTurnIDs = expandedTurnIDs.intersection(activeTurnIDs)
+        turnStartByID = turnStartByID.filter { activeTurnIDs.contains($0.key) }
+        finalizedDurationByID = finalizedDurationByID.filter { activeTurnIDs.contains($0.key) }
+        wasStreamingByTurnID = wasStreamingByTurnID.filter { activeTurnIDs.contains($0.key) }
+        pendingAutoCollapseTokenByTurnID = pendingAutoCollapseTokenByTurnID.filter { activeTurnIDs.contains($0.key) }
+
+        let activeGroupIDs = Set(turns.flatMap { $0.groups.map(\.id) })
+        expandedGroupIDs = expandedGroupIDs.intersection(activeGroupIDs)
+
+        let activeLeafIDs = Set(turns.flatMap { $0.trajectoryLeaves.map(\.id) })
+        expandedLeafIDs = expandedLeafIDs.intersection(activeLeafIDs)
+    }
+
+    private func scheduleAutoCollapse(for turnID: String) {
+        let token = UUID()
+        pendingAutoCollapseTokenByTurnID[turnID] = token
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: Self.autoCollapseDelayNanoseconds)
+
+            guard pendingAutoCollapseTokenByTurnID[turnID] == token else { return }
+            guard let turn = turns.first(where: { $0.id == turnID }),
+                  !turn.isStreaming,
+                  turn.finalAnswerItemID != nil else {
+                return
+            }
+
+            withAnimation(Self.autoCollapseAnimation) {
+                expandedTurnIDs.remove(turnID)
+            }
+            pendingAutoCollapseTokenByTurnID.removeValue(forKey: turnID)
+
+            if finalizedDurationByID[turnID] == nil,
+               let startedAt = turnStartByID[turnID] {
+                finalizedDurationByID[turnID] = max(0, Int(Date().timeIntervalSince(startedAt) * 1_000))
+            }
+        }
     }
 
     private func displayStatus(_ raw: String?) -> String? {
@@ -231,7 +380,6 @@ struct CodexItemTimelineView: View {
                             RoundedRectangle(cornerRadius: 22, style: .continuous)
                                 .fill(Color(uiColor: .secondarySystemBackground))
                         )
-                        .fixedSize(horizontal: true, vertical: false)
                         .frame(maxWidth: userBubbleMaxWidth, alignment: .trailing)
                 }
             }
@@ -335,86 +483,6 @@ struct CodexItemTimelineView: View {
         return nil
     }
 
-    private func agentGroup(_ group: AgentGroup) -> some View {
-        let isActionableGroup = actionTargetIsActionable(group)
-
-        return VStack(alignment: .leading, spacing: 6) {
-            Text("Agent")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            ForEach(group.segments) { segment in
-                agentSegmentView(segment)
-            }
-
-            if isActionableGroup,
-               let actionItem = group.actionTarget,
-               !group.isActionTargetStreaming {
-                assistantActionBar(item: actionItem)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 6)
-        .contextMenu {
-            if let actionItem = group.actionTarget {
-                Button {
-                    copyToPasteboard(actionItem.text)
-                } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
-                }
-
-                if isActionableGroup, !group.isActionTargetStreaming {
-                    Button {
-                        onRetryAgentMessage(actionItem, nil)
-                    } label: {
-                        Label("Regenerate", systemImage: "arrow.clockwise")
-                    }
-
-                    if !modelOptions.isEmpty {
-                        Menu {
-                            ForEach(modelOptions, id: \.id) { model in
-                                Button {
-                                    onRetryAgentMessage(actionItem, model.id)
-                                } label: {
-                                    HStack {
-                                        Text(model.name)
-                                        if model.id == selectedModelId {
-                                            Image(systemName: "checkmark")
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            Label("Choose Model", systemImage: "shuffle")
-                        }
-                    }
-
-                    Button {
-                        onBranchAgentMessage(actionItem)
-                    } label: {
-                        Label("Fork", systemImage: "arrow.triangle.branch")
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func agentSegmentView(_ segment: AgentSegment) -> some View {
-        if isThinkingSegment(segment.text) {
-            Text("Thinking...")
-                .font(.body)
-                .foregroundStyle(.secondary)
-        } else {
-            codexMarkdownText(segment.text, isStreaming: segment.isStreaming)
-        }
-    }
-
-    private func isThinkingSegment(_ text: String) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return trimmed == "thinking" || trimmed == "thinking..."
-    }
-
     @ViewBuilder
     private func codexMarkdownText(_ text: String, isStreaming: Bool) -> some View {
         let normalized = MarkdownDisplayNormalizer.normalizeChatMessage(text)
@@ -455,38 +523,6 @@ struct CodexItemTimelineView: View {
             }
 
             actionIconButton(
-                title: "Regenerate",
-                systemImage: "arrow.clockwise",
-                identifier: "codex.message.retry.\(itemID)"
-            ) {
-                onRetryAgentMessage(item, nil)
-            }
-
-            if modelOptions.count > 1 {
-                Menu {
-                    ForEach(modelOptions, id: \.id) { model in
-                        Button {
-                            onRetryAgentMessage(item, model.id)
-                        } label: {
-                            HStack {
-                                Text(model.name)
-                                if model.id == selectedModelId {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    Image(systemName: "chevron.down.circle")
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Retry with different model")
-                .accessibilityIdentifier("codex.message.retry.modelMenu.\(itemID)")
-            }
-
-            actionIconButton(
                 title: "Fork",
                 systemImage: "arrow.triangle.branch",
                 identifier: "codex.message.branch.\(itemID)"
@@ -518,53 +554,21 @@ struct CodexItemTimelineView: View {
     private func unknownText(_ unknown: CodexUnknownItem) -> String {
         if let text = codexString(unknown.rawPayload["text"]),
            !text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty {
-            return normalizeReasoningCopy(text)
+            return text
         }
         if let status = codexString(unknown.rawPayload["status"]),
            !status.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty {
-            return normalizeReasoningCopy(status)
+            return status
         }
         if let message = codexString(unknown.rawPayload["message"]),
            !message.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty {
-            return normalizeReasoningCopy(message)
+            return message
         }
         return "Thinking..."
     }
 
     private func isReasoningItem(_ unknown: CodexUnknownItem) -> Bool {
         unknown.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "reasoning"
-    }
-
-    private func reasoningText(_ unknown: CodexUnknownItem) -> String {
-        if let text = codexString(unknown.rawPayload["text"]),
-           !text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty {
-            return normalizeReasoningCopy(text)
-        }
-        if let summary = codexString(unknown.rawPayload["summary"]),
-           !summary.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty {
-            return normalizeReasoningCopy(summary)
-        }
-        if let status = codexString(unknown.rawPayload["status"]),
-           !status.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty {
-            return normalizeReasoningCopy(status)
-        }
-        return "Thinking..."
-    }
-
-    private func normalizeReasoningCopy(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "Thinking..." }
-        let lower = trimmed.lowercased()
-        if lower == "inprogress"
-            || lower == "in_progress"
-            || lower == "running"
-            || lower == "thinking"
-            || lower.contains("waiting for updates")
-            || lower.contains("waiting for response")
-            || lower == "reasoning" {
-            return "Thinking..."
-        }
-        return trimmed
     }
 
     private func copyToPasteboard(_ text: String) {
@@ -585,40 +589,12 @@ struct CodexItemTimelineView: View {
         }
     }
 
-    private var actionableAgentMessageIDs: Set<String> {
-        var ids: Set<String> = []
-        var currentCandidate: String?
-
-        for item in items {
-            switch item {
-            case .userMessage:
-                if let currentCandidate {
-                    ids.insert(currentCandidate)
-                }
-                currentCandidate = nil
-            case let .agentMessage(agent):
-                let trimmed = agent.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    currentCandidate = agent.id
-                }
-            default:
-                break
-            }
-        }
-
-        if let currentCandidate {
-            ids.insert(currentCandidate)
-        }
-
-        return ids
-    }
-
-    private func actionTargetIsActionable(_ group: AgentGroup) -> Bool {
-        guard showAssistantActionBar,
-              let actionItem = group.actionTarget else {
+    private func actionTargetIsActionable(turnID: String, actionItem: CodexAgentMessageItem?) -> Bool {
+        guard let actionItem,
+              let target = latestFinalTurnActionTarget else {
             return false
         }
-        return actionableAgentMessageIDs.contains(actionItem.id)
+        return target.turnID == turnID && target.messageID == actionItem.id
     }
 
     private func userImageRowWidth(imageCount: Int) -> CGFloat {

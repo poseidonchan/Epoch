@@ -42,6 +42,37 @@ public final class AppStore: ObservableObject {
         }
     }
 
+    public struct PendingUserInputSignal: Identifiable, Hashable, Sendable {
+        public let id: UUID
+        public let projectID: UUID
+        public let sessionID: UUID
+        public let requestID: CodexRequestID
+        public let projectName: String
+        public let sessionTitle: String
+        public let promptText: String?
+        public let createdAt: Date
+
+        public init(
+            id: UUID = UUID(),
+            projectID: UUID,
+            sessionID: UUID,
+            requestID: CodexRequestID,
+            projectName: String,
+            sessionTitle: String,
+            promptText: String?,
+            createdAt: Date = .now
+        ) {
+            self.id = id
+            self.projectID = projectID
+            self.sessionID = sessionID
+            self.requestID = requestID
+            self.projectName = projectName
+            self.sessionTitle = sessionTitle
+            self.promptText = promptText
+            self.createdAt = createdAt
+        }
+    }
+
     public struct ArtifactStorageBucket: Identifiable, Hashable, Sendable {
         public var id: ArtifactKind { kind }
         public let kind: ArtifactKind
@@ -63,6 +94,8 @@ public final class AppStore: ObservableObject {
     @Published public internal(set) var codexItemsBySession: [UUID: [CodexThreadItem]] = [:]
     @Published public internal(set) var codexPendingApprovalsBySession: [UUID: [CodexPendingApproval]] = [:]
     @Published public internal(set) var codexPendingPromptBySession: [UUID: CodexPendingPrompt] = [:]
+    @Published public internal(set) var codexSteerQueueBySession: [UUID: [CodexSteerQueueItem]] = [:]
+    @Published public internal(set) var codexActiveTurnIDBySession: [UUID: String] = [:]
     @Published public internal(set) var codexStatusTextBySession: [UUID: String] = [:]
     @Published public internal(set) var codexTokenUsageBySession: [UUID: CodexTokenUsage] = [:]
     @Published public internal(set) var codexFullAccessBySession: [UUID: Bool] = [:]
@@ -94,7 +127,7 @@ public final class AppStore: ObservableObject {
     @Published public internal(set) var codexConnectionState: CodexConnectionState = .disconnected
     @Published public var gatewayWSURLString: String = ""
     @Published public var gatewayToken: String = ""
-    @Published public var preferredBackendEngine: String = "pi"
+    @Published public var preferredBackendEngine: String = "codex-app-server"
 
     @Published public var hpcPartition: String = ""
     @Published public var hpcAccount: String = ""
@@ -113,6 +146,7 @@ public final class AppStore: ObservableObject {
     @Published public var selectedRunID: UUID?
     @Published public internal(set) var runCompletionNotificationsEnabled = true
     @Published public internal(set) var latestRunCompletionSignal: RunCompletionSignal?
+    @Published public internal(set) var latestPendingUserInputSignal: PendingUserInputSignal?
 
     // MARK: - Internal Services (initialized in init)
     internal var composerService: ComposerService!
@@ -158,7 +192,9 @@ public final class AppStore: ObservableObject {
     private var resourcesPollTask: Task<Void, Never>?
     internal var codexThreadBySession: [UUID: String] = [:]
     internal var codexSessionByThread: [String: UUID] = [:]
+    internal var codexPendingThreadBindingSessions: Set<UUID> = []
     internal var codexRequestOverrideForTests: ((_ method: String, _ params: JSONValue?) async throws -> CodexRPCResponse)?
+    internal var codexServerResponseOverrideForTests: ((_ id: CodexRequestID, _ result: JSONValue?, _ error: CodexRPCError?) -> Void)?
 
     internal let gatewayJSONEncoder: JSONEncoder = {
         let encoder = JSONEncoder()
@@ -195,6 +231,11 @@ public final class AppStore: ObservableObject {
         if bootstrapDemo, !isGatewayConfigured {
             seedDemoData()
         }
+
+        // Fixture activation is environment-gated internally, so it is safe to
+        // evaluate in all launches (including UI tests where XCTestConfigurationFilePath
+        // is not propagated into the app process).
+        applyE2EFixturesIfNeeded()
 
         if bootstrapDemo, isGatewayConfigured, !isRunningTests {
             Task { [weak self] in
@@ -285,7 +326,7 @@ public final class AppStore: ObservableObject {
 
         gatewayWSURLString = defaults.string(forKey: DefaultsKey.gatewayWSURL) ?? ""
         gatewayToken = defaults.string(forKey: DefaultsKey.gatewayToken) ?? ""
-        preferredBackendEngine = normalizeBackendEngine(defaults.string(forKey: DefaultsKey.backendEngine)) ?? "pi"
+        preferredBackendEngine = normalizeBackendEngine(defaults.string(forKey: DefaultsKey.backendEngine)) ?? "codex-app-server"
     }
 
     public func setRunCompletionNotificationsEnabled(_ enabled: Bool) {
@@ -303,7 +344,7 @@ public final class AppStore: ObservableObject {
     }
 
     public func savePreferredBackendEngine(_ backendEngine: String) {
-        let normalized = normalizeBackendEngine(backendEngine) ?? "pi"
+        let normalized = normalizeBackendEngine(backendEngine) ?? "codex-app-server"
         preferredBackendEngine = normalized
         defaults.set(normalized, forKey: DefaultsKey.backendEngine)
     }
@@ -325,7 +366,7 @@ public final class AppStore: ObservableObject {
         guard let value else { return nil }
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if normalized == "pi" || normalized == "pi-adapter" {
-            return "pi"
+            return "codex-app-server"
         }
         if normalized == "codex" || normalized == "codex-app-server" {
             return "codex-app-server"
@@ -500,6 +541,8 @@ public final class AppStore: ObservableObject {
         id.uuidString.lowercased()
     }
 
+    internal static let codexLocalUserItemPrefix = "local-user-"
+
     static func sessionHistoryPrefetchCandidates(
         sessions: [Session],
         activeSessionID: UUID?,
@@ -542,6 +585,9 @@ public final class AppStore: ObservableObject {
         trigger: SessionHistoryRefreshTrigger,
         hasInFlightRequest: Bool,
         hasLocalMessages: Bool,
+        hasStreamingState: Bool,
+        hasInProgressStatus: Bool,
+        hasTransientIncomplete: Bool,
         lastFetchedAt: Date?,
         now: Date,
         prefetchCooldown: TimeInterval,
@@ -563,6 +609,9 @@ public final class AppStore: ObservableObject {
             // If we already have local content from a fresh prefetch, skip immediate
             // re-fetch on open to avoid list repaint/flash.
             guard hasLocalMessages else { return false }
+            if hasStreamingState || hasInProgressStatus || hasTransientIncomplete {
+                return false
+            }
             return age < interactiveFreshnessWindow
         }
     }
@@ -615,13 +664,17 @@ public final class AppStore: ObservableObject {
         codexItemsBySession.removeAll()
         codexPendingApprovalsBySession.removeAll()
         codexPendingPromptBySession.removeAll()
+        codexSteerQueueBySession.removeAll()
+        codexActiveTurnIDBySession.removeAll()
         codexStatusTextBySession.removeAll()
         codexTokenUsageBySession.removeAll()
         codexFullAccessBySession.removeAll()
         codexThreadBySession.removeAll()
         codexSessionByThread.removeAll()
+        codexPendingThreadBindingSessions.removeAll()
         chatService.sessionHistoryRequestsInFlight.removeAll()
         chatService.sessionHistoryLastFetchedAtBySession.removeAll()
+        latestPendingUserInputSignal = nil
     }
 
     private func startGatewayEventLoop() {
@@ -759,26 +812,38 @@ public final class AppStore: ObservableObject {
 
     private func handleCodexNotification(_ notification: CodexRPCNotification) {
         guard let params = notification.params?.objectValue else { return }
-        let threadId = params["threadId"]?.stringValue
-        let sessionID = threadId.flatMap { codexSessionByThread[$0] }
+        let threadId = normalizedOptionalString(params["threadId"]?.stringValue ?? "")
+        let sessionID = self.resolveCodexSessionID(notificationParams: params, threadId: threadId)
 
         switch notification.method {
         case "turn/started":
+            if let sessionID {
+                if let turn = params["turn"]?.objectValue {
+                    if let status = turn["status"]?.stringValue {
+                        codexStatusTextBySession[sessionID] = status
+                    }
+                    if let rawTurnID = turn["id"]?.stringValue,
+                       let turnId = normalizedOptionalString(rawTurnID),
+                       !turnId.isEmpty {
+                        codexActiveTurnIDBySession[sessionID] = turnId
+                    }
+                }
+                livePlanBySession[sessionID] = nil
+            }
+        case "turn/completed":
             if let sessionID {
                 if let turn = params["turn"]?.objectValue,
                    let status = turn["status"]?.stringValue {
                     codexStatusTextBySession[sessionID] = status
                 }
-            }
-        case "turn/completed":
-            if let sessionID,
-               let turn = params["turn"]?.objectValue,
-               let status = turn["status"]?.stringValue {
-                codexStatusTextBySession[sessionID] = status
+                codexActiveTurnIDBySession[sessionID] = nil
+                codexSteerQueueBySession[sessionID] = nil
+                livePlanBySession[sessionID] = nil
                 streamingSessions.remove(sessionID)
+                codexPendingThreadBindingSessions.remove(sessionID)
             }
         case "turn/plan/updated":
-            break
+            applyCodexTurnPlanUpdated(notificationParams: params, sessionID: sessionID)
         case "turn/diff/updated":
             break
         case "item/started":
@@ -810,6 +875,54 @@ public final class AppStore: ObservableObject {
             }
             break
         }
+    }
+
+    private func resolveCodexSessionID(notificationParams params: [String: JSONValue], threadId: String?) -> UUID? {
+        if let threadId, let mapped = codexSessionByThread[threadId] {
+            return mapped
+        }
+
+        if let threadId, let bound = bindUnknownCodexThreadIfPossible(threadId: threadId) {
+            return bound
+        }
+
+        if let rawSessionId = params["sessionId"]?.stringValue,
+           let parsedSessionId = UUID(uuidString: rawSessionId) {
+            if let threadId {
+                mapCodexThread(threadId, to: parsedSessionId)
+            }
+            return parsedSessionId
+        }
+
+        return nil
+    }
+
+    private func bindUnknownCodexThreadIfPossible(threadId: String) -> UUID? {
+        if let mapped = codexSessionByThread[threadId] {
+            return mapped
+        }
+
+        if codexPendingThreadBindingSessions.count == 1,
+           let sessionId = codexPendingThreadBindingSessions.first {
+            mapCodexThread(threadId, to: sessionId)
+            return sessionId
+        }
+
+        return nil
+    }
+
+    private func mapCodexThread(_ threadId: String, to sessionID: UUID) {
+        let normalized = threadId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+
+        if let previous = codexThreadBySession[sessionID],
+           previous != normalized {
+            codexSessionByThread[previous] = nil
+        }
+
+        codexThreadBySession[sessionID] = normalized
+        codexSessionByThread[normalized] = sessionID
+        codexPendingThreadBindingSessions.remove(sessionID)
     }
 
     private func extractCodexStatusText(
@@ -851,13 +964,103 @@ public final class AppStore: ObservableObject {
               let item = try? gatewayJSONDecoder.decode(CodexThreadItem.self, from: itemData)
         else { return }
 
-        var items = codexItemsBySession[sessionID] ?? []
-        if let index = items.firstIndex(where: { $0.id == item.id }) {
-            items[index] = item
-        } else {
-            items.append(item)
+        let existing = codexItemsBySession[sessionID] ?? []
+        codexItemsBySession[sessionID] = Self.upsertCodexItemPreservingLocalEchoes(
+            items: existing,
+            incoming: item
+        )
+    }
+
+    internal static func upsertCodexItemPreservingLocalEchoes(
+        items: [CodexThreadItem],
+        incoming: CodexThreadItem
+    ) -> [CodexThreadItem] {
+        var next = items
+
+        if case let .userMessage(incomingUser) = incoming {
+            let incomingSignature = codexUserContentSignature(incomingUser.content)
+            if !incomingSignature.isEmpty,
+               let localEchoIndex = next.firstIndex(where: { item in
+                   guard case let .userMessage(localUser) = item else { return false }
+                   guard localUser.id.hasPrefix(codexLocalUserItemPrefix) else { return false }
+                   return codexUserContentSignature(localUser.content) == incomingSignature
+               }) {
+                next.remove(at: localEchoIndex)
+            }
         }
-        codexItemsBySession[sessionID] = items
+
+        if let existingIndex = next.firstIndex(where: { $0.id == incoming.id }) {
+            next[existingIndex] = incoming
+        } else {
+            next.append(incoming)
+        }
+        return next
+    }
+
+    internal static func codexUserContentSignature(_ content: [CodexUserInput]) -> String {
+        let signature = content
+            .map { input in
+                [
+                    input.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                    input.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                    input.url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                    input.path?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                ].joined(separator: "|")
+            }
+            .joined(separator: "||")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return signature
+    }
+
+    private static func decodeCodexPromptQuestions(from params: [String: JSONValue]) -> [CodexPromptQuestion] {
+        guard let questions = params["questions"]?.arrayValue else { return [] }
+        return questions.compactMap { value -> CodexPromptQuestion? in
+            guard let questionObject = value.objectValue else { return nil }
+            let questionID = codexPromptString(questionObject["id"]) ?? "response"
+            let questionPrompt = codexPromptString(questionObject["question"])
+                ?? codexPromptString(questionObject["prompt"])
+                ?? ""
+
+            let options: [CodexPromptOption] = {
+                guard let rawOptions = questionObject["options"]?.arrayValue else { return [] }
+                return rawOptions.compactMap { optionValue -> CodexPromptOption? in
+                    guard let optionObject = optionValue.objectValue else { return nil }
+                    guard let label = codexPromptString(optionObject["label"]), !label.isEmpty else { return nil }
+                    let optionID = codexPromptString(optionObject["id"]) ?? label
+                    let description = codexPromptString(optionObject["description"])
+                    let isOther = optionObject["isOther"]?.boolValue ?? false
+                    return CodexPromptOption(
+                        id: optionID,
+                        label: label,
+                        description: description,
+                        isOther: isOther
+                    )
+                }
+            }()
+
+            return CodexPromptQuestion(
+                id: questionID,
+                prompt: questionPrompt,
+                options: options
+            )
+        }
+    }
+
+    private static func codexPromptString(_ value: JSONValue?) -> String? {
+        guard let value else { return nil }
+        let raw: String
+        switch value {
+        case let .string(text):
+            raw = text
+        case let .number(number):
+            raw = String(number)
+        case let .bool(flag):
+            raw = flag ? "true" : "false"
+        default:
+            return nil
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func applyCodexAgentMessageDelta(notificationParams params: [String: JSONValue], sessionID: UUID?) {
@@ -948,11 +1151,186 @@ public final class AppStore: ObservableObject {
         }
     }
 
+    private func applyCodexTurnPlanUpdated(notificationParams params: [String: JSONValue], sessionID: UUID?) {
+        guard let sessionID else { return }
+        guard let projectID = sessionProjectID(sessionID) else { return }
+        guard let planArray = params["plan"]?.arrayValue else { return }
+
+        let planItems: [AgentPlanUpdatedPayload.PlanItem] = planArray.compactMap { entry in
+            guard let object = entry.objectValue else { return nil }
+            guard let rawStep = object["step"]?.stringValue,
+                  let step = normalizedOptionalString(rawStep)
+            else { return nil }
+
+            let rawStatus = object["status"]?.stringValue ?? "pending"
+            let normalizedStatus = Self.normalizeCodexPlanStatus(rawStatus)
+            return AgentPlanUpdatedPayload.PlanItem(step: step, status: normalizedStatus)
+        }
+
+        let explanation: String? = {
+            guard let raw = params["explanation"]?.stringValue else { return nil }
+            return normalizedOptionalString(raw)
+        }()
+
+        livePlanBySession[sessionID] = AgentPlanUpdatedPayload(
+            agentRunId: UUID(),
+            projectId: projectID,
+            sessionId: sessionID,
+            explanation: explanation,
+            plan: planItems
+        )
+    }
+
+    private static func normalizeCodexPlanStatus(_ raw: String) -> String {
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "inprogress", "in_progress":
+            return "in_progress"
+        case "completed":
+            return "completed"
+        default:
+            return "pending"
+        }
+    }
+
     private func sessionProjectID(_ sessionID: UUID) -> UUID? {
         for (projectID, sessions) in sessionsByProject where sessions.contains(where: { $0.id == sessionID }) {
             return projectID
         }
         return activeProjectID
+    }
+
+    private func publishPendingUserInputSignal(sessionID: UUID, requestID: CodexRequestID, promptText: String?) {
+        guard let projectID = sessionProjectID(sessionID) else { return }
+        let projectName = projects.first(where: { $0.id == projectID })?.name ?? "Project"
+        let sessionTitle = sessionRecord(for: sessionID)?.title ?? "Session"
+
+        latestPendingUserInputSignal = PendingUserInputSignal(
+            projectID: projectID,
+            sessionID: sessionID,
+            requestID: requestID,
+            projectName: projectName,
+            sessionTitle: sessionTitle,
+            promptText: promptText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+
+    private func updateSessionPendingUserInputMetadata(
+        sessionID: UUID,
+        hasPending: Bool?,
+        count: Int?,
+        kind: String?
+    ) {
+        for projectID in sessionsByProject.keys {
+            guard var sessions = sessionsByProject[projectID],
+                  let index = sessions.firstIndex(where: { $0.id == sessionID })
+            else { continue }
+
+            sessions[index].hasPendingUserInput = hasPending
+            sessions[index].pendingUserInputCount = count
+            sessions[index].pendingUserInputKind = kind
+            sessionsByProject[projectID] = sessions
+            return
+        }
+    }
+
+    private func applyE2EFixturesIfNeeded() {
+        let env = ProcessInfo.processInfo.environment
+        guard env["LABOS_E2E_FIXTURE_PLAN_PROMPT_FLOW"] == "1" else { return }
+
+        guard let projectID = UUID(uuidString: "11111111-1111-4111-8111-111111111111"),
+              let sessionID = UUID(uuidString: "22222222-2222-4222-8222-222222222222")
+        else {
+            return
+        }
+
+        let project = Project(
+            id: projectID,
+            name: "E2E Plan Prompt Project",
+            backendEngine: "codex-app-server"
+        )
+        let session = Session(
+            id: sessionID,
+            projectID: projectID,
+            title: "E2E Plan Prompt Session",
+            backendEngine: "codex-app-server",
+            codexThreadId: "thread_e2e_plan_prompt",
+            hasPendingUserInput: true,
+            pendingUserInputCount: 1,
+            pendingUserInputKind: "prompt"
+        )
+
+        projects = [project]
+        sessionsByProject = [projectID: [session]]
+        artifactsByProject = [projectID: []]
+        runsByProject = [projectID: []]
+        messagesBySession = [sessionID: []]
+        codexItemsBySession = [sessionID: []]
+        codexPendingApprovalsBySession = [:]
+        codexSteerQueueBySession = [:]
+        codexStatusTextBySession = [:]
+        codexTokenUsageBySession = [:]
+        codexFullAccessBySession = [sessionID: false]
+        codexThreadBySession = [sessionID: "thread_e2e_plan_prompt"]
+        codexSessionByThread = ["thread_e2e_plan_prompt": sessionID]
+        codexPendingThreadBindingSessions = []
+        livePlanBySession = [:]
+        activeInlineProcessBySession = [:]
+        persistedProcessSummaryByMessageID = [:]
+        activeProjectID = projectID
+        activeSessionID = nil
+        planModeEnabledBySession[sessionID] = true
+        selectedModelIdBySession[sessionID] = ""
+
+        codexPendingPromptBySession[sessionID] = CodexPendingPrompt(
+            requestID: .string("req_e2e_plan_prompt"),
+            sessionID: sessionID,
+            threadId: "thread_e2e_plan_prompt",
+            turnId: "turn_e2e_plan_prompt",
+            prompt: "Choose how to execute this plan",
+            questions: [
+                CodexPromptQuestion(
+                    id: "execution_mode",
+                    prompt: "Pick execution mode",
+                    options: [
+                        CodexPromptOption(
+                            id: "proceed_now",
+                            label: "Proceed now",
+                            description: "Run immediately with full plan updates.",
+                            isOther: false
+                        ),
+                        CodexPromptOption(
+                            id: "review_first",
+                            label: "Review first",
+                            description: "Pause after showing initial progress.",
+                            isOther: false
+                        ),
+                    ]
+                ),
+            ],
+            rawParams: nil
+        )
+    }
+
+    private func applyE2EPlanPromptFlowAfterResponseIfNeeded(sessionID: UUID) {
+        let env = ProcessInfo.processInfo.environment
+        guard env["LABOS_E2E_FIXTURE_PLAN_PROMPT_FLOW"] == "1" else { return }
+        guard let fixtureSessionID = UUID(uuidString: "22222222-2222-4222-8222-222222222222"),
+              sessionID == fixtureSessionID
+        else { return }
+        guard let projectID = sessionProjectID(sessionID) else { return }
+
+        livePlanBySession[sessionID] = AgentPlanUpdatedPayload(
+            agentRunId: UUID(),
+            projectId: projectID,
+            sessionId: sessionID,
+            explanation: "Executing approved plan",
+            plan: [
+                .init(step: "Capture constraints", status: "completed"),
+                .init(step: "Execute approved plan", status: "in_progress"),
+                .init(step: "Summarize result", status: "pending"),
+            ]
+        )
     }
 
     private func handleCodexServerRequest(_ request: CodexRPCRequest) async {
@@ -964,8 +1342,8 @@ public final class AppStore: ObservableObject {
             return
         }
 
-        let threadId = params["threadId"]?.stringValue ?? ""
-        guard let sessionID = codexSessionByThread[threadId] else {
+        let threadId = normalizedOptionalString(params["threadId"]?.stringValue ?? "") ?? ""
+        guard let sessionID = self.resolveCodexSessionID(notificationParams: params, threadId: threadId) else {
             try? await codexClient?.respond(
                 error: CodexRPCError(code: -32004, message: "Unknown thread"),
                 for: request.id
@@ -994,15 +1372,28 @@ public final class AppStore: ObservableObject {
             approvals.append(approval)
             codexPendingApprovalsBySession[sessionID] = approvals
         case "item/tool/requestUserInput":
+            let questions = Self.decodeCodexPromptQuestions(from: params)
             let prompt = CodexPendingPrompt(
                 requestID: request.id,
                 sessionID: sessionID,
                 threadId: threadId,
                 turnId: params["turnId"]?.stringValue,
                 prompt: params["prompt"]?.stringValue ?? params["message"]?.stringValue,
+                questions: questions,
                 rawParams: request.params
             )
             codexPendingPromptBySession[sessionID] = prompt
+            updateSessionPendingUserInputMetadata(
+                sessionID: sessionID,
+                hasPending: true,
+                count: 1,
+                kind: "prompt"
+            )
+            publishPendingUserInputSignal(
+                sessionID: sessionID,
+                requestID: request.id,
+                promptText: prompt.prompt
+            )
         default:
             try? await codexClient?.respond(
                 error: CodexRPCError(code: -32601, message: "Unsupported server request: \(request.method)"),
@@ -1064,6 +1455,14 @@ public final class AppStore: ObservableObject {
         }
         let data = try gatewayJSONEncoder.encode(JSONValue.object(payload))
         return try gatewayJSONDecoder.decode(T.self, from: data)
+    }
+
+    func _receiveCodexNotificationForTesting(_ notification: CodexRPCNotification) {
+        handleCodexNotification(notification)
+    }
+
+    func _receiveCodexServerRequestForTesting(_ request: CodexRPCRequest) async {
+        await handleCodexServerRequest(request)
     }
 
 	    func _receiveGatewayEventForTesting(_ event: GatewayEvent) {
@@ -1148,6 +1547,7 @@ public final class AppStore: ObservableObject {
             }
             codexThreadBySession[session.id] = threadId
             codexSessionByThread[threadId] = session.id
+            codexPendingThreadBindingSessions.remove(session.id)
         } else {
             codexThreadBySession[session.id] = nil
             if let previousThreadId {
@@ -1176,19 +1576,8 @@ public final class AppStore: ObservableObject {
     }
 
     public func sessionUsesCodex(sessionID: UUID) -> Bool {
-        if let mappedThread = codexThreadBySession[sessionID], !mappedThread.isEmpty {
-            return true
-        }
-        guard let session = sessionRecord(for: sessionID) else { return false }
-        if normalizeBackendEngine(session.backendEngine) == "codex-app-server" {
-            return true
-        }
-        if let rawThreadId = session.codexThreadId,
-           let threadId = normalizedOptionalString(rawThreadId),
-           !threadId.isEmpty {
-            return true
-        }
-        return false
+        _ = sessionID
+        return true
     }
 
     private func upsertRun(projectID: UUID, run: RunRecord) {
@@ -1346,6 +1735,40 @@ public final class AppStore: ObservableObject {
         codexPendingPromptBySession[sessionID]
     }
 
+    public func codexSteerQueue(for sessionID: UUID) -> [CodexSteerQueueItem] {
+        (codexSteerQueueBySession[sessionID] ?? []).sorted { lhs, rhs in
+            if lhs.createdAt != rhs.createdAt {
+                return lhs.createdAt < rhs.createdAt
+            }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+    }
+
+    public func codexActiveTurnID(for sessionID: UUID) -> String? {
+        codexActiveTurnIDBySession[sessionID]
+    }
+
+    public func sessionNeedsUserInput(sessionID: UUID) -> Bool {
+        if pendingApproval(for: sessionID) != nil {
+            return true
+        }
+        if codexPendingPrompt(for: sessionID) != nil {
+            return true
+        }
+        if !codexPendingApprovals(for: sessionID).isEmpty {
+            return true
+        }
+        if let session = sessionRecord(for: sessionID) {
+            if session.hasPendingUserInput == true {
+                return true
+            }
+            if let count = session.pendingUserInputCount, count > 0 {
+                return true
+            }
+        }
+        return false
+    }
+
     public func codexStatusText(for sessionID: UUID) -> String? {
         codexStatusTextBySession[sessionID]
     }
@@ -1375,12 +1798,45 @@ public final class AppStore: ObservableObject {
         answers: [String: String]
     ) {
         Task { [weak self] in
-            guard let self, let codexClient = self.codexClient else { return }
+            guard let self else { return }
+
+            var nestedAnswers: [String: JSONValue] = [:]
+            for (questionID, answer) in answers {
+                let normalizedQuestionID = questionID.trimmingCharacters(in: .whitespacesAndNewlines)
+                let normalizedAnswer = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !normalizedQuestionID.isEmpty, !normalizedAnswer.isEmpty else { continue }
+                nestedAnswers[normalizedQuestionID] = .object([
+                    "answers": .array([.string(normalizedAnswer)]),
+                ])
+            }
             let payload = JSONValue.object([
-                "answers": .object(answers.mapValues { .string($0) }),
+                "answers": .object(nestedAnswers),
             ])
-            try? await codexClient.respond(result: payload, for: requestID)
+
+            if let override = self.codexServerResponseOverrideForTests {
+                override(requestID, payload, nil)
+                self.codexPendingPromptBySession[sessionID] = nil
+                self.updateSessionPendingUserInputMetadata(
+                    sessionID: sessionID,
+                    hasPending: false,
+                    count: 0,
+                    kind: nil
+                )
+                self.applyE2EPlanPromptFlowAfterResponseIfNeeded(sessionID: sessionID)
+                return
+            }
+
+            if let codexClient = self.codexClient {
+                try? await codexClient.respond(result: payload, for: requestID)
+            }
             self.codexPendingPromptBySession[sessionID] = nil
+            self.updateSessionPendingUserInputMetadata(
+                sessionID: sessionID,
+                hasPending: false,
+                count: 0,
+                kind: nil
+            )
+            self.applyE2EPlanPromptFlowAfterResponseIfNeeded(sessionID: sessionID)
         }
     }
 
@@ -1486,22 +1942,6 @@ public final class AppStore: ObservableObject {
         modelIdOverride: String? = nil
     ) {
         chatService.retryMessage(projectID: projectID, sessionID: sessionID, fromMessageID: messageID, modelIdOverride: modelIdOverride)
-    }
-
-    public func retryCodexAgentMessage(
-        projectID: UUID,
-        sessionID: UUID,
-        assistantItemID: String,
-        assistantText: String? = nil,
-        modelIdOverride: String? = nil
-    ) {
-        chatService.retryCodexAgentMessage(
-            projectID: projectID,
-            sessionID: sessionID,
-            assistantItemID: assistantItemID,
-            assistantText: assistantText,
-            modelIdOverride: modelIdOverride
-        )
     }
 
     public func overwriteUserMessage(
@@ -1692,6 +2132,14 @@ public final class AppStore: ObservableObject {
         attachments: [ComposerAttachment]? = nil
     ) {
         chatService.sendMessage(projectID: projectID, sessionID: sessionID, text: text, attachments: attachments)
+    }
+
+    public func steerQueuedCodexInput(sessionID: UUID, queueItemID: UUID) {
+        chatService.steerQueuedCodexInput(sessionID: sessionID, queueItemID: queueItemID)
+    }
+
+    public func removeQueuedCodexInput(sessionID: UUID, queueItemID: UUID) {
+        chatService.removeQueuedCodexInput(sessionID: sessionID, queueItemID: queueItemID)
     }
 
     static func shouldAutoRecoverMissingGatewaySession(localNonSystemMessageCount: Int) -> Bool {

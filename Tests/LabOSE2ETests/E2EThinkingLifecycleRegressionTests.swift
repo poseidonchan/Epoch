@@ -10,18 +10,19 @@ final class E2EThinkingLifecycleRegressionTests: XCTestCase {
 
         let runner = E2EStepRunner(testCase: self, app: app)
         let config = try E2ELiveGatewayConfig.required()
-        let probe = E2EHubProbe(wsURL: config.wsURL, token: config.token)
-        defer { probe.disconnect() }
 
         try await runner.stepAsync("connect-live-hub") {
             E2EUIHelpers.ensureGatewayConnected(app: app, config: config)
-            try await probe.connect()
         }
 
-        let projectName = try await createProjectViaUI(app: app, runner: runner, namePrefix: "E2E-Thinking")
-        let projectID = try await waitForProjectID(named: projectName, probe: probe, timeout: 25)
+        _ = try await createProjectViaUI(app: app, runner: runner, namePrefix: "E2E-Thinking")
         let prompt = "Reply with exactly one word: pong."
-        var sessionID: UUID?
+        var projectSessionRowID: String?
+        let finalAnswerQuery = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "codex.final.answer.")
+        )
+        let copyActionQuery = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "codex.message.copy."))
+        let baselineFinalAnswerCount = finalAnswerQuery.count
 
         try await runner.stepAsync("send-project-message") {
             let input = app.textFields["composer.input"]
@@ -49,19 +50,20 @@ final class E2EThinkingLifecycleRegressionTests: XCTestCase {
         }
 
         try await runner.stepAsync("wait-for-assistant-reply") {
-            sessionID = try await waitForLatestSessionID(projectID: projectID, probe: probe, timeout: 25)
-            guard let sessionID else {
-                throw stepError("Session ID missing after send.")
+            try E2EWait.until(
+                timeout: 150,
+                pollInterval: 0.5,
+                description: "assistant reply to complete"
+            ) {
+                finalAnswerQuery.count > baselineFinalAnswerCount && copyActionQuery.firstMatch.exists
             }
-            let assistantText = try await waitForAssistantReply(projectID: projectID, sessionID: sessionID, probe: probe, timeout: 90)
-            XCTAssertFalse(assistantText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            XCTAssertFalse(
+                app.otherElements["session.pending.process"].exists,
+                "Pending process indicator should clear once response is complete."
+            )
         }
 
         try await runner.stepAsync("leave-and-return-session") {
-            guard let sessionID else {
-                throw stepError("Session ID missing before leave/reopen.")
-            }
-
             // Sending from the project composer opens the new session.
             // Normalize back to project view before searching for session rows.
             let backToProject = app.buttons["session.back.project"]
@@ -72,10 +74,14 @@ final class E2EThinkingLifecycleRegressionTests: XCTestCase {
                 }
             }
 
-            let rowID = "project.session.row.\(sessionID.uuidString.lowercased())"
-            let row = app.buttons[rowID]
+            let sessionRows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "project.session.row."))
+            let row = sessionRows.firstMatch
             guard row.waitForExistence(timeout: 15) else {
                 throw stepError("Session row did not appear in project list.")
+            }
+            projectSessionRowID = row.identifier
+            guard let rowID = projectSessionRowID, rowID.hasPrefix("project.session.row.") else {
+                throw stepError("Session row identifier is invalid: \(row.identifier)")
             }
             try await openSessionFromProjectRow(app: app, rowID: rowID, timeout: 12)
 
@@ -128,74 +134,6 @@ final class E2EThinkingLifecycleRegressionTests: XCTestCase {
         }
 
         return projectName
-    }
-
-    @MainActor
-    private func waitForProjectID(named projectName: String, probe: E2EHubProbe, timeout: TimeInterval) async throws -> UUID {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() <= deadline {
-            let projects = try await probe.listProjects()
-            if let project = projects.first(where: { $0.name == projectName }) {
-                return project.id
-            }
-            try await Task.sleep(for: .milliseconds(300))
-        }
-
-        throw NSError(
-            domain: "E2EThinkingLifecycleRegressionTests",
-            code: -50,
-            userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for project '\(projectName)' to appear."]
-        )
-    }
-
-    @MainActor
-    private func waitForLatestSessionID(projectID: UUID, probe: E2EHubProbe, timeout: TimeInterval) async throws -> UUID {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() <= deadline {
-            let sessions = try await probe.listSessions(projectID: projectID, includeArchived: true)
-                .sorted { $0.updatedAt > $1.updatedAt }
-            if let first = sessions.first {
-                return first.id
-            }
-            try await Task.sleep(for: .milliseconds(500))
-        }
-
-        throw NSError(
-            domain: "E2EThinkingLifecycleRegressionTests",
-            code: -51,
-            userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for session creation in project \(projectID.uuidString)."]
-        )
-    }
-
-    @MainActor
-    private func waitForAssistantReply(
-        projectID: UUID,
-        sessionID: UUID,
-        probe: E2EHubProbe,
-        timeout: TimeInterval
-    ) async throws -> String {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() <= deadline {
-            let messages = try await probe.chatHistory(projectID: projectID, sessionID: sessionID, limit: 200)
-            guard let latestUserIndex = messages.lastIndex(where: { $0.role == .user }) else {
-                try await Task.sleep(for: .milliseconds(700))
-                continue
-            }
-            if latestUserIndex + 1 < messages.count {
-                let trailing = messages[(latestUserIndex + 1)..<messages.count]
-                if let assistant = trailing.first(where: { $0.role == .assistant && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
-                    return assistant.text
-                }
-            }
-
-            try await Task.sleep(for: .milliseconds(700))
-        }
-
-        throw NSError(
-            domain: "E2EThinkingLifecycleRegressionTests",
-            code: -52,
-            userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for assistant reply in project \(projectID.uuidString)."]
-        )
     }
 
     private func stepError(_ message: String) -> NSError {

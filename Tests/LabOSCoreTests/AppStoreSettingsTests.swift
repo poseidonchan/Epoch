@@ -3,6 +3,33 @@ import XCTest
 
 @MainActor
 final class AppStoreSettingsTests: XCTestCase {
+    func testPreferredBackendDefaultsToCodexAppServer() {
+        let suiteName = "LabOSCoreTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Unable to create isolated UserDefaults suite")
+            return
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = AppStore(bootstrapDemo: false, userDefaults: defaults)
+        XCTAssertEqual(store.preferredBackendEngine, "codex-app-server")
+    }
+
+    func testSavingLegacyPiBackendNormalizesToCodexAppServer() {
+        let suiteName = "LabOSCoreTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Unable to create isolated UserDefaults suite")
+            return
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = AppStore(bootstrapDemo: false, userDefaults: defaults)
+        store.savePreferredBackendEngine("pi")
+        XCTAssertEqual(store.preferredBackendEngine, "codex-app-server")
+    }
+
     func testGatewaySettingsAreNormalizedTrimmedAndPersisted() {
         let suiteName = "LabOSCoreTests.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
@@ -162,6 +189,9 @@ final class AppStoreSettingsTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let store = AppStore(bootstrapDemo: false, userDefaults: defaults)
+        if store.preferredBackendEngine == "codex-app-server" {
+            throw XCTSkip("Run completion simulation tests are for legacy local backend behavior.")
+        }
         guard let project = await store.createProject(name: "Notif Project") else {
             XCTFail("Project was not created")
             return
@@ -197,6 +227,9 @@ final class AppStoreSettingsTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let store = AppStore(bootstrapDemo: false, userDefaults: defaults)
+        if store.preferredBackendEngine == "codex-app-server" {
+            throw XCTSkip("Run completion simulation tests are for legacy local backend behavior.")
+        }
         store.setRunCompletionNotificationsEnabled(false)
 
         guard let project = await store.createProject(name: "Notif Disabled Project") else {

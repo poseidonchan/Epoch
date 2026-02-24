@@ -51,6 +51,12 @@ struct RootContainerView: View {
                     await LocalNotifications.scheduleRunCompletionIfAuthorized(signal)
                 }
             }
+            .onChange(of: store.latestPendingUserInputSignal) { _, signal in
+                guard let signal, store.runCompletionNotificationsEnabled else { return }
+                Task {
+                    await LocalNotifications.schedulePendingUserInputIfAuthorized(signal)
+                }
+            }
             .fullScreenCover(
                 isPresented: Binding(
                     get: { store.isRightPanelOpen },
@@ -183,6 +189,28 @@ enum LocalNotifications {
         try? await UNUserNotificationCenter.current().addValue(request)
     }
 
+    static func schedulePendingUserInputIfAuthorized(_ signal: AppStore.PendingUserInputSignal) async {
+        var status = await authorizationStatus()
+        if status == .notDetermined {
+            let granted = await requestAuthorization()
+            status = granted ? .authorized : .denied
+        }
+        guard canDeliverNotifications(status) else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = "Response needed"
+        content.body = pendingUserInputBody(for: signal)
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: "labos.pending.input.\(signal.sessionID.uuidString).\(requestIDKey(signal.requestID))",
+            content: content,
+            trigger: nil
+        )
+
+        try? await UNUserNotificationCenter.current().addValue(request)
+    }
+
     private static func runCompletionBody(for signal: AppStore.RunCompletionSignal) -> String {
         switch signal.status {
         case .succeeded:
@@ -193,6 +221,23 @@ enum LocalNotifications {
             return "\(signal.projectName): run was canceled."
         case .queued, .running:
             return "\(signal.projectName): run finished."
+        }
+    }
+
+    private static func pendingUserInputBody(for signal: AppStore.PendingUserInputSignal) -> String {
+        let prompt = signal.promptText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if prompt.isEmpty {
+            return "\(signal.projectName) · \(signal.sessionTitle): awaiting your response."
+        }
+        return "\(signal.projectName) · \(signal.sessionTitle): \(prompt)"
+    }
+
+    private static func requestIDKey(_ id: CodexRequestID) -> String {
+        switch id {
+        case let .string(value):
+            return value.replacingOccurrences(of: " ", with: "_")
+        case let .int(value):
+            return String(value)
         }
     }
 }

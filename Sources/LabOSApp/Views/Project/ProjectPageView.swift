@@ -768,7 +768,7 @@ struct ProjectPageView: View {
 
     @ViewBuilder
     private func sessionRow(_ session: Session) -> some View {
-        let needsApproval = store.pendingApproval(for: session.id) != nil
+        let needsResponse = store.sessionNeedsUserInput(sessionID: session.id)
 
         Button {
             store.openSession(projectID: projectID, sessionID: session.id)
@@ -785,8 +785,8 @@ struct ProjectPageView: View {
                 Spacer(minLength: 0)
 
                 VStack(alignment: .trailing, spacing: 8) {
-                    if needsApproval {
-                        Text("Awaiting Approval")
+                    if needsResponse {
+                        Text("Awaiting response")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.blue)
                             .lineLimit(1)
@@ -800,6 +800,7 @@ struct ProjectPageView: View {
                                 Capsule()
                                     .strokeBorder(Color.blue.opacity(0.3))
                             )
+                            .accessibilityIdentifier("project.session.awaiting.\(session.id.uuidString.lowercased())")
                     }
 
                     Image(systemName: "chevron.right")

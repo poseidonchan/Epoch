@@ -16,13 +16,6 @@ internal final class ProjectService {
     func createProject(name: String) async -> Project? {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalName = trimmed.isEmpty ? "Untitled Project" : trimmed
-        if store.preferredBackendEngine == "codex-app-server", !store.shouldUseCodexRPC {
-            _ = await store.ensureCodexConnectedForChat()
-            if !store.shouldUseCodexRPC {
-                store.lastGatewayErrorMessage = "Codex backend is selected, but /codex is not connected."
-                return nil
-            }
-        }
 
         if store.shouldUseCodexRPC {
             struct Params: Codable, Sendable {
@@ -261,13 +254,6 @@ internal final class ProjectService {
     // MARK: - Session lifecycle
 
     func createSession(projectID: UUID, title: String?) async -> Session? {
-        if store.preferredBackendEngine == "codex-app-server", !store.shouldUseCodexRPC {
-            _ = await store.ensureCodexConnectedForChat()
-            if !store.shouldUseCodexRPC {
-                store.lastGatewayErrorMessage = "Codex backend is selected, but /codex is not connected."
-                return nil
-            }
-        }
         if store.shouldUseCodexRPC {
             struct Params: Codable, Sendable {
                 var projectId: String
@@ -520,7 +506,7 @@ internal final class ProjectService {
     }
 
     func updateSessionBackend(projectID: UUID, sessionID: UUID, backendEngine: String) async {
-        let normalized = store.normalizeBackendEngine(backendEngine) ?? "pi"
+        let normalized = store.normalizeBackendEngine(backendEngine) ?? "codex-app-server"
         if normalized == "codex-app-server", !store.shouldUseCodexRPC {
             _ = await store.ensureCodexConnectedForChat()
             if !store.shouldUseCodexRPC {
@@ -621,6 +607,8 @@ internal final class ProjectService {
         store.codexItemsBySession[sessionID] = nil
         store.codexPendingApprovalsBySession[sessionID] = nil
         store.codexPendingPromptBySession[sessionID] = nil
+        store.codexSteerQueueBySession[sessionID] = nil
+        store.codexActiveTurnIDBySession[sessionID] = nil
         store.codexStatusTextBySession[sessionID] = nil
         store.codexTokenUsageBySession[sessionID] = nil
         store.codexFullAccessBySession[sessionID] = nil
@@ -639,6 +627,8 @@ internal final class ProjectService {
         store.codexItemsBySession[sessionID] = nil
         store.codexPendingApprovalsBySession[sessionID] = nil
         store.codexPendingPromptBySession[sessionID] = nil
+        store.codexSteerQueueBySession[sessionID] = nil
+        store.codexActiveTurnIDBySession[sessionID] = nil
         store.codexStatusTextBySession[sessionID] = nil
         store.codexTokenUsageBySession[sessionID] = nil
         store.codexFullAccessBySession[sessionID] = nil

@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 
 import { buildProjectFileContextStream } from "../../indexing/projectIndexing.js";
+import { resolveHubProvider } from "../../model.js";
 import type { CodexEngineRegistry } from "../engine_registry.js";
 import type { EngineStartTurnResult, EngineStreamEvent } from "../engines/types.js";
 import type { CodexRepository } from "../repository.js";
@@ -54,249 +55,223 @@ export async function handleTurnStart(
 
   let settings = parseThreadSettings(threadRecord.statusJson, threadSnapshot);
   const modelOverride = normalizeNonEmptyString(params.model);
+  const planMode = normalizePlanMode(params.planMode);
   const approvalPolicyOverride = normalizeNonEmptyString(params.approvalPolicy);
   const input = normalizeUserInputList(params.input);
   let engineInput = await buildTurnInputWithProjectContext(ctx.repository, threadRecord.projectId, input);
-  let engine = await ctx.engines.getEngine(threadRecord.engine);
-
-  // Codex passthrough engine controls its own item lifecycle and notifications.
-  if (threadRecord.engine === "codex-app-server") {
-    const repairCodexThreadMapping = async () => {
-      if (!engine.threadStart) {
-        throw new Error("Codex app-server engine does not support thread/start.");
-      }
-      const responseHistory = buildResponseHistoryFromTurns(historyTurns);
-      const sandboxMode = toCodexSandboxMode(settings.sandbox);
-
-      const repaired = await engine.threadStart({
-        cwd: settings.cwd,
-        modelProvider: settings.modelProvider,
-        ...(modelOverride ?? settings.model ? { model: modelOverride ?? settings.model } : {}),
-        approvalPolicy: approvalPolicyOverride ?? settings.approvalPolicy,
-        ...(sandboxMode ? { sandbox: sandboxMode } : {}),
-      });
-      const repairedThreadRaw = (repaired.thread ?? null) as Record<string, unknown> | null;
-      const repairedThreadId = normalizeNonEmptyString(repairedThreadRaw?.id);
-      if (!repairedThreadId) {
-        throw new Error("Codex app-server did not return a replacement thread id.");
-      }
-
-      let effectiveThreadRaw = repairedThreadRaw;
-      let effectiveThreadId = repairedThreadId;
-      const repairedCwd = normalizeNonEmptyString(repairedThreadRaw?.cwd) ?? settings.cwd;
-      const repairedModelProvider = normalizeNonEmptyString(repairedThreadRaw?.modelProvider) ?? settings.modelProvider;
-      const repairedModelId = modelOverride ?? settings.model;
-      const repairedCreatedAt = Number(repairedThreadRaw?.createdAt ?? nowUnixSeconds());
-      const repairedPreview = normalizeNonEmptyString(repairedThreadRaw?.preview) ?? "";
-      const repairedSettings = {
-        ...settings,
-        cwd: repairedCwd,
-        modelProvider: repairedModelProvider,
-        model: repairedModelId,
-      };
-
-      if (engine.threadResume && responseHistory.length > 0) {
-        try {
-          const resumed = await engine.threadResume({
-            threadId: repairedThreadId,
-            history: responseHistory,
-            cwd: repairedCwd,
-            modelProvider: repairedModelProvider,
-            ...(repairedModelId ? { model: repairedModelId } : {}),
-            approvalPolicy: approvalPolicyOverride ?? settings.approvalPolicy,
-            ...(sandboxMode ? { sandbox: sandboxMode } : {}),
-          });
-          await maybePersistThreadFromResponse(ctx.repository, resumed, threadRecord.engine);
-          const resumedThreadRaw = (resumed.thread ?? null) as Record<string, unknown> | null;
-          const resumedThreadId = normalizeNonEmptyString(resumedThreadRaw?.id);
-          if (resumedThreadId) {
-            effectiveThreadId = resumedThreadId;
-            effectiveThreadRaw = resumedThreadRaw;
-          }
-        } catch {
-          // History resume is best effort for repaired threads.
-        }
-      }
-
-      const effectiveCwd = normalizeNonEmptyString(effectiveThreadRaw?.cwd) ?? repairedCwd;
-      const effectiveModelProvider = normalizeNonEmptyString(effectiveThreadRaw?.modelProvider) ?? repairedModelProvider;
-      const effectiveCreatedAt = Number(effectiveThreadRaw?.createdAt ?? repairedCreatedAt);
-      const effectivePreview = normalizeNonEmptyString(effectiveThreadRaw?.preview) ?? repairedPreview;
-
-      const existingRepaired = await ctx.repository.getThreadRecord(effectiveThreadId);
-      if (!existingRepaired) {
-        await ctx.repository.createThread({
-          id: effectiveThreadId,
-          projectId: threadRecord.projectId,
-          cwd: effectiveCwd,
-          modelProvider: effectiveModelProvider,
-          modelId: repairedModelId,
-          preview: effectivePreview,
-          statusJson: JSON.stringify(repairedSettings),
-          engine: threadRecord.engine,
-          createdAt: effectiveCreatedAt,
-        });
-      } else {
-        await ctx.repository.updateThread({
-          id: effectiveThreadId,
-          cwd: effectiveCwd,
-          modelProvider: effectiveModelProvider,
-          modelId: repairedModelId,
-          preview: effectivePreview,
-          statusJson: JSON.stringify(repairedSettings),
-          engine: threadRecord.engine,
-        });
-      }
-
-      const mappedSession = await ctx.repository.findSessionByThread(threadId);
-      if (mappedSession) {
-        await ctx.repository.assignThreadToSession({ threadId, sessionId: null });
-        await ctx.repository.assignThreadToSession({ threadId: effectiveThreadId, sessionId: mappedSession.sessionId });
-        await ctx.repository.query(`UPDATE sessions SET codex_thread_id=$1, updated_at=$2 WHERE id=$3`, [
-          effectiveThreadId,
-          new Date().toISOString(),
-          mappedSession.sessionId,
-        ]);
-      } else if (sessionId) {
-        await ctx.repository.assignThreadToSession({ threadId, sessionId: null });
-        await ctx.repository.assignThreadToSession({ threadId: effectiveThreadId, sessionId });
-        await ctx.repository.query(`UPDATE sessions SET codex_thread_id=$1, updated_at=$2 WHERE id=$3`, [
-          effectiveThreadId,
-          new Date().toISOString(),
-          sessionId,
-        ]);
-      }
-
-      threadId = effectiveThreadId;
-      threadRecord = (await ctx.repository.getThreadRecord(threadId)) ?? threadRecord;
-      settings = {
-        ...repairedSettings,
-        cwd: effectiveCwd,
-        modelProvider: effectiveModelProvider,
-      };
-      historyTurns = (await ctx.repository.readThread(threadId, true))?.turns ?? historyTurns;
-      engineInput = await buildTurnInputWithProjectContext(ctx.repository, threadRecord.projectId, input);
-      engine = await ctx.engines.getEngine(threadRecord.engine);
-    };
-
-    if (!isValidCodexAppServerThreadId(threadId)) {
-      await repairCodexThreadMapping();
-    }
-
-    const provisionalTurnId = `turn_${uuidv4()}`;
-    let started: EngineStartTurnResult;
-    try {
-      started = await engine.startTurn({
-        threadId,
-        turnId: provisionalTurnId,
-        input: engineInput,
-        historyTurns,
-        cwd: settings.cwd,
-        model: modelOverride ?? settings.model,
-        modelProvider: settings.modelProvider,
-        approvalPolicy: approvalPolicyOverride ?? settings.approvalPolicy,
-      });
-    } catch (err) {
-      if (!isLikelyCodexMissingThreadError(err)) {
-        throw err;
-      }
-
-      await repairCodexThreadMapping();
-      started = await engine.startTurn({
-        threadId,
-        turnId: provisionalTurnId,
-        input: engineInput,
-        historyTurns,
-        cwd: settings.cwd,
-        model: modelOverride ?? settings.model,
-        modelProvider: settings.modelProvider,
-        approvalPolicy: approvalPolicyOverride ?? settings.approvalPolicy,
-      });
-    }
-
-    const turnId = started.turn.id;
-
-    return {
-      threadId,
-      turnId,
-      turn: started.turn,
-      events: started.events,
-      preludeNotifications: [],
+  if (threadRecord.engine !== "codex-app-server") {
+    await ctx.repository.updateThread({
+      id: threadId,
+      engine: "codex-app-server",
+      updatedAt: nowUnixSeconds(),
+    });
+    threadRecord = {
+      ...threadRecord,
+      engine: "codex-app-server",
     };
   }
+  let engine = await ctx.engines.getEngine("codex-app-server");
+  let shouldInjectHistoryFallbackContext = readThreadSyncState(threadRecord.statusJson) === "needsRemoteHydration";
 
-  const turnId = `turn_${uuidv4()}`;
-  await ctx.repository.createTurn({
-    id: turnId,
-    threadId,
-    status: "inProgress",
-    error: null,
-    createdAt: nowUnixSeconds(),
-  });
+  const repairCodexThreadMapping = async () => {
+    if (!engine.threadStart) {
+      throw new Error("Codex app-server engine does not support thread/start.");
+    }
+    const responseHistory = buildResponseHistoryFromTurns(historyTurns);
+    const sandboxMode = toCodexSandboxMode(settings.sandbox);
 
-  const userMessageItemId = `item_${uuidv4()}`;
-  const userMessageItem = {
-    type: "userMessage",
-    id: userMessageItemId,
-    content: input,
-  } as const;
+    const repaired = await engine.threadStart({
+      cwd: settings.cwd,
+      modelProvider: settings.modelProvider,
+      ...(modelOverride ?? settings.model ? { model: modelOverride ?? settings.model } : {}),
+      approvalPolicy: approvalPolicyOverride ?? settings.approvalPolicy,
+      ...(sandboxMode ? { sandbox: sandboxMode } : {}),
+    });
+    const repairedThreadRaw = (repaired.thread ?? null) as Record<string, unknown> | null;
+    const repairedThreadId = normalizeNonEmptyString(repairedThreadRaw?.id);
+    if (!repairedThreadId) {
+      throw new Error("Codex app-server did not return a replacement thread id.");
+    }
 
-  const preludeNotifications = [
-    {
-      method: "turn/started",
-      params: {
-        threadId,
-        turn: {
-          id: turnId,
-          items: [],
-          status: "inProgress",
-          error: null,
-        },
-      },
-    },
-    {
-      method: "item/started",
-      params: {
-        threadId,
-        turnId,
-        item: userMessageItem,
-      },
-    },
-    {
-      method: "item/completed",
-      params: {
-        threadId,
-        turnId,
-        item: userMessageItem,
-      },
-    },
-  ];
+    let effectiveThreadRaw = repairedThreadRaw;
+    let effectiveThreadId = repairedThreadId;
+    const repairedCwd = normalizeNonEmptyString(repairedThreadRaw?.cwd) ?? settings.cwd;
+    const repairedModelProvider = normalizeNonEmptyString(repairedThreadRaw?.modelProvider) ?? settings.modelProvider;
+    const repairedModelId = modelOverride ?? settings.model;
+    const repairedCreatedAt = Number(repairedThreadRaw?.createdAt ?? nowUnixSeconds());
+    const repairedPreview = normalizeNonEmptyString(repairedThreadRaw?.preview) ?? "";
+    const repairedSettings = {
+      ...settings,
+      cwd: repairedCwd,
+      modelProvider: repairedModelProvider,
+      model: repairedModelId,
+    };
 
-  await ctx.repository.upsertItem({
-    id: userMessageItem.id,
-    threadId,
-    turnId,
-    type: userMessageItem.type,
-    payload: userMessageItem,
-  });
+    let resumedHistory = false;
+    if (engine.threadResume && responseHistory.length > 0) {
+      try {
+        const resumed = await engine.threadResume({
+          threadId: repairedThreadId,
+          history: responseHistory,
+          cwd: repairedCwd,
+          modelProvider: repairedModelProvider,
+          ...(repairedModelId ? { model: repairedModelId } : {}),
+          approvalPolicy: approvalPolicyOverride ?? settings.approvalPolicy,
+          ...(sandboxMode ? { sandbox: sandboxMode } : {}),
+        });
+        await maybePersistThreadFromResponse(ctx.repository, resumed, "codex-app-server");
+        const resumedThreadRaw = (resumed.thread ?? null) as Record<string, unknown> | null;
+        const resumedThreadId = normalizeNonEmptyString(resumedThreadRaw?.id);
+        if (resumedThreadId) {
+          effectiveThreadId = resumedThreadId;
+          effectiveThreadRaw = resumedThreadRaw;
+          resumedHistory = true;
+        }
+      } catch {
+        resumedHistory = false;
+      }
+    }
 
-  const started: EngineStartTurnResult = await engine.startTurn({
-    threadId,
-    turnId,
-    input: engineInput,
-    historyTurns,
-    cwd: settings.cwd,
-    model: modelOverride ?? settings.model,
-    modelProvider: settings.modelProvider,
-    approvalPolicy: approvalPolicyOverride ?? settings.approvalPolicy,
-  });
+    if (!engine.threadResume && responseHistory.length > 0) {
+      resumedHistory = false;
+    }
+
+    if (responseHistory.length > 0 && !resumedHistory) {
+      shouldInjectHistoryFallbackContext = true;
+    } else if (resumedHistory) {
+      shouldInjectHistoryFallbackContext = false;
+    }
+
+    const effectiveCwd = normalizeNonEmptyString(effectiveThreadRaw?.cwd) ?? repairedCwd;
+    const effectiveModelProvider = normalizeNonEmptyString(effectiveThreadRaw?.modelProvider) ?? repairedModelProvider;
+    const effectiveCreatedAt = Number(effectiveThreadRaw?.createdAt ?? repairedCreatedAt);
+    const effectivePreview = normalizeNonEmptyString(effectiveThreadRaw?.preview) ?? repairedPreview;
+
+    const existingRepaired = await ctx.repository.getThreadRecord(effectiveThreadId);
+    if (!existingRepaired) {
+      await ctx.repository.createThread({
+        id: effectiveThreadId,
+        projectId: threadRecord?.projectId ?? null,
+        cwd: effectiveCwd,
+        modelProvider: effectiveModelProvider,
+        modelId: repairedModelId,
+        preview: effectivePreview,
+        statusJson: applyThreadSyncState(
+          JSON.stringify(repairedSettings),
+          shouldInjectHistoryFallbackContext ? "needsRemoteHydration" : "ready"
+        ),
+        engine: "codex-app-server",
+        createdAt: effectiveCreatedAt,
+      });
+    } else {
+      await ctx.repository.updateThread({
+        id: effectiveThreadId,
+        cwd: effectiveCwd,
+        modelProvider: effectiveModelProvider,
+        modelId: repairedModelId,
+        preview: effectivePreview,
+        statusJson: applyThreadSyncState(
+          JSON.stringify(repairedSettings),
+          shouldInjectHistoryFallbackContext ? "needsRemoteHydration" : "ready"
+        ),
+        engine: "codex-app-server",
+      });
+    }
+
+    const previousThreadId = String(threadId);
+    const mappedSession = await ctx.repository.findSessionByThread(previousThreadId);
+    if (mappedSession) {
+      await ctx.repository.assignThreadToSession({ threadId: previousThreadId, sessionId: null });
+      await ctx.repository.assignThreadToSession({ threadId: effectiveThreadId, sessionId: mappedSession.sessionId });
+      await ctx.repository.query(`UPDATE sessions SET codex_thread_id=$1, updated_at=$2 WHERE id=$3`, [
+        effectiveThreadId,
+        new Date().toISOString(),
+        mappedSession.sessionId,
+      ]);
+    } else if (sessionId) {
+      await ctx.repository.assignThreadToSession({ threadId: previousThreadId, sessionId: null });
+      await ctx.repository.assignThreadToSession({ threadId: effectiveThreadId, sessionId });
+      await ctx.repository.query(`UPDATE sessions SET codex_thread_id=$1, updated_at=$2 WHERE id=$3`, [
+        effectiveThreadId,
+        new Date().toISOString(),
+        sessionId,
+      ]);
+    }
+
+    threadId = effectiveThreadId;
+    threadRecord = (await ctx.repository.getThreadRecord(threadId)) ?? threadRecord;
+    settings = {
+      ...repairedSettings,
+      cwd: effectiveCwd,
+      modelProvider: effectiveModelProvider,
+    };
+    historyTurns = (await ctx.repository.readThread(threadId, true))?.turns ?? historyTurns;
+    engineInput = await buildTurnInputWithProjectContext(ctx.repository, threadRecord?.projectId ?? null, input);
+    engine = await ctx.engines.getEngine("codex-app-server");
+  };
+
+  if (!isValidCodexAppServerThreadId(threadId)) {
+    await repairCodexThreadMapping();
+  }
+
+  if (readThreadSyncState(threadRecord?.statusJson) === "needsRemoteHydration") {
+    await repairCodexThreadMapping();
+  }
+
+  if (shouldInjectHistoryFallbackContext) {
+    engineInput = injectHistoryFallbackContext(engineInput, historyTurns);
+  }
+
+  const provisionalTurnId = `turn_${uuidv4()}`;
+  let started: EngineStartTurnResult;
+  const providerDefaults = resolveHubProvider(null);
+  const effectiveModel = modelOverride ?? settings.model ?? providerDefaults.defaultModelId ?? null;
+  const collaborationMode = buildCollaborationMode(planMode, effectiveModel);
+  try {
+    started = await engine.startTurn({
+      threadId,
+      turnId: provisionalTurnId,
+      input: engineInput,
+      historyTurns,
+      cwd: settings.cwd,
+      model: effectiveModel,
+      modelProvider: settings.modelProvider,
+      approvalPolicy: approvalPolicyOverride ?? settings.approvalPolicy,
+      collaborationMode,
+    });
+  } catch (err) {
+    if (!isLikelyCodexMissingThreadError(err)) {
+      throw err;
+    }
+
+    await repairCodexThreadMapping();
+    if (shouldInjectHistoryFallbackContext) {
+      engineInput = injectHistoryFallbackContext(engineInput, historyTurns);
+    }
+    const repairedProviderDefaults = resolveHubProvider(null);
+    const repairedEffectiveModel = modelOverride ?? settings.model ?? repairedProviderDefaults.defaultModelId ?? null;
+    const repairedCollaborationMode = buildCollaborationMode(planMode, repairedEffectiveModel);
+    started = await engine.startTurn({
+      threadId,
+      turnId: provisionalTurnId,
+      input: engineInput,
+      historyTurns,
+      cwd: settings.cwd,
+      model: repairedEffectiveModel,
+      modelProvider: settings.modelProvider,
+      approvalPolicy: approvalPolicyOverride ?? settings.approvalPolicy,
+      collaborationMode: repairedCollaborationMode,
+    });
+  }
+
+  const turnId = started.turn.id;
 
   return {
     threadId,
     turnId,
     turn: started.turn,
     events: started.events,
-    preludeNotifications,
+    preludeNotifications: [],
   };
 }
 
@@ -317,6 +292,40 @@ function isLikelyCodexMissingThreadError(err: unknown): boolean {
     message.includes("no such thread") ||
     message.includes("missing thread")
   );
+}
+
+function readThreadSyncState(rawStatusJson: string | null | undefined): "ready" | "needsRemoteHydration" | null {
+  if (!rawStatusJson) return null;
+  try {
+    const parsed = JSON.parse(rawStatusJson);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const value = normalizeNonEmptyString((parsed as Record<string, unknown>).syncState);
+    if (value === "ready") return "ready";
+    if (value === "needsRemoteHydration") return "needsRemoteHydration";
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function applyThreadSyncState(
+  rawStatusJson: string | null | undefined,
+  syncState: "ready" | "needsRemoteHydration"
+): string {
+  const base = (() => {
+    if (!rawStatusJson) return {} as Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(rawStatusJson);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {} as Record<string, unknown>;
+      return parsed as Record<string, unknown>;
+    } catch {
+      return {} as Record<string, unknown>;
+    }
+  })();
+  return JSON.stringify({
+    ...base,
+    syncState,
+  });
 }
 
 function toCodexSandboxMode(raw: unknown): "read-only" | "workspace-write" | "danger-full-access" | null {
@@ -343,6 +352,8 @@ function toCodexSandboxMode(raw: unknown): "read-only" | "workspace-write" | "da
 
 const PROJECT_CONTEXT_MARKER = "[LABOS_PROJECT_CONTEXT]";
 const MAX_SNIPPET_CHARS = 2_200;
+const HISTORY_FALLBACK_MARKER = "[LABOS_SESSION_HISTORY_FALLBACK]";
+const MAX_HISTORY_FALLBACK_CHARS = 9_000;
 
 async function buildTurnInputWithProjectContext(repository: CodexRepository, projectId: string | null, input: UserInput[]): Promise<UserInput[]> {
   if (!projectId || !input.length) return input;
@@ -400,6 +411,78 @@ ${snippets.join("\n\n")}`;
   return next;
 }
 
+function injectHistoryFallbackContext(input: UserInput[], turns: Turn[]): UserInput[] {
+  if (!input.length || turns.length === 0) return input;
+
+  const transcript = buildHistoryFallbackTranscript(turns);
+  if (!transcript) return input;
+
+  const contextBlock = `${HISTORY_FALLBACK_MARKER}
+Remote thread history hydration failed. Use this conversation transcript context:
+${transcript}`;
+
+  const next = input.map((part) => ({ ...part }));
+  const firstTextIndex = next.findIndex((part) => part.type === "text");
+  if (firstTextIndex >= 0) {
+    const part = next[firstTextIndex] as Extract<UserInput, { type: "text" }>;
+    const existingText = String(part.text ?? "");
+    if (existingText.includes(HISTORY_FALLBACK_MARKER)) {
+      return next;
+    }
+    next[firstTextIndex] = {
+      ...part,
+      text: `${contextBlock}\n\nUser request:\n${existingText}`,
+    };
+    return next;
+  }
+
+  next.unshift({
+    type: "text",
+    text: `${contextBlock}\n\nUser request:\n`,
+    text_elements: [],
+  });
+  return next;
+}
+
+function buildHistoryFallbackTranscript(turns: Turn[]): string {
+  const lines: string[] = [];
+  for (const turn of turns) {
+    for (const item of turn.items) {
+      if (item.type === "userMessage") {
+        const userItem = item as Extract<ThreadItem, { type: "userMessage" }>;
+        const input = Array.isArray(userItem.content) ? userItem.content : [];
+        const text = input
+          .map((part: UserInput) => {
+            if (part.type === "text") return part.text;
+            if (part.type === "image") return `[image:${part.url}]`;
+            if (part.type === "localImage") return `[localImage:${part.path}]`;
+            if (part.type === "skill") return `[skill:${part.name}]`;
+            if (part.type === "mention") return `[mention:${part.name}]`;
+            return "";
+          })
+          .filter(Boolean)
+          .join("\n")
+          .trim();
+        if (text) {
+          lines.push(`User: ${text}`);
+        }
+        continue;
+      }
+      if (item.type === "agentMessage") {
+        const text = String(item.text ?? "").trim();
+        if (text) {
+          lines.push(`Assistant: ${text}`);
+        }
+      }
+    }
+  }
+
+  if (lines.length === 0) return "";
+  const joined = lines.join("\n");
+  if (joined.length <= MAX_HISTORY_FALLBACK_CHARS) return joined;
+  return joined.slice(joined.length - MAX_HISTORY_FALLBACK_CHARS);
+}
+
 export async function handleTurnInterrupt(
   ctx: TurnHandlerContext,
   rawParams: Record<string, unknown> | undefined
@@ -438,6 +521,34 @@ export async function handleTurnInterrupt(
   });
 
   return {};
+}
+
+export async function handleTurnSteer(
+  ctx: TurnHandlerContext,
+  rawParams: Record<string, unknown> | undefined
+): Promise<Record<string, unknown>> {
+  const params = (rawParams ?? {}) as Record<string, unknown>;
+  const threadId = normalizeNonEmptyString(params.threadId);
+  const turnId = normalizeNonEmptyString(params.turnId);
+  const text = normalizeNonEmptyString(params.text);
+  if (!threadId || !turnId || !text) {
+    throw new Error("Missing threadId, turnId, or text");
+  }
+
+  const threadRecord = await ctx.repository.getThreadRecord(threadId);
+  if (!threadRecord) {
+    throw new Error("Thread not found");
+  }
+
+  const engine = await ctx.engines.getEngine(threadRecord.engine);
+  if (!engine.steerTurn) {
+    throw new Error(`Engine ${threadRecord.engine} does not support turn/steer`);
+  }
+  return await engine.steerTurn({
+    threadId,
+    turnId,
+    text,
+  });
 }
 
 function normalizeUserInputList(raw: unknown): UserInput[] {
@@ -519,6 +630,39 @@ function normalizeNonEmptyString(raw: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function normalizePlanMode(raw: unknown): boolean {
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw === "string") {
+    const normalized = raw.trim().toLowerCase();
+    if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") return true;
+    if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "off") return false;
+  }
+  return false;
+}
+
+function buildCollaborationMode(
+  planMode: boolean,
+  model: string | null
+): {
+  mode: "plan" | "default";
+  settings: {
+    model: string;
+    reasoning_effort: string | null;
+    developer_instructions: string | null;
+  };
+} | null {
+  const normalizedModel = normalizeNonEmptyString(model);
+  if (!normalizedModel) return null;
+  return {
+    mode: planMode ? "plan" : "default",
+    settings: {
+      model: normalizedModel,
+      reasoning_effort: null,
+      developer_instructions: null,
+    },
+  };
+}
+
 function buildResponseHistoryFromTurns(turns: Turn[]): Array<Record<string, unknown>> {
   const history: Array<Record<string, unknown>> = [];
   for (const turn of turns) {
@@ -531,8 +675,10 @@ function buildResponseHistoryFromTurns(turns: Turn[]): Array<Record<string, unkn
 
 function appendResponseHistoryFromItem(history: Array<Record<string, unknown>>, item: ThreadItem) {
   if (item.type === "userMessage") {
+    const userItem = item as Extract<ThreadItem, { type: "userMessage" }>;
     const content: Array<Record<string, unknown>> = [];
-    for (const part of item.content) {
+    const inputParts = Array.isArray(userItem.content) ? userItem.content : [];
+    for (const part of inputParts) {
       if (part.type === "text") {
         const text = String(part.text ?? "").trim();
         if (text) {

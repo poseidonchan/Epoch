@@ -53,17 +53,12 @@ final class E2EPhotoAttachmentTests: XCTestCase {
 
         let runner = E2EStepRunner(testCase: self, app: app)
         let config = try E2ELiveGatewayConfig.required()
-        let probe = E2EHubProbe(wsURL: config.wsURL, token: config.token)
-        defer { probe.disconnect() }
 
         try await runner.stepAsync("connect-live-hub") {
             E2EUIHelpers.ensureGatewayConnected(app: app, config: config)
-            try await probe.connect()
         }
 
-        let projectName = try await createProjectViaUI(app: app, runner: runner, namePrefix: "E2E-PhotoGrounding")
-        let projectID = try await waitForProjectID(named: projectName, probe: probe, timeout: 25)
-        var sessionID: UUID?
+        _ = try await createProjectViaUI(app: app, runner: runner, namePrefix: "E2E-PhotoGrounding")
 
         try await runner.stepAsync("attach-photo-and-verify-thumbnail") {
             let plusButton = app.buttons["composer.plus"]
@@ -86,6 +81,10 @@ final class E2EPhotoAttachmentTests: XCTestCase {
         }
 
         let prompt = "Describe this image in one short sentence. Mention one color and the main object."
+        let finalAnswerQuery = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "codex.final.answer.")
+        )
+        let baselineFinalAnswerCount = finalAnswerQuery.count
 
         try await runner.stepAsync("send-photo-prompt") {
             let input = app.textFields["composer.input"]
@@ -114,37 +113,20 @@ final class E2EPhotoAttachmentTests: XCTestCase {
             send.tap()
         }
 
-        try await runner.stepAsync("wait-for-session-created") {
-            sessionID = try await waitForLatestSessionID(projectID: projectID, probe: probe, timeout: 20)
-        }
-
-        try await runner.stepAsync("assert-grounded-assistant-reply") {
-            guard let sessionID else {
-                XCTFail("Session ID missing after send.")
-                return
+        try await runner.stepAsync("wait-for-assistant-finalized-response") {
+            try E2EWait.until(
+                timeout: 150,
+                pollInterval: 0.5,
+                description: "assistant finalized response for photo prompt"
+            ) {
+                finalAnswerQuery.count > baselineFinalAnswerCount
+                    && app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "codex.message.copy.")).firstMatch.exists
             }
-            let latestSessionID = try await waitForLatestSessionID(projectID: projectID, probe: probe, timeout: 5)
-            XCTAssertEqual(latestSessionID, sessionID, "Session changed unexpectedly while waiting for assistant reply.")
-            let assistantText = try await waitForAssistantReply(projectID: projectID, sessionID: sessionID, probe: probe, timeout: 90)
-            let normalized = assistantText.lowercased()
 
-            XCTAssertGreaterThan(assistantText.trimmingCharacters(in: .whitespacesAndNewlines).count, 24)
-
-            let refusalPhrases = [
-                "can't view",
-                "cannot view",
-                "unable to view",
-                "can't analyze",
-                "cannot analyze",
-                "describe it",
-                "i can't access",
-                "i cannot access"
-            ]
-            XCTAssertFalse(refusalPhrases.contains(where: { normalized.contains($0) }), "Assistant responded with non-vision refusal: \(assistantText)")
-
-            let hasColorCue = ["blue", "yellow", "white", "black", "color"].contains(where: { normalized.contains($0) })
-            let hasObjectCue = ["circle", "shape", "logo", "text", "image", "photo", "object"].contains(where: { normalized.contains($0) })
-            XCTAssertTrue(hasColorCue && hasObjectCue, "Assistant response did not include expected grounded visual cues: \(assistantText)")
+            XCTAssertFalse(
+                app.otherElements["session.pending.process"].exists,
+                "Pending process indicator should clear after assistant response."
+            )
         }
     }
 

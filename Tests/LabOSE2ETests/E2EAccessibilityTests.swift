@@ -24,11 +24,11 @@ final class E2EAccessibilityTests: XCTestCase {
     }
 
     @MainActor
-    func testUserMessageContextMenuHidesRetryActions() async throws {
+    func testUserMessageContextMenuHidesRetryActions() {
         let app = XCUIApplication()
         app.launch()
 
-        let projectName = try createProjectViaUI(app: app, namePrefix: "E2E-Menu")
+        let projectName = createProjectViaUI(app: app, namePrefix: "E2E-Menu")
         XCTAssertFalse(projectName.isEmpty)
 
         let composerInput = app.textFields["composer.input"]
@@ -55,11 +55,11 @@ final class E2EAccessibilityTests: XCTestCase {
     }
 
     @MainActor
-    func testSessionAttachmentSheetShowsCameraTileAndRecentPhotosRail() async throws {
+    func testSessionAttachmentSheetShowsCameraTileAndRecentPhotosRail() {
         let app = XCUIApplication()
         app.launch()
 
-        _ = try createProjectViaUI(app: app, namePrefix: "E2E-AttachUI")
+        _ = createProjectViaUI(app: app, namePrefix: "E2E-AttachUI")
 
         let plusButton = app.buttons["composer.plus"]
         XCTAssertTrue(plusButton.waitForExistence(timeout: 8))
@@ -87,7 +87,7 @@ final class E2EAccessibilityTests: XCTestCase {
     }
 
     @MainActor
-    private func createProjectViaUI(app: XCUIApplication, namePrefix: String) throws -> String {
+    private func createProjectViaUI(app: XCUIApplication, namePrefix: String) -> String {
         let projectName = "\(namePrefix)-\(Int(Date().timeIntervalSince1970))"
 
         let sidebarButton = app.buttons["home.sidebar.button"]

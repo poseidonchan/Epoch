@@ -1,5 +1,3 @@
-import type { WebSocket } from "ws";
-
 import { BoundedWorkQueue } from "./backpressure.js";
 import type { JsonRpcId, JsonRpcResponse } from "./types.js";
 
@@ -8,14 +6,31 @@ export type InitializeCapabilities = {
   optOutNotificationMethods: Set<string>;
 };
 
+export type PendingUserInputMetadata = {
+  sessionId?: string | null;
+  kind?: string | null;
+};
+
+export type PendingUserInputSummary = {
+  count: number;
+  kind: string | null;
+};
+
+type WebSocketLike = {
+  send: (payload: string) => void;
+};
+
 type PendingServerRequest = {
+  id: JsonRpcId;
+  method: string;
+  params: unknown;
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
-  timeout: NodeJS.Timeout;
+  timeout: NodeJS.Timeout | null;
+  metadata: PendingUserInputMetadata | null;
 };
 
 export class CodexConnectionState {
-  readonly ws: WebSocket;
   readonly ingressQueue: BoundedWorkQueue;
 
   initializedRequestReceived = false;
@@ -25,12 +40,34 @@ export class CodexConnectionState {
     optOutNotificationMethods: new Set<string>(),
   };
 
+  private ws: WebSocketLike | null;
   private serverRequestSeq = 0;
   private pendingServerRequests = new Map<string, PendingServerRequest>();
 
-  constructor(ws: WebSocket, opts: { maxIngressQueueDepth: number }) {
+  constructor(ws: WebSocketLike, opts: { maxIngressQueueDepth: number }) {
     this.ws = ws;
     this.ingressQueue = new BoundedWorkQueue(opts.maxIngressQueueDepth);
+  }
+
+  attachWebSocket(ws: WebSocketLike) {
+    this.ws = ws;
+    this.initializedRequestReceived = false;
+    this.initializedNotificationReceived = false;
+    this.capabilities = {
+      experimentalApi: false,
+      optOutNotificationMethods: new Set<string>(),
+    };
+    this.replayPendingServerRequests();
+  }
+
+  isAttachedWebSocket(ws: WebSocketLike): boolean {
+    return this.ws === ws;
+  }
+
+  detachWebSocket(ws?: WebSocketLike) {
+    if (!ws || this.ws === ws) {
+      this.ws = null;
+    }
   }
 
   isReadyForRegularMethods(): boolean {
@@ -54,29 +91,69 @@ export class CodexConnectionState {
     this.sendRaw({ method, params });
   }
 
-  sendServerRequest(method: string, params: unknown, timeoutMs = 5 * 60_000, preferredId?: JsonRpcId): Promise<unknown> {
+  sendServerRequest(
+    method: string,
+    params: unknown,
+    timeoutMs = 5 * 60_000,
+    preferredId?: JsonRpcId,
+    metadata?: PendingUserInputMetadata
+  ): Promise<unknown> {
     const id = preferredId ?? `srvreq_${++this.serverRequestSeq}`;
     const key = typeof id === "string" ? id : String(id);
     if (this.pendingServerRequests.has(key)) {
       return Promise.reject(new Error(`Server request id collision: ${key}`));
     }
 
-    this.sendRaw({ id, method, params });
-
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pendingServerRequests.delete(key);
-        reject(new Error(`Timed out waiting for client response to ${method}`));
-      }, timeoutMs);
-      this.pendingServerRequests.set(key, { resolve, reject, timeout });
+      const normalizedMetadata = normalizePendingMetadata(metadata);
+      const timeout =
+        normalizedMetadata?.sessionId != null
+          ? null
+          : setTimeout(() => {
+              this.pendingServerRequests.delete(key);
+              reject(new Error(`Timed out waiting for client response to ${method}`));
+            }, timeoutMs);
+
+      const pending: PendingServerRequest = {
+        id,
+        method,
+        params,
+        resolve,
+        reject,
+        timeout,
+        metadata: normalizedMetadata,
+      };
+      this.pendingServerRequests.set(key, pending);
+      this.sendRaw({
+        id: pending.id,
+        method: pending.method,
+        params: pending.params,
+      });
     });
+  }
+
+  pendingUserInputSummaryMap(): Map<string, PendingUserInputSummary> {
+    const summary = new Map<string, PendingUserInputSummary>();
+    for (const pending of this.pendingServerRequests.values()) {
+      const sessionId = normalizeNonEmptyString(pending.metadata?.sessionId);
+      if (!sessionId) continue;
+      const next = summary.get(sessionId) ?? { count: 0, kind: null };
+      next.count += 1;
+      if (!next.kind) {
+        next.kind = normalizeNonEmptyString(pending.metadata?.kind);
+      }
+      summary.set(sessionId, next);
+    }
+    return summary;
   }
 
   handleClientResponse(response: JsonRpcResponse): boolean {
     const key = typeof response.id === "string" ? response.id : String(response.id);
     const pending = this.pendingServerRequests.get(key);
     if (!pending) return false;
-    clearTimeout(pending.timeout);
+    if (pending.timeout) {
+      clearTimeout(pending.timeout);
+    }
     this.pendingServerRequests.delete(key);
     if (response.error) {
       pending.reject(new Error(response.error.message));
@@ -88,13 +165,48 @@ export class CodexConnectionState {
 
   close(err?: Error) {
     for (const pending of this.pendingServerRequests.values()) {
-      clearTimeout(pending.timeout);
+      if (pending.timeout) {
+        clearTimeout(pending.timeout);
+      }
       pending.reject(err ?? new Error("Connection closed"));
     }
     this.pendingServerRequests.clear();
+    this.ws = null;
+  }
+
+  private replayPendingServerRequests() {
+    for (const pending of this.pendingServerRequests.values()) {
+      this.sendRaw({
+        id: pending.id,
+        method: pending.method,
+        params: pending.params,
+      });
+    }
   }
 
   private sendRaw(payload: unknown) {
-    this.ws.send(JSON.stringify(payload));
+    if (!this.ws) return;
+    try {
+      this.ws.send(JSON.stringify(payload));
+    } catch {
+      this.ws = null;
+    }
   }
+}
+
+function normalizePendingMetadata(metadata: PendingUserInputMetadata | undefined): PendingUserInputMetadata | null {
+  if (!metadata) return null;
+  const sessionId = normalizeNonEmptyString(metadata.sessionId);
+  const kind = normalizeNonEmptyString(metadata.kind);
+  if (!sessionId && !kind) return null;
+  return {
+    ...(sessionId ? { sessionId } : {}),
+    ...(kind ? { kind } : {}),
+  };
+}
+
+function normalizeNonEmptyString(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }

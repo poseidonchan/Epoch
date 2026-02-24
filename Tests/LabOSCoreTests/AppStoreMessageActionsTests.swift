@@ -11,6 +11,9 @@ final class AppStoreMessageActionsTests: XCTestCase {
     }
 
     func testRetrySourceTextUsesPrecedingUserMessageForAssistantMessage() async throws {
+        if ProcessInfo.processInfo.environment["LABOS_ENABLE_LEGACY_MESSAGE_ACTION_TESTS"] != "1" {
+            throw XCTSkip("Legacy local/gateway retry-source behavior; codex-only mode uses codex turn history.")
+        }
         let store = AppStore(bootstrapDemo: false)
         guard let project = await store.createProject(name: "Retry Project") else {
             XCTFail("Project was not created")
@@ -40,6 +43,9 @@ final class AppStoreMessageActionsTests: XCTestCase {
     }
 
     func testRetryMessageFromAssistantRegeneratesWithoutDuplicatingUserMessage() async throws {
+        if ProcessInfo.processInfo.environment["LABOS_ENABLE_LEGACY_MESSAGE_ACTION_TESTS"] != "1" {
+            throw XCTSkip("Legacy local/gateway retry flow; codex-only mode uses codex thread rollback.")
+        }
         let store = AppStore(bootstrapDemo: false)
         guard let project = await store.createProject(name: "Retry Model Project") else {
             XCTFail("Project was not created")
@@ -83,6 +89,9 @@ final class AppStoreMessageActionsTests: XCTestCase {
     }
 
     func testRetryMessageFromAssistantPreservesOriginalAttachmentRefs() async throws {
+        if ProcessInfo.processInfo.environment["LABOS_ENABLE_LEGACY_MESSAGE_ACTION_TESTS"] != "1" {
+            throw XCTSkip("Legacy local/gateway attachment retry flow; codex-only mode routes attachments via codex input parts.")
+        }
         let store = AppStore(bootstrapDemo: false)
         guard let project = await store.createProject(name: "Retry Attachment Project") else {
             XCTFail("Project was not created")
@@ -183,6 +192,9 @@ final class AppStoreMessageActionsTests: XCTestCase {
     }
 
     func testRetryMessageFromUserStillAppendsAnotherUserMessage() async throws {
+        if ProcessInfo.processInfo.environment["LABOS_ENABLE_LEGACY_MESSAGE_ACTION_TESTS"] != "1" {
+            throw XCTSkip("Legacy local/gateway retry semantics; codex-only mode regenerates via codex thread operations.")
+        }
         let store = AppStore(bootstrapDemo: false)
         guard let project = await store.createProject(name: "Retry User Project") else {
             XCTFail("Project was not created")
@@ -216,6 +228,9 @@ final class AppStoreMessageActionsTests: XCTestCase {
     }
 
     func testBranchFromAssistantCreatesNewSessionAndResendsPrompt() async throws {
+        if ProcessInfo.processInfo.environment["LABOS_ENABLE_LEGACY_MESSAGE_ACTION_TESTS"] != "1" {
+            throw XCTSkip("Legacy local/gateway branch-send semantics; codex-only mode covered by codex session history tests.")
+        }
         let store = AppStore(bootstrapDemo: false)
         guard let project = await store.createProject(name: "Branch Project") else {
             XCTFail("Project was not created")
@@ -254,6 +269,9 @@ final class AppStoreMessageActionsTests: XCTestCase {
     }
 
     func testOverwriteUserMessageResendsWithoutDuplicatingUserMessage() async throws {
+        if ProcessInfo.processInfo.environment["LABOS_ENABLE_LEGACY_MESSAGE_ACTION_TESTS"] != "1" {
+            throw XCTSkip("Legacy local/gateway overwrite-send semantics; codex-only mode uses codex turn start.")
+        }
         let store = AppStore(bootstrapDemo: false)
         guard let project = await store.createProject(name: "Edit Project") else {
             XCTFail("Project was not created")
@@ -360,6 +378,125 @@ final class AppStoreMessageActionsTests: XCTestCase {
         XCTAssertNotNil(plan)
         XCTAssertEqual(plan?.numTurnsToRollback, 2)
         XCTAssertEqual(plan?.sourceInput.first?.text, "second")
+    }
+
+    func testCodexRegeneratePlanUsesLatestMatchingAssistantID() {
+        let thread = CodexThread(
+            id: "thr_1",
+            preview: "second",
+            modelProvider: "openai",
+            createdAt: 1,
+            updatedAt: 2,
+            path: nil,
+            cwd: "/tmp",
+            cliVersion: "@labos/hub/0.1.0",
+            source: "appServer",
+            gitInfo: nil,
+            turns: [
+                CodexTurn(
+                    id: "turn_1",
+                    items: [
+                        .userMessage(
+                            CodexUserMessageItem(
+                                type: "userMessage",
+                                id: "item_u_1",
+                                content: [CodexUserInput(type: "text", text: "first question", url: nil, path: nil)]
+                            )
+                        ),
+                        .agentMessage(CodexAgentMessageItem(type: "agentMessage", id: "item_a_reused", text: "first reply")),
+                    ],
+                    status: "completed",
+                    error: nil
+                ),
+                CodexTurn(
+                    id: "turn_2",
+                    items: [
+                        .userMessage(
+                            CodexUserMessageItem(
+                                type: "userMessage",
+                                id: "item_u_2",
+                                content: [CodexUserInput(type: "text", text: "second question", url: nil, path: nil)]
+                            )
+                        ),
+                        .agentMessage(CodexAgentMessageItem(type: "agentMessage", id: "item_a_reused", text: "second reply")),
+                    ],
+                    status: "completed",
+                    error: nil
+                ),
+            ]
+        )
+
+        let plan = ChatSessionService.codexRegeneratePlan(
+            thread: thread,
+            assistantItemID: "item_a_reused"
+        )
+
+        XCTAssertNotNil(plan)
+        XCTAssertEqual(plan?.numTurnsToRollback, 1)
+        XCTAssertEqual(plan?.sourceInput.first?.text, "second question")
+    }
+
+    func testCodexHistoryMergePreservesInFlightLocalItemsWhenFetchedSnapshotIsBehind() {
+        let fetchedUser = CodexThreadItem.userMessage(
+            CodexUserMessageItem(
+                type: "userMessage",
+                id: "item_user_1",
+                content: [CodexUserInput(type: "text", text: "old", url: nil, path: nil)]
+            )
+        )
+        let fetchedAgent = CodexThreadItem.agentMessage(
+            CodexAgentMessageItem(
+                type: "agentMessage",
+                id: "item_agent_1",
+                text: "old reply"
+            )
+        )
+        let localUser = CodexThreadItem.userMessage(
+            CodexUserMessageItem(
+                type: "userMessage",
+                id: "\(AppStore.codexLocalUserItemPrefix)echo-1",
+                content: [CodexUserInput(type: "text", text: "new question", url: nil, path: nil)]
+            )
+        )
+        let localAgent = CodexThreadItem.agentMessage(
+            CodexAgentMessageItem(
+                type: "agentMessage",
+                id: "item_agent_inflight",
+                text: "Thinking..."
+            )
+        )
+
+        let merged = ChatSessionService.mergeHistoryItemsPreservingInFlightLocals(
+            local: [fetchedUser, fetchedAgent, localUser, localAgent],
+            fetched: [fetchedUser, fetchedAgent]
+        )
+
+        XCTAssertEqual(merged.map(\.id), ["item_user_1", "item_agent_1", "\(AppStore.codexLocalUserItemPrefix)echo-1", "item_agent_inflight"])
+    }
+
+    func testCodexItemUpsertReplacesMatchingLocalUserEcho() {
+        let localEcho = CodexThreadItem.userMessage(
+            CodexUserMessageItem(
+                type: "userMessage",
+                id: "\(AppStore.codexLocalUserItemPrefix)echo-1",
+                content: [CodexUserInput(type: "text", text: "hello", url: nil, path: nil)]
+            )
+        )
+        let remoteUser = CodexThreadItem.userMessage(
+            CodexUserMessageItem(
+                type: "userMessage",
+                id: "item_user_server",
+                content: [CodexUserInput(type: "text", text: "hello", url: nil, path: nil)]
+            )
+        )
+
+        let merged = AppStore.upsertCodexItemPreservingLocalEchoes(
+            items: [localEcho],
+            incoming: remoteUser
+        )
+
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(merged.first?.id, "item_user_server")
     }
 
     func testCodexRegeneratePlanReturnsNilWhenAssistantNotFound() {

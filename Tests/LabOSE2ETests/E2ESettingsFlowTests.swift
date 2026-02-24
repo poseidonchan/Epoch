@@ -64,10 +64,17 @@ final class E2ESettingsFlowTests: XCTestCase {
             let hpcPartitionField = app.textFields["settings.hpc.partition"]
             scrollToElement(hpcPartitionField, in: app, maxSwipes: 6)
             XCTAssertTrue(hpcPartitionField.waitForExistence(timeout: 5))
-
             replaceText(in: hpcPartitionField, with: partition, app: app)
-            replaceText(in: app.textFields["settings.hpc.account"], with: account, app: app)
-            replaceText(in: app.textFields["settings.hpc.qos"], with: qos, app: app)
+
+            let hpcAccountField = app.textFields["settings.hpc.account"]
+            scrollToElement(hpcAccountField, in: app, maxSwipes: 4)
+            XCTAssertTrue(hpcAccountField.waitForExistence(timeout: 5))
+            replaceText(in: hpcAccountField, with: account, app: app)
+
+            let hpcQosField = app.textFields["settings.hpc.qos"]
+            scrollToElement(hpcQosField, in: app, maxSwipes: 4)
+            XCTAssertTrue(hpcQosField.waitForExistence(timeout: 5))
+            replaceText(in: hpcQosField, with: qos, app: app)
 
             let hpcSaveButton = app.buttons["settings.hpc.save"]
             XCTAssertTrue(hpcSaveButton.exists)
@@ -96,8 +103,16 @@ final class E2ESettingsFlowTests: XCTestCase {
             scrollToElement(hpcPartitionField, in: app, maxSwipes: 6)
             XCTAssertTrue(hpcPartitionField.waitForExistence(timeout: 5))
             XCTAssertEqual(textValue(of: hpcPartitionField), partition)
-            XCTAssertEqual(textValue(of: app.textFields["settings.hpc.account"]), account)
-            XCTAssertEqual(textValue(of: app.textFields["settings.hpc.qos"]), qos)
+
+            let hpcAccountField = app.textFields["settings.hpc.account"]
+            scrollToElement(hpcAccountField, in: app, maxSwipes: 4)
+            XCTAssertTrue(hpcAccountField.waitForExistence(timeout: 5))
+            XCTAssertEqual(textValue(of: hpcAccountField), account)
+
+            let hpcQosField = app.textFields["settings.hpc.qos"]
+            scrollToElement(hpcQosField, in: app, maxSwipes: 4)
+            XCTAssertTrue(hpcQosField.waitForExistence(timeout: 5))
+            XCTAssertEqual(textValue(of: hpcQosField), qos)
         }
     }
 

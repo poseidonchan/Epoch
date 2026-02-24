@@ -1,9 +1,10 @@
 import { appendFile, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 import type { DbPool } from "../db/db.js";
 import { ensureProjectDirs, projectDir, sessionTranscriptPath, threadTranscriptPath } from "../storage/layout.js";
-import { nowUnixSeconds, type Thread, type ThreadItem, type Turn, type TurnError, type TurnStatus } from "./types.js";
+import { nowUnixSeconds, previewFromText, type Thread, type ThreadItem, type Turn, type TurnError, type TurnStatus, type UserInput } from "./types.js";
 
 export type CodexThreadRecord = {
   id: string;
@@ -345,6 +346,13 @@ export class CodexRepository {
       });
     }
 
+    if (mappedTurns.length === 0) {
+      const reconstructed = await this.reconstructTurnsFromItems(threadId);
+      if (reconstructed.length > 0) {
+        return toThread(thread, reconstructed);
+      }
+    }
+
     return toThread(thread, mappedTurns);
   }
 
@@ -473,6 +481,439 @@ export class CodexRepository {
     await rm(sessionTranscriptPath({ stateDir: this.stateDir }, projectId, sessionId), { force: true });
   }
 
+  async backfillSessionsMissingThreadMappings(args?: { staleInProgressThresholdSeconds?: number }): Promise<{
+    scanned: number;
+    mapped: number;
+    imported: number;
+    reconciled: number;
+  }> {
+    const staleInProgressThresholdSeconds = Math.max(60, Number(args?.staleInProgressThresholdSeconds ?? 10 * 60));
+    const sessions = await this.pool.query<any>(
+      `SELECT id, project_id, title, created_at, updated_at,
+              codex_thread_id, codex_model, codex_model_provider, codex_approval_policy, codex_sandbox_json
+       FROM sessions
+       ORDER BY created_at ASC, id ASC`
+    );
+
+    let mapped = 0;
+    let imported = 0;
+    let reconciled = 0;
+
+    for (const row of sessions.rows) {
+      const sessionId = normalizeNonEmptyString(row.id);
+      const projectId = normalizeNonEmptyString(row.project_id);
+      if (!sessionId || !projectId) continue;
+
+      const currentThreadId = normalizeNonEmptyString(row.codex_thread_id);
+      let thread = currentThreadId ? await this.getThreadRecord(currentThreadId) : null;
+
+      if (!thread) {
+        const threadIdBySession = await this.findThreadBySession(sessionId);
+        if (threadIdBySession) {
+          thread = await this.getThreadRecord(threadIdBySession);
+        }
+      }
+
+      if (!thread) {
+        const createdThreadId = `thr_${randomUUID()}`;
+        const createdAt = toUnixSeconds(row.created_at);
+        const updatedAt = toUnixSeconds(row.updated_at);
+        const status = defaultThreadStatusFromSessionRow(row, projectId);
+        const titlePreview = previewFromText(String(row.title ?? ""));
+
+        await this.createThread({
+          id: createdThreadId,
+          projectId,
+          cwd: status.cwd,
+          modelProvider: status.modelProvider,
+          modelId: status.model,
+          preview: titlePreview,
+          statusJson: JSON.stringify(status),
+          engine: "codex-app-server",
+          createdAt,
+        });
+        if (updatedAt !== createdAt) {
+          await this.updateThread({
+            id: createdThreadId,
+            updatedAt,
+          });
+        }
+        thread = await this.getThreadRecord(createdThreadId);
+      }
+
+      if (!thread) continue;
+
+      await this.assignThreadToSession({ threadId: thread.id, sessionId });
+      if (currentThreadId && currentThreadId !== thread.id) {
+        await this.assignThreadToSession({ threadId: currentThreadId, sessionId: null });
+      }
+
+      if (!currentThreadId || currentThreadId !== thread.id) {
+        await this.pool.query(`UPDATE sessions SET codex_thread_id=$1, updated_at=$2 WHERE id=$3`, [
+          thread.id,
+          new Date().toISOString(),
+          sessionId,
+        ]);
+        mapped += 1;
+      }
+
+      if (thread.statusJson == null) {
+        const status = defaultThreadStatusFromSessionRow(row, projectId);
+        await this.updateThread({
+          id: thread.id,
+          statusJson: JSON.stringify(status),
+          updatedAt: nowUnixSeconds(),
+        });
+      }
+
+      const backfilled = await this.backfillThreadFromLegacyMessages({
+        threadId: thread.id,
+        projectId,
+        sessionId,
+      });
+      if (backfilled.imported) {
+        imported += 1;
+      }
+
+      const stale = await this.reconcileStaleInProgressTurn({
+        threadId: thread.id,
+        staleAfterSeconds: staleInProgressThresholdSeconds,
+      });
+      if (stale) {
+        reconciled += 1;
+      }
+    }
+
+    return {
+      scanned: sessions.rows.length,
+      mapped,
+      imported,
+      reconciled,
+    };
+  }
+
+  async backfillThreadFromLegacyMessages(args: {
+    threadId: string;
+    projectId: string;
+    sessionId: string;
+  }): Promise<{ imported: boolean; turnsCreated: number; itemsCreated: number }> {
+    const existingTurns = await this.listTurnRecords(args.threadId);
+    if (existingTurns.length > 0) {
+      return { imported: false, turnsCreated: 0, itemsCreated: 0 };
+    }
+
+    const rows = await this.pool.query<any>(
+      `SELECT id, role, content, artifact_refs, ts
+       FROM messages
+       WHERE project_id=$1 AND session_id=$2
+       ORDER BY ts ASC, id ASC`,
+      [args.projectId, args.sessionId]
+    );
+    if (rows.rows.length === 0) {
+      return { imported: false, turnsCreated: 0, itemsCreated: 0 };
+    }
+
+    let turnsCreated = 0;
+    let itemsCreated = 0;
+    let latestAt = nowUnixSeconds();
+    let latestPreview = "";
+
+    let activeTurnId: string | null = null;
+    let activeTurnCreatedAt = latestAt;
+
+    const completeActiveTurn = async (status: TurnStatus, completedAt: number) => {
+      if (!activeTurnId) return;
+      await this.updateTurn({
+        id: activeTurnId,
+        status,
+        completedAt,
+        touchThreadId: args.threadId,
+      });
+      await this.appendThreadEvent({
+        threadId: args.threadId,
+        projectId: args.projectId,
+        createdAt: completedAt,
+        event: {
+          method: "turn/completed",
+          params: {
+            threadId: args.threadId,
+            turn: {
+              id: activeTurnId,
+              items: [],
+              status,
+              error: null,
+            },
+          },
+        },
+      });
+      activeTurnId = null;
+    };
+
+    const legacyThreadToken = sanitizeLegacyId(args.threadId, args.sessionId).slice(-24);
+    const scopedLegacyMessageId = (messageId: string): string =>
+      `${legacyThreadToken}_${sanitizeLegacyId(messageId, `${args.sessionId}_msg`)}`;
+    const legacyTurnIdFor = (messageId: string): string => `turn_legacy_${scopedLegacyMessageId(messageId)}`;
+    const legacyUserItemIdFor = (messageId: string): string => `item_legacy_user_${scopedLegacyMessageId(messageId)}`;
+    const legacyAssistantItemIdFor = (messageId: string): string => `item_legacy_assistant_${scopedLegacyMessageId(messageId)}`;
+
+    for (const row of rows.rows) {
+      const role = normalizeNonEmptyString(row.role)?.toLowerCase() ?? "";
+      const timestamp = toUnixSeconds(row.ts);
+      latestAt = Math.max(latestAt, timestamp);
+      const safeMessageId = sanitizeLegacyId(row.id, `${args.sessionId}_${timestamp}`);
+      const messageText = String(row.content ?? "");
+      const previewCandidate = messageText.trim();
+      if (previewCandidate) {
+        latestPreview = previewFromText(previewCandidate);
+      }
+
+      if (role === "user") {
+        if (activeTurnId) {
+          await completeActiveTurn("interrupted", Math.max(timestamp - 1, activeTurnCreatedAt));
+        }
+
+        const turnId = legacyTurnIdFor(safeMessageId);
+        activeTurnId = turnId;
+        activeTurnCreatedAt = timestamp;
+        turnsCreated += 1;
+
+        await this.createTurn({
+          id: turnId,
+          threadId: args.threadId,
+          status: "inProgress",
+          error: null,
+          createdAt: timestamp,
+        });
+
+        await this.appendThreadEvent({
+          threadId: args.threadId,
+          projectId: args.projectId,
+          createdAt: timestamp,
+          event: {
+            method: "turn/started",
+            params: {
+              threadId: args.threadId,
+              turn: {
+                id: turnId,
+                items: [],
+                status: "inProgress",
+                error: null,
+              },
+            },
+          },
+        });
+
+        const userItemId = legacyUserItemIdFor(safeMessageId);
+        const userContent = normalizeLegacyUserContent(row.content, row.artifact_refs);
+        const userItem: ThreadItem = {
+          type: "userMessage",
+          id: userItemId,
+          content: userContent,
+        };
+        itemsCreated += 1;
+        await this.upsertItem({
+          id: userItemId,
+          threadId: args.threadId,
+          turnId,
+          type: userItem.type,
+          payload: userItem,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+
+        await this.appendThreadEvent({
+          threadId: args.threadId,
+          projectId: args.projectId,
+          createdAt: timestamp,
+          event: {
+            method: "item/started",
+            params: {
+              threadId: args.threadId,
+              turnId,
+              item: userItem,
+            },
+          },
+        });
+        await this.appendThreadEvent({
+          threadId: args.threadId,
+          projectId: args.projectId,
+          createdAt: timestamp,
+          event: {
+            method: "item/completed",
+            params: {
+              threadId: args.threadId,
+              turnId,
+              item: userItem,
+            },
+          },
+        });
+
+        continue;
+      }
+
+      if (role !== "assistant" && role !== "system") {
+        continue;
+      }
+
+      if (!activeTurnId) {
+        activeTurnId = legacyTurnIdFor(safeMessageId);
+        activeTurnCreatedAt = timestamp;
+        turnsCreated += 1;
+        await this.createTurn({
+          id: activeTurnId,
+          threadId: args.threadId,
+          status: "inProgress",
+          error: null,
+          createdAt: timestamp,
+        });
+        await this.appendThreadEvent({
+          threadId: args.threadId,
+          projectId: args.projectId,
+          createdAt: timestamp,
+          event: {
+            method: "turn/started",
+            params: {
+              threadId: args.threadId,
+              turn: {
+                id: activeTurnId,
+                items: [],
+                status: "inProgress",
+                error: null,
+              },
+            },
+          },
+        });
+      }
+
+      const assistantItemId = legacyAssistantItemIdFor(safeMessageId);
+      const assistantItem: ThreadItem = {
+        type: "agentMessage",
+        id: assistantItemId,
+        text: messageText,
+      };
+      itemsCreated += 1;
+      await this.upsertItem({
+        id: assistantItemId,
+        threadId: args.threadId,
+        turnId: activeTurnId,
+        type: assistantItem.type,
+        payload: assistantItem,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+
+      await this.appendThreadEvent({
+        threadId: args.threadId,
+        projectId: args.projectId,
+        createdAt: timestamp,
+        event: {
+          method: "item/started",
+          params: {
+            threadId: args.threadId,
+            turnId: activeTurnId,
+            item: assistantItem,
+          },
+        },
+      });
+      await this.appendThreadEvent({
+        threadId: args.threadId,
+        projectId: args.projectId,
+        createdAt: timestamp,
+        event: {
+          method: "item/completed",
+          params: {
+            threadId: args.threadId,
+            turnId: activeTurnId,
+            item: assistantItem,
+          },
+        },
+      });
+
+      await completeActiveTurn("completed", timestamp);
+    }
+
+    if (activeTurnId) {
+      await completeActiveTurn("interrupted", Math.max(latestAt, activeTurnCreatedAt));
+    }
+
+    await this.updateThread({
+      id: args.threadId,
+      preview: latestPreview,
+      updatedAt: latestAt,
+    });
+
+    return {
+      imported: turnsCreated > 0 || itemsCreated > 0,
+      turnsCreated,
+      itemsCreated,
+    };
+  }
+
+  async reconcileStaleInProgressTurn(args: {
+    threadId: string;
+    staleAfterSeconds?: number;
+  }): Promise<{ turnId: string; reconciledAt: number } | null> {
+    const staleAfterSeconds = Math.max(60, Number(args.staleAfterSeconds ?? 10 * 60));
+    const latestTurnRows = await this.pool.query<any>(
+      `SELECT id, status, created_at, completed_at
+       FROM turns
+       WHERE thread_id=$1
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT 1`,
+      [args.threadId]
+    );
+    if (latestTurnRows.rows.length === 0) return null;
+
+    const latest = latestTurnRows.rows[0];
+    const status = normalizeNonEmptyString(latest.status);
+    if (status !== "inProgress") return null;
+    if (latest.completed_at != null) return null;
+
+    const createdAt = Number(latest.created_at ?? 0);
+    const now = nowUnixSeconds();
+    if (!Number.isFinite(createdAt) || createdAt > now - staleAfterSeconds) {
+      return null;
+    }
+
+    const turnId = String(latest.id ?? "");
+    if (!turnId) return null;
+
+    await this.updateTurn({
+      id: turnId,
+      status: "interrupted",
+      completedAt: now,
+      touchThreadId: args.threadId,
+    });
+
+    const thread = await this.getThreadRecord(args.threadId);
+    await this.appendThreadEvent({
+      threadId: args.threadId,
+      projectId: thread?.projectId ?? null,
+      createdAt: now,
+      event: {
+        method: "turn/completed",
+        params: {
+          threadId: args.threadId,
+          turn: {
+            id: turnId,
+            items: [],
+            status: "interrupted",
+            error: {
+              message: "Turn interrupted after stale inProgress timeout.",
+              codexErrorInfo: null,
+              additionalDetails: null,
+            },
+          },
+        },
+      },
+    });
+
+    return {
+      turnId,
+      reconciledAt: now,
+    };
+  }
+
   private async rewriteThreadTranscript(threadId: string) {
     const thread = await this.getThreadRecord(threadId);
     if (!thread) return;
@@ -489,6 +930,90 @@ export class CodexRepository {
     await mkdir(path.dirname(logPath), { recursive: true });
     const content = rows.rows.map((row) => `${String(row.event_json ?? "{}")}\n`).join("");
     await writeFile(logPath, content, "utf8");
+  }
+
+  private async reconstructTurnsFromItems(threadId: string): Promise<Turn[]> {
+    const itemRows = await this.pool.query<any>(
+      `SELECT turn_id, payload_json, created_at
+       FROM items
+       WHERE thread_id=$1
+       ORDER BY created_at ASC, rowid ASC`,
+      [threadId]
+    );
+    if (itemRows.rows.length === 0) {
+      return [];
+    }
+
+    const orderedTurnIds: string[] = [];
+    const itemsByTurn = new Map<string, ThreadItem[]>();
+    for (const row of itemRows.rows) {
+      const turnId = normalizeNonEmptyString(row.turn_id);
+      if (!turnId) continue;
+      const payload = safeJsonParse<ThreadItem>(row.payload_json);
+      if (!payload) continue;
+      if (!itemsByTurn.has(turnId)) {
+        orderedTurnIds.push(turnId);
+        itemsByTurn.set(turnId, []);
+      }
+      itemsByTurn.get(turnId)!.push(payload);
+    }
+    if (orderedTurnIds.length === 0) {
+      return [];
+    }
+
+    const turnStatusById = new Map<string, TurnStatus>();
+    const turnErrorById = new Map<string, TurnError | null>();
+    const eventRows = await this.pool.query<any>(
+      `SELECT event_json
+       FROM thread_events
+       WHERE thread_id=$1
+       ORDER BY created_at ASC, rowid ASC`,
+      [threadId]
+    );
+    for (const row of eventRows.rows) {
+      const event = safeJsonParse<Record<string, unknown>>(row.event_json);
+      if (!event || normalizeNonEmptyString(event.method) !== "turn/completed") {
+        continue;
+      }
+      const params = event.params;
+      if (!params || typeof params !== "object" || Array.isArray(params)) {
+        continue;
+      }
+      const turnRecord = (params as Record<string, unknown>).turn;
+      if (!turnRecord || typeof turnRecord !== "object" || Array.isArray(turnRecord)) {
+        continue;
+      }
+      const turnObj = turnRecord as Record<string, unknown>;
+      const rawTurnId = normalizeNonEmptyString(turnObj.id);
+      if (!rawTurnId) continue;
+      const normalizedStatus = normalizeNonEmptyString(turnObj.status);
+      if (normalizedStatus === "inProgress" || normalizedStatus === "completed" || normalizedStatus === "failed" || normalizedStatus === "interrupted") {
+        turnStatusById.set(rawTurnId, normalizedStatus);
+      }
+      const error = turnObj.error;
+      if (error && typeof error === "object" && !Array.isArray(error)) {
+        const errorObj = error as Record<string, unknown>;
+        const message = normalizeNonEmptyString(errorObj.message);
+        if (message) {
+          turnErrorById.set(rawTurnId, {
+            message,
+            codexErrorInfo: errorObj.codexErrorInfo ?? null,
+            additionalDetails: normalizeNullableString(errorObj.additionalDetails),
+          });
+        }
+      }
+    }
+
+    const turns: Turn[] = [];
+    for (const turnId of orderedTurnIds) {
+      turns.push({
+        id: turnId,
+        items: itemsByTurn.get(turnId) ?? [],
+        status: turnStatusById.get(turnId) ?? "completed",
+        error: turnErrorById.get(turnId) ?? null,
+      });
+    }
+    return turns;
   }
 }
 
@@ -523,6 +1048,136 @@ function normalizeNonEmptyString(raw: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function toUnixSeconds(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.floor(value);
+  }
+  const parsed = Date.parse(String(value ?? ""));
+  if (!Number.isFinite(parsed)) {
+    return nowUnixSeconds();
+  }
+  return Math.floor(parsed / 1000);
+}
+
+function sanitizeLegacyId(raw: unknown, fallback: string): string {
+  const normalized = normalizeNonEmptyString(raw) ?? fallback;
+  const clean = normalized.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120);
+  return clean || fallback;
+}
+
+type DefaultThreadStatus = {
+  modelProvider: string;
+  model: string | null;
+  cwd: string;
+  approvalPolicy: string;
+  sandbox: Record<string, unknown>;
+  reasoningEffort: null;
+  syncState: "ready";
+};
+
+function defaultThreadStatusFromSessionRow(row: any, projectId: string): DefaultThreadStatus {
+  return {
+    modelProvider: normalizeNonEmptyString(row?.codex_model_provider) ?? "openai",
+    model: normalizeNonEmptyString(row?.codex_model) ?? null,
+    cwd: `projects/${projectId}`,
+    approvalPolicy: normalizeNonEmptyString(row?.codex_approval_policy) ?? "on-request",
+    sandbox: parseJsonObject(row?.codex_sandbox_json) ?? {
+      mode: "workspace-write",
+      networkAccess: true,
+      excludeTmpdirEnvVar: false,
+      excludeHomeEnvVar: false,
+      writableRoots: [],
+    },
+    reasoningEffort: null,
+    syncState: "ready",
+  };
+}
+
+function parseJsonObject(raw: unknown): Record<string, unknown> | null {
+  if (!raw) return null;
+  if (typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  if (typeof raw !== "string") return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeLegacyUserContent(rawContent: unknown, rawArtifactRefs: unknown): UserInput[] {
+  const content: UserInput[] = [];
+  const artifactRefs = parseLegacyArtifactRefs(rawArtifactRefs);
+  for (const imagePath of artifactRefs) {
+    content.push({
+      type: "localImage",
+      path: imagePath,
+    });
+  }
+
+  const text = String(rawContent ?? "");
+  if (text.trim()) {
+    content.push({
+      type: "text",
+      text,
+      text_elements: [],
+    });
+  }
+
+  if (content.length === 0) {
+    content.push({
+      type: "text",
+      text: "",
+      text_elements: [],
+    });
+  }
+
+  return content;
+}
+
+function parseLegacyArtifactRefs(raw: unknown): string[] {
+  const parsed = parseJsonObjectArray(raw);
+  if (parsed.length === 0) return [];
+
+  const paths: string[] = [];
+  for (const ref of parsed) {
+    const pathCandidate = normalizeNonEmptyString(ref.path) ?? normalizeNonEmptyString(ref.url) ?? normalizeNonEmptyString(ref.displayText);
+    if (!pathCandidate) continue;
+    const mime = normalizeNonEmptyString(ref.mimeType)?.toLowerCase() ?? "";
+    const lowerPath = pathCandidate.toLowerCase();
+    const isImage =
+      mime.startsWith("image/") ||
+      lowerPath.endsWith(".png") ||
+      lowerPath.endsWith(".jpg") ||
+      lowerPath.endsWith(".jpeg") ||
+      lowerPath.endsWith(".gif") ||
+      lowerPath.endsWith(".webp") ||
+      lowerPath.endsWith(".heic") ||
+      lowerPath.endsWith(".heif");
+    if (isImage) {
+      paths.push(pathCandidate);
+    }
+  }
+  return Array.from(new Set(paths));
+}
+
+function parseJsonObjectArray(raw: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(raw)) {
+    return raw.filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object" && !Array.isArray(entry)));
+  }
+  if (typeof raw !== "string" || !raw.trim()) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object" && !Array.isArray(entry)));
+  } catch {
+    return [];
+  }
+}
+
 function mapThreadRow(row: any): CodexThreadRecord {
   return {
     id: String(row.id),
@@ -535,7 +1190,7 @@ function mapThreadRow(row: any): CodexThreadRecord {
     updatedAt: Number(row.updated_at ?? 0),
     archived: Number(row.archived ?? 0) === 1,
     statusJson: row.status_json == null ? null : String(row.status_json),
-    engine: String(row.engine ?? "pi"),
+    engine: String(row.engine ?? "codex-app-server"),
   };
 }
 

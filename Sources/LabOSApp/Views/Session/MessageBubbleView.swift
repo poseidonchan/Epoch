@@ -6,10 +6,8 @@ import UIKit
 
 struct MessageBubbleView: View {
     let message: ChatMessage
-    let modelOptions: [GatewayModelInfo]
     let onArtifactTap: (ChatArtifactReference) -> Void
     let onEditMessage: (ChatMessage) -> Void
-    let onRetryMessage: (ChatMessage, String?) -> Void
     let onBranchMessage: (ChatMessage) -> Void
     let showAssistantActionBar: Bool
 
@@ -82,7 +80,6 @@ struct MessageBubbleView: View {
                             RoundedRectangle(cornerRadius: 22, style: .continuous)
                                 .fill(colorScheme == .dark ? Color.white.opacity(0.95) : Color(uiColor: .secondarySystemBackground))
                         )
-                        .fixedSize(horizontal: true, vertical: false)
                         .frame(maxWidth: userBubbleMaxWidth, alignment: .trailing)
                 }
 
@@ -508,39 +505,6 @@ struct MessageBubbleView: View {
             }
 
             actionIconButton(
-                title: "Retry",
-                systemImage: "arrow.clockwise",
-                identifier: "message.retry.\(messageID)"
-            ) {
-                onRetryMessage(message, nil)
-            }
-
-            if modelOptions.count > 1 {
-                Menu {
-                    let currentModelId = store.selectedModelId(for: message.sessionID)
-                    ForEach(modelOptions, id: \.id) { model in
-                        Button {
-                            onRetryMessage(message, model.id)
-                        } label: {
-                            HStack {
-                                Text(model.name)
-                                if model.id == currentModelId {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    Image(systemName: "chevron.down.circle")
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Retry with different model")
-                .accessibilityIdentifier("message.retry.modelMenu.\(messageID)")
-            }
-
-            actionIconButton(
                 title: "Branch",
                 systemImage: "arrow.triangle.branch",
                 identifier: "message.branch.\(messageID)"
@@ -597,32 +561,6 @@ struct MessageBubbleView: View {
                     onEditMessage(message)
                 } label: {
                     Label("Edit", systemImage: "pencil")
-                }
-
-                Button {
-                    onRetryMessage(message, nil)
-                } label: {
-                    Label("Retry", systemImage: "arrow.clockwise")
-                }
-
-                if !modelOptions.isEmpty {
-                    Menu {
-                        let currentModelId = store.selectedModelId(for: message.sessionID)
-                        ForEach(modelOptions, id: \.id) { model in
-                            Button {
-                                onRetryMessage(message, model.id)
-                            } label: {
-                                HStack {
-                                    Text(model.name)
-                                    if model.id == currentModelId {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
-                            }
-                        }
-                    } label: {
-                        Label("Retry With Different Model", systemImage: "shuffle")
-                    }
                 }
             }
         case .tool, .system:

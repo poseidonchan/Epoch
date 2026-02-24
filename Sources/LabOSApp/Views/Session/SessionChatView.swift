@@ -13,6 +13,8 @@ struct SessionChatView: View {
     @EnvironmentObject private var store: AppStore
 
     @State private var composerText = ""
+    @State private var codexPromptSelectedOptionID: String?
+    @State private var codexPromptFreeformText = ""
     @State private var renameSessionPresented = false
     @State private var deleteSessionPresented = false
     @State private var showFileSheet = false
@@ -40,12 +42,6 @@ struct SessionChatView: View {
     private let maxInlineAttachmentBytes = 900 * 1024
     private let maxInlinePhotoDimension: CGFloat = 1_536
 
-    private var activeBackendEngine: String {
-        normalizedBackendEngine(
-            store.backendEngine(for: sessionID) ?? session?.backendEngine ?? store.preferredBackendEngine
-        )
-    }
-
     private var session: Session? {
         store.sessions(for: projectID).first(where: { $0.id == sessionID })
     }
@@ -68,6 +64,10 @@ struct SessionChatView: View {
 
     private var codexPrompt: CodexPendingPrompt? {
         store.codexPendingPrompt(for: sessionID)
+    }
+
+    private var codexSteerQueue: [CodexSteerQueueItem] {
+        store.codexSteerQueue(for: sessionID)
     }
 
     private var codexStatusText: String? {
@@ -110,14 +110,9 @@ struct SessionChatView: View {
                                 items: codexItems,
                                 statusText: codexStatusText,
                                 isStreaming: store.streamingSessions.contains(sessionID),
-                                modelOptions: store.availableModels,
-                                selectedModelId: store.selectedModelId(for: sessionID),
                                 showAssistantActionBar: true,
                                 onEditUserMessage: { item in
                                     editCodexUserMessage(item)
-                                },
-                                onRetryAgentMessage: { item, modelIdOverride in
-                                    retryCodexAgentMessage(item, modelIdOverride: modelIdOverride)
                                 },
                                 onBranchAgentMessage: { item in
                                     branchFromCodexAgentMessage(item)
@@ -136,15 +131,11 @@ struct SessionChatView: View {
                             ForEach(messages) { message in
                                 MessageBubbleView(
                                     message: message,
-                                    modelOptions: store.availableModels,
                                     onArtifactTap: { ref in
                                         store.openArtifactReference(ref)
                                     },
                                     onEditMessage: { msg in
                                         editMessage(msg)
-                                    },
-                                    onRetryMessage: { msg, modelId in
-                                        retryMessage(msg, modelIdOverride: modelId)
                                     },
                                     onBranchMessage: { msg in
                                         branchFromMessage(msg)
@@ -266,7 +257,7 @@ struct SessionChatView: View {
                                 Color.clear.preference(key: RunProgressHeightPreferenceKey.self, value: proxy.size.height)
                             }
                         )
-                } else if !isCodexSession, let plan = store.livePlanBySession[sessionID] {
+                } else if let plan = store.livePlanBySession[sessionID] {
                     agentPlanCard(plan)
                         .padding(.horizontal, 12)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -279,6 +270,11 @@ struct SessionChatView: View {
 
                 ForEach(codexApprovals) { approval in
                     codexApprovalCard(approval)
+                        .padding(.horizontal, 12)
+                }
+
+                ForEach(codexSteerQueue) { row in
+                    codexSteerQueueRow(row)
                         .padding(.horizontal, 12)
                 }
 
@@ -295,7 +291,7 @@ struct SessionChatView: View {
             }
         }
         .onPreferenceChange(AgentPlanHeightPreferenceKey.self) { value in
-            let nextHeight = !isCodexSession && activeRun == nil && store.livePlanBySession[sessionID] != nil ? value : 0
+            let nextHeight = activeRun == nil && store.livePlanBySession[sessionID] != nil ? value : 0
             guard abs(planCardHeight - nextHeight) > 0.5 else { return }
             withAnimation(runProgressAnimation) {
                 planCardHeight = nextHeight
@@ -316,6 +312,10 @@ struct SessionChatView: View {
                 isRunProgressExpanded = false
                 runProgressHeight = 0
             }
+        }
+        .onChange(of: codexPrompt?.id) { _, _ in
+            codexPromptSelectedOptionID = nil
+            codexPromptFreeformText = ""
         }
         .sheet(isPresented: $renameSessionPresented) {
             NamePromptSheet(
@@ -595,54 +595,93 @@ struct SessionChatView: View {
     }
 
     private func codexPromptComposer(_ prompt: CodexPendingPrompt) -> some View {
-        let quickQuestion = codexQuickPromptQuestion(prompt)
-        return VStack(alignment: .leading, spacing: 10) {
-            Text(prompt.prompt ?? "Codex is waiting for input")
+        let question = codexPromptPrimaryQuestion(prompt)
+        let header = prompt.prompt
+            ?? question?.prompt
+            ?? "Codex is waiting for input"
+        let options = question?.options ?? []
+        let selectedOption = options.first(where: { $0.id == codexPromptSelectedOptionID })
+        let allowsFreeform = options.isEmpty || selectedOption?.isOther == true
+        let canSubmit = codexPromptAnswerMap(question: question, selectedOption: selectedOption) != nil
+
+        return VStack(alignment: .leading, spacing: 12) {
+            Text(header)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if let quickQuestion, !quickQuestion.options.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    if !quickQuestion.prompt.isEmpty {
-                        Text(quickQuestion.prompt)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(quickQuestion.options, id: \.id) { option in
-                        Button(option.label) {
-                            store.respondToCodexPrompt(
-                                sessionID: sessionID,
-                                requestID: prompt.requestID,
-                                answers: [quickQuestion.id: option.label]
-                            )
-                            composerText = ""
-                        }
-                        .buttonStyle(.borderedProminent)
+
+            if let question {
+                if !question.prompt.isEmpty, question.prompt != header {
+                    Text(question.prompt)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
+            if !options.isEmpty {
+                VStack(spacing: 8) {
+                    ForEach(options, id: \.id) { option in
+                        Button {
+                            codexPromptSelectedOptionID = option.id
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: codexPromptSelectedOptionID == option.id ? "largecircle.fill.circle" : "circle")
+                                    .foregroundStyle(codexPromptSelectedOptionID == option.id ? Color.accentColor : Color.secondary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(option.label)
+                                        .foregroundStyle(.primary)
+                                    if let description = option.description,
+                                       !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                        Text(description)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 10)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(codexPromptSelectedOptionID == option.id ? Color.accentColor.opacity(0.1) : Color(.tertiarySystemFill))
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("session.codexPrompt.option.\(codexPromptOptionIdentifier(option.id))")
                     }
                 }
             }
-            TextField("Type your response", text: $composerText, axis: .vertical)
-                .lineLimit(1...4)
-                .textFieldStyle(.roundedBorder)
+
+            if allowsFreeform {
+                TextField("Type your response", text: $codexPromptFreeformText, axis: .vertical)
+                    .lineLimit(1...4)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("session.codexPrompt.freeform")
+            }
+
             HStack(spacing: 8) {
-                Button("Cancel") {
+                Button("Dismiss") {
                     store.respondToCodexPrompt(sessionID: sessionID, requestID: prompt.requestID, answers: [:])
-                    composerText = ""
+                    codexPromptSelectedOptionID = nil
+                    codexPromptFreeformText = ""
                 }
                 .buttonStyle(.bordered)
+                .accessibilityIdentifier("session.codexPrompt.dismiss")
 
-                Button("Send Response") {
-                    let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !text.isEmpty else { return }
+                Button("Submit") {
+                    guard let answers = codexPromptAnswerMap(question: question, selectedOption: selectedOption) else { return }
                     store.respondToCodexPrompt(
                         sessionID: sessionID,
                         requestID: prompt.requestID,
-                        answers: codexPromptTextAnswer(prompt, text: text)
+                        answers: answers
                     )
-                    composerText = ""
+                    codexPromptSelectedOptionID = nil
+                    codexPromptFreeformText = ""
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(!canSubmit)
+                .accessibilityIdentifier("session.codexPrompt.submit")
             }
         }
         .padding(12)
@@ -652,39 +691,47 @@ struct SessionChatView: View {
         )
         .padding(.horizontal, 12)
         .padding(.bottom, 10)
+        .accessibilityIdentifier("session.codexPrompt.card")
     }
 
-    private struct CodexPromptOption {
-        var id: String
-        var label: String
-    }
-
-    private struct CodexPromptQuestion {
-        var id: String
-        var prompt: String
-        var options: [CodexPromptOption]
-    }
-
-    private func codexQuickPromptQuestion(_ prompt: CodexPendingPrompt) -> CodexPromptQuestion? {
+    private func codexPromptPrimaryQuestion(_ prompt: CodexPendingPrompt) -> CodexPromptQuestion? {
+        if let first = prompt.questions.first {
+            return first
+        }
         guard case let .object(params)? = prompt.rawParams else { return nil }
-        guard case let .array(questions)? = params["questions"], questions.count == 1 else { return nil }
-        guard case let .object(question)? = questions.first else { return nil }
+        guard case let .array(rawQuestions)? = params["questions"],
+              let firstRawQuestion = rawQuestions.first,
+              case let .object(questionObject) = firstRawQuestion
+        else { return nil }
 
-        let id = codexPromptString(question["id"]) ?? "response"
-        let promptText = codexPromptString(question["question"]) ?? ""
+        let questionID = codexPromptString(questionObject["id"]) ?? "response"
+        let questionPrompt = codexPromptString(questionObject["question"])
+            ?? codexPromptString(questionObject["prompt"])
+            ?? ""
         let options: [CodexPromptOption] = {
-            guard case let .array(rawOptions)? = question["options"] else { return [] }
-            return rawOptions.compactMap { value -> CodexPromptOption? in
-                guard case let .object(object) = value else { return nil }
-                guard let label = codexPromptString(object["label"]), !label.isEmpty else {
-                    return nil
-                }
-                let optionId = codexPromptString(object["id"]) ?? label
-                return CodexPromptOption(id: optionId, label: label)
+            guard case let .array(rawOptions)? = questionObject["options"] else { return [] }
+            return rawOptions.compactMap { optionValue in
+                guard case let .object(optionObject) = optionValue else { return nil }
+                guard let label = codexPromptString(optionObject["label"]), !label.isEmpty else { return nil }
+                return CodexPromptOption(
+                    id: codexPromptString(optionObject["id"]) ?? label,
+                    label: label,
+                    description: codexPromptString(optionObject["description"]),
+                    isOther: {
+                        if case let .bool(flag)? = optionObject["isOther"] {
+                            return flag
+                        }
+                        return false
+                    }()
+                )
             }
         }()
-        guard !options.isEmpty else { return nil }
-        return CodexPromptQuestion(id: id, prompt: promptText, options: options)
+
+        return CodexPromptQuestion(
+            id: questionID,
+            prompt: questionPrompt,
+            options: options
+        )
     }
 
     private func codexPromptString(_ value: JSONValue?) -> String? {
@@ -704,11 +751,72 @@ struct SessionChatView: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private func codexPromptTextAnswer(_ prompt: CodexPendingPrompt, text: String) -> [String: String] {
-        if let question = codexQuickPromptQuestion(prompt) {
-            return [question.id: text]
+    private func codexPromptAnswerMap(question: CodexPromptQuestion?, selectedOption: CodexPromptOption?) -> [String: String]? {
+        let questionID = question?.id ?? "response"
+        guard !questionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+
+        if let selectedOption {
+            if selectedOption.isOther {
+                let typed = codexPromptFreeformText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !typed.isEmpty else { return nil }
+                return [questionID: typed]
+            }
+            return [questionID: selectedOption.label]
         }
-        return ["response": text]
+
+        if let question, !question.options.isEmpty {
+            return nil
+        }
+
+        let typed = codexPromptFreeformText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !typed.isEmpty else { return nil }
+        return [questionID: typed]
+    }
+
+    private func codexPromptOptionIdentifier(_ raw: String) -> String {
+        let lowered = raw.lowercased()
+        let chars = lowered.map { char -> Character in
+            switch char {
+            case "a"..."z", "0"..."9":
+                return char
+            default:
+                return "_"
+            }
+        }
+        return String(chars)
+    }
+
+    private func codexSteerQueueRow(_ row: CodexSteerQueueItem) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(row.text)
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let error = row.error, !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            HStack(spacing: 8) {
+                Button("Steer") {
+                    store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: row.id)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(row.status == .sending)
+
+                Button("Remove") {
+                    store.removeQueuedCodexInput(sessionID: sessionID, queueItemID: row.id)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
     }
 
     private func codexApprovalCard(_ approval: CodexPendingApproval) -> some View {
@@ -1080,25 +1188,6 @@ struct SessionChatView: View {
         }
     }
 
-    private func retryMessage(_ message: ChatMessage, modelIdOverride: String?) {
-        store.retryMessage(
-            projectID: projectID,
-            sessionID: sessionID,
-            fromMessageID: message.id,
-            modelIdOverride: modelIdOverride
-        )
-    }
-
-    private func retryCodexAgentMessage(_ item: CodexAgentMessageItem, modelIdOverride: String?) {
-        store.retryCodexAgentMessage(
-            projectID: projectID,
-            sessionID: sessionID,
-            assistantItemID: item.id,
-            assistantText: item.text,
-            modelIdOverride: modelIdOverride
-        )
-    }
-
     private func branchFromMessage(_ message: ChatMessage) {
         Task {
             _ = await store.branchFromMessage(
@@ -1259,11 +1348,6 @@ struct SessionChatView: View {
             .buttonStyle(.bordered)
 
             Menu {
-                Menu("Backend") {
-                    backendMenuButton(title: "Pi Adapter", value: "pi")
-                    backendMenuButton(title: "Codex App Server", value: "codex-app-server")
-                }
-
                 Button("Rename Session") {
                     renameSessionPresented = true
                 }
@@ -1305,47 +1389,15 @@ struct SessionChatView: View {
         )
     }
 
-    @ViewBuilder
-    private func backendMenuButton(title: String, value: String) -> some View {
-        let normalizedValue = normalizedBackendEngine(value)
-        Button {
-            applyBackendSelection(normalizedValue)
-        } label: {
-            HStack {
-                Text(title)
-                if activeBackendEngine == normalizedValue {
-                    Image(systemName: "checkmark")
-                }
-            }
-        }
-    }
-
-    private func applyBackendSelection(_ backend: String) {
-        let normalized = normalizedBackendEngine(backend)
-        store.savePreferredBackendEngine(normalized)
-        Task { @MainActor in
-            await store.updateSessionBackend(
-                projectID: projectID,
-                sessionID: sessionID,
-                backendEngine: normalized
-            )
-        }
-    }
-
-    private func normalizedBackendEngine(_ value: String?) -> String {
-        let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        if normalized == "codex" || normalized == "codex-app-server" {
-            return "codex-app-server"
-        }
-        return "pi"
-    }
-
     private func agentPlanCard(_ payload: AgentPlanUpdatedPayload) -> some View {
         let items = payload.plan
         let total = max(items.count, 1)
         let completed = items.filter { $0.status.lowercased() == "completed" }.count
         let fraction = min(max(Double(completed) / Double(total), 0), 1)
-        let currentIndex = items.firstIndex { $0.status.lowercased() == "in_progress" }
+        let currentIndex = items.firstIndex { status in
+            let normalized = status.status.lowercased()
+            return normalized == "in_progress" || normalized == "inprogress"
+        }
         let currentTitle = currentIndex.flatMap { items.indices.contains($0) ? items[$0].step : nil } ?? "Waiting for execution"
 
         return VStack(alignment: .leading, spacing: 8) {
@@ -1442,13 +1494,14 @@ struct SessionChatView: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.08))
         )
+        .accessibilityIdentifier("session.plan.progress.card")
     }
 
     private func planStatusIcon(_ status: String) -> String {
         switch status {
         case "completed":
             return "checkmark.circle.fill"
-        case "in_progress":
+        case "in_progress", "inprogress":
             return "clock.fill"
         case "pending":
             return "circle"
@@ -1461,7 +1514,7 @@ struct SessionChatView: View {
         switch status {
         case "completed":
             return .green
-        case "in_progress":
+        case "in_progress", "inprogress":
             return .blue
         case "pending":
             return .secondary
@@ -1617,6 +1670,7 @@ struct SessionChatView: View {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.08))
         )
+        .accessibilityIdentifier("session.run.progress.card")
     }
 
     private func completedSteps(_ run: RunRecord) -> Int {
