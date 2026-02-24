@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from "uuid";
 import { resolveHubProvider } from "../../model.js";
 import { normalizeEngineName, type CodexEngineRegistry } from "../engine_registry.js";
 import type { CodexRepository } from "../repository.js";
-import { nowUnixSeconds, previewFromText, type Thread, type Turn } from "../types.js";
+import { nowUnixSeconds, previewFromText, type Thread, type ThreadItem, type Turn } from "../types.js";
 
 type ThreadHandlerContext = {
   repository: CodexRepository;
@@ -220,6 +220,19 @@ export async function handleThreadRead(
     throw new Error("Missing threadId");
   }
 
+  const existing = await ctx.repository.getThreadRecord(threadId);
+  if (existing?.engine === "codex-app-server") {
+    const engine = await ctx.engines.getEngine(existing.engine);
+    if (engine.threadRead) {
+      const proxied = await engine.threadRead({
+        ...stripEngineOverride(params),
+        threadId,
+      });
+      await maybePersistThreadFromResponse(ctx.repository, proxied, existing.engine);
+      return proxied;
+    }
+  }
+
   const includeTurns = Boolean(params.includeTurns);
   const thread = await ctx.repository.readThread(threadId, includeTurns);
   if (!thread) {
@@ -227,6 +240,77 @@ export async function handleThreadRead(
   }
 
   return { thread };
+}
+
+export async function handleThreadRollback(
+  ctx: ThreadHandlerContext,
+  rawParams: Record<string, unknown> | undefined
+): Promise<Record<string, unknown>> {
+  const params = (rawParams ?? {}) as Record<string, unknown>;
+  let threadId = normalizeNonEmptyString(params.threadId);
+  const sessionId = normalizeNonEmptyString(params.sessionId);
+  if (!threadId && sessionId) {
+    const rows = await ctx.repository.query<any>(
+      `SELECT codex_thread_id
+       FROM sessions
+       WHERE id=$1
+       LIMIT 1`,
+      [sessionId]
+    );
+    threadId = normalizeNonEmptyString(rows[0]?.codex_thread_id);
+  }
+  if (!threadId) {
+    throw new Error("Missing threadId");
+  }
+
+  const numTurns = normalizeNonNegativeInteger(params.numTurns);
+  if (numTurns == null) {
+    throw new Error("Missing or invalid numTurns");
+  }
+
+  const existing = await ctx.repository.getThreadRecord(threadId);
+  if (!existing) {
+    throw new Error("Thread not found");
+  }
+
+  if (existing.engine === "codex-app-server") {
+    const engine = await ctx.engines.getEngine(existing.engine);
+    if (!engine.threadRollback) {
+      throw new Error("Codex app-server engine does not support thread/rollback.");
+    }
+    const proxied = await engine.threadRollback({
+      threadId,
+      numTurns,
+    });
+    await maybePersistThreadFromResponse(ctx.repository, proxied, existing.engine);
+    return proxied;
+  }
+
+  const current = await ctx.repository.readThread(threadId, true);
+  if (!current) {
+    throw new Error("Thread not found");
+  }
+  if (numTurns <= 0 || current.turns.length === 0) {
+    return { thread: current };
+  }
+
+  const removeCount = Math.min(numTurns, current.turns.length);
+  const removedTurnIds = current.turns.slice(current.turns.length - removeCount).map((turn) => turn.id);
+  await ctx.repository.removeTurns(threadId, removedTurnIds);
+
+  const updated = await ctx.repository.readThread(threadId, true);
+  if (!updated) {
+    throw new Error("Thread not found");
+  }
+
+  await ctx.repository.updateThread({
+    id: threadId,
+    preview: updateThreadPreviewFromItems(updated.turns),
+    updatedAt: nowUnixSeconds(),
+  });
+
+  const reloaded = await ctx.repository.readThread(threadId, true);
+  return { thread: reloaded ?? updated };
 }
 
 export async function handleThreadList(
@@ -388,13 +472,28 @@ function normalizeNonEmptyString(raw: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function normalizeNonNegativeInteger(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    const next = Math.floor(raw);
+    return next >= 0 ? next : null;
+  }
+  if (typeof raw === "string" && raw.trim()) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) {
+      const next = Math.floor(parsed);
+      return next >= 0 ? next : null;
+    }
+  }
+  return null;
+}
+
 function stripEngineOverride(params: Record<string, unknown>): Record<string, unknown> {
   const clone: Record<string, unknown> = { ...params };
   delete clone.engine;
   return clone;
 }
 
-async function maybePersistThreadFromResponse(repository: CodexRepository, response: Record<string, unknown>, engine: string) {
+export async function maybePersistThreadFromResponse(repository: CodexRepository, response: Record<string, unknown>, engine: string) {
   const threadRaw = (response.thread ?? null) as Record<string, unknown> | null;
   if (!threadRaw || typeof threadRaw.id !== "string") return;
 
@@ -428,4 +527,94 @@ async function maybePersistThreadFromResponse(repository: CodexRepository, respo
     engine,
     updatedAt,
   });
+
+  const turnsRaw = Array.isArray(threadRaw.turns) ? threadRaw.turns : null;
+  if (!turnsRaw) return;
+
+  const normalizedTurns = turnsRaw
+    .map((turn) => normalizeTurnSnapshot(turn))
+    .filter((turn): turn is { id: string; status: Turn["status"]; error: Turn["error"]; items: ThreadItem[] } => turn != null);
+
+  const existingTurns = await repository.listTurnRecords(threadRaw.id);
+  const existingTurnIds = new Set(existingTurns.map((turn) => turn.id));
+  const desiredTurnIds = new Set(normalizedTurns.map((turn) => turn.id));
+  const staleTurnIds = existingTurns.map((turn) => turn.id).filter((id) => !desiredTurnIds.has(id));
+  if (staleTurnIds.length > 0) {
+    await repository.removeTurns(threadRaw.id, staleTurnIds);
+  }
+
+  const createdAtBase = nowUnixSeconds();
+  for (const [index, turn] of normalizedTurns.entries()) {
+    const turnCreatedAt = createdAtBase + index;
+    if (!existingTurnIds.has(turn.id)) {
+      await repository.createTurn({
+        id: turn.id,
+        threadId: threadRaw.id,
+        status: turn.status,
+        error: turn.error,
+        createdAt: turnCreatedAt,
+      });
+    } else {
+      await repository.updateTurn({
+        id: turn.id,
+        status: turn.status,
+        error: turn.error,
+        completedAt: turn.status === "inProgress" ? null : nowUnixSeconds(),
+        touchThreadId: threadRaw.id,
+      });
+    }
+
+    for (const item of turn.items) {
+      await repository.upsertItem({
+        id: String(item.id),
+        threadId: threadRaw.id,
+        turnId: turn.id,
+        type: String(item.type),
+        payload: item,
+        updatedAt: nowUnixSeconds(),
+      });
+    }
+  }
+}
+
+function normalizeTurnSnapshot(
+  raw: unknown
+): { id: string; status: Turn["status"]; error: Turn["error"]; items: ThreadItem[] } | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const id = normalizeNonEmptyString(record.id);
+  if (!id) return null;
+
+  const statusRaw = normalizeNonEmptyString(record.status) ?? "completed";
+  const status: Turn["status"] =
+    statusRaw === "inProgress" || statusRaw === "completed" || statusRaw === "failed" || statusRaw === "interrupted"
+      ? statusRaw
+      : "completed";
+
+  let error: Turn["error"] = null;
+  if (record.error && typeof record.error === "object" && !Array.isArray(record.error)) {
+    const errorRecord = record.error as Record<string, unknown>;
+    const message = normalizeNonEmptyString(errorRecord.message) ?? "unknown error";
+    error = {
+      message,
+      codexErrorInfo: errorRecord.codexErrorInfo ?? null,
+      additionalDetails: normalizeNullableString(errorRecord.additionalDetails),
+    };
+  }
+
+  const itemsRaw = Array.isArray(record.items) ? record.items : [];
+  const items = itemsRaw
+    .map((item) => normalizeThreadItemSnapshot(item))
+    .filter((item): item is ThreadItem => item != null);
+
+  return { id, status, error, items };
+}
+
+function normalizeThreadItemSnapshot(raw: unknown): ThreadItem | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const item = raw as Record<string, unknown>;
+  const id = normalizeNonEmptyString(item.id);
+  const type = normalizeNonEmptyString(item.type);
+  if (!id || !type) return null;
+  return item as ThreadItem;
 }

@@ -4,8 +4,8 @@ import { buildProjectFileContextStream } from "../../indexing/projectIndexing.js
 import type { CodexEngineRegistry } from "../engine_registry.js";
 import type { EngineStartTurnResult, EngineStreamEvent } from "../engines/types.js";
 import type { CodexRepository } from "../repository.js";
-import { nowUnixSeconds, type Turn, type UserInput } from "../types.js";
-import { parseThreadSettings } from "./thread.js";
+import { nowUnixSeconds, type ThreadItem, type Turn, type UserInput } from "../types.js";
+import { maybePersistThreadFromResponse, parseThreadSettings } from "./thread.js";
 
 export type TurnHandlerContext = {
   repository: CodexRepository;
@@ -46,10 +46,11 @@ export async function handleTurnStart(
     throw new Error("Thread not found");
   }
 
-  const threadSnapshot = await ctx.repository.readThread(threadId, false);
+  const threadSnapshot = await ctx.repository.readThread(threadId, true);
   if (!threadSnapshot) {
     throw new Error("Thread not found");
   }
+  let historyTurns = threadSnapshot.turns;
 
   let settings = parseThreadSettings(threadRecord.statusJson, threadSnapshot);
   const modelOverride = normalizeNonEmptyString(params.model);
@@ -64,6 +65,7 @@ export async function handleTurnStart(
       if (!engine.threadStart) {
         throw new Error("Codex app-server engine does not support thread/start.");
       }
+      const responseHistory = buildResponseHistoryFromTurns(historyTurns);
       const sandboxMode = toCodexSandboxMode(settings.sandbox);
 
       const repaired = await engine.threadStart({
@@ -79,6 +81,8 @@ export async function handleTurnStart(
         throw new Error("Codex app-server did not return a replacement thread id.");
       }
 
+      let effectiveThreadRaw = repairedThreadRaw;
+      let effectiveThreadId = repairedThreadId;
       const repairedCwd = normalizeNonEmptyString(repairedThreadRaw?.cwd) ?? settings.cwd;
       const repairedModelProvider = normalizeNonEmptyString(repairedThreadRaw?.modelProvider) ?? settings.modelProvider;
       const repairedModelId = modelOverride ?? settings.model;
@@ -91,26 +95,54 @@ export async function handleTurnStart(
         model: repairedModelId,
       };
 
-      const existingRepaired = await ctx.repository.getThreadRecord(repairedThreadId);
+      if (engine.threadResume && responseHistory.length > 0) {
+        try {
+          const resumed = await engine.threadResume({
+            threadId: repairedThreadId,
+            history: responseHistory,
+            cwd: repairedCwd,
+            modelProvider: repairedModelProvider,
+            ...(repairedModelId ? { model: repairedModelId } : {}),
+            approvalPolicy: approvalPolicyOverride ?? settings.approvalPolicy,
+            ...(sandboxMode ? { sandbox: sandboxMode } : {}),
+          });
+          await maybePersistThreadFromResponse(ctx.repository, resumed, threadRecord.engine);
+          const resumedThreadRaw = (resumed.thread ?? null) as Record<string, unknown> | null;
+          const resumedThreadId = normalizeNonEmptyString(resumedThreadRaw?.id);
+          if (resumedThreadId) {
+            effectiveThreadId = resumedThreadId;
+            effectiveThreadRaw = resumedThreadRaw;
+          }
+        } catch {
+          // History resume is best effort for repaired threads.
+        }
+      }
+
+      const effectiveCwd = normalizeNonEmptyString(effectiveThreadRaw?.cwd) ?? repairedCwd;
+      const effectiveModelProvider = normalizeNonEmptyString(effectiveThreadRaw?.modelProvider) ?? repairedModelProvider;
+      const effectiveCreatedAt = Number(effectiveThreadRaw?.createdAt ?? repairedCreatedAt);
+      const effectivePreview = normalizeNonEmptyString(effectiveThreadRaw?.preview) ?? repairedPreview;
+
+      const existingRepaired = await ctx.repository.getThreadRecord(effectiveThreadId);
       if (!existingRepaired) {
         await ctx.repository.createThread({
-          id: repairedThreadId,
+          id: effectiveThreadId,
           projectId: threadRecord.projectId,
-          cwd: repairedCwd,
-          modelProvider: repairedModelProvider,
+          cwd: effectiveCwd,
+          modelProvider: effectiveModelProvider,
           modelId: repairedModelId,
-          preview: repairedPreview,
+          preview: effectivePreview,
           statusJson: JSON.stringify(repairedSettings),
           engine: threadRecord.engine,
-          createdAt: repairedCreatedAt,
+          createdAt: effectiveCreatedAt,
         });
       } else {
         await ctx.repository.updateThread({
-          id: repairedThreadId,
-          cwd: repairedCwd,
-          modelProvider: repairedModelProvider,
+          id: effectiveThreadId,
+          cwd: effectiveCwd,
+          modelProvider: effectiveModelProvider,
           modelId: repairedModelId,
-          preview: repairedPreview,
+          preview: effectivePreview,
           statusJson: JSON.stringify(repairedSettings),
           engine: threadRecord.engine,
         });
@@ -119,25 +151,26 @@ export async function handleTurnStart(
       const mappedSession = await ctx.repository.findSessionByThread(threadId);
       if (mappedSession) {
         await ctx.repository.assignThreadToSession({ threadId, sessionId: null });
-        await ctx.repository.assignThreadToSession({ threadId: repairedThreadId, sessionId: mappedSession.sessionId });
+        await ctx.repository.assignThreadToSession({ threadId: effectiveThreadId, sessionId: mappedSession.sessionId });
         await ctx.repository.query(`UPDATE sessions SET codex_thread_id=$1, updated_at=$2 WHERE id=$3`, [
-          repairedThreadId,
+          effectiveThreadId,
           new Date().toISOString(),
           mappedSession.sessionId,
         ]);
       } else if (sessionId) {
         await ctx.repository.assignThreadToSession({ threadId, sessionId: null });
-        await ctx.repository.assignThreadToSession({ threadId: repairedThreadId, sessionId });
+        await ctx.repository.assignThreadToSession({ threadId: effectiveThreadId, sessionId });
         await ctx.repository.query(`UPDATE sessions SET codex_thread_id=$1, updated_at=$2 WHERE id=$3`, [
-          repairedThreadId,
+          effectiveThreadId,
           new Date().toISOString(),
           sessionId,
         ]);
       }
 
-      threadId = repairedThreadId;
+      threadId = effectiveThreadId;
       threadRecord = (await ctx.repository.getThreadRecord(threadId)) ?? threadRecord;
       settings = repairedSettings;
+      historyTurns = (await ctx.repository.readThread(threadId, true))?.turns ?? historyTurns;
       engineInput = await buildTurnInputWithProjectContext(ctx.repository, threadRecord.projectId, input);
       engine = await ctx.engines.getEngine(threadRecord.engine);
     }
@@ -147,6 +180,7 @@ export async function handleTurnStart(
       threadId,
       turnId: provisionalTurnId,
       input: engineInput,
+      historyTurns,
       cwd: settings.cwd,
       model: modelOverride ?? settings.model,
       modelProvider: settings.modelProvider,
@@ -223,6 +257,7 @@ export async function handleTurnStart(
     threadId,
     turnId,
     input: engineInput,
+    historyTurns,
     cwd: settings.cwd,
     model: modelOverride ?? settings.model,
     modelProvider: settings.modelProvider,
@@ -442,4 +477,63 @@ function normalizeNonEmptyString(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function buildResponseHistoryFromTurns(turns: Turn[]): Array<Record<string, unknown>> {
+  const history: Array<Record<string, unknown>> = [];
+  for (const turn of turns) {
+    for (const item of turn.items) {
+      appendResponseHistoryFromItem(history, item);
+    }
+  }
+  return history;
+}
+
+function appendResponseHistoryFromItem(history: Array<Record<string, unknown>>, item: ThreadItem) {
+  if (item.type === "userMessage") {
+    const content: Array<Record<string, unknown>> = [];
+    for (const part of item.content) {
+      if (part.type === "text") {
+        const text = String(part.text ?? "").trim();
+        if (text) {
+          content.push({ type: "input_text", text });
+        }
+        continue;
+      }
+      if (part.type === "image") {
+        const imageUrl = String(part.url ?? "").trim();
+        if (imageUrl) {
+          content.push({ type: "input_image", image_url: imageUrl });
+        }
+        continue;
+      }
+      if (part.type === "localImage") {
+        const localPath = String(part.path ?? "").trim();
+        if (localPath) {
+          const imageUrl = localPath.startsWith("file://") ? localPath : `file://${localPath}`;
+          content.push({ type: "input_image", image_url: imageUrl });
+        }
+      }
+    }
+    if (content.length > 0) {
+      history.push({
+        type: "message",
+        role: "user",
+        content,
+        end_turn: true,
+      });
+    }
+    return;
+  }
+
+  if (item.type === "agentMessage" || item.type === "plan") {
+    const text = String(item.text ?? "").trim();
+    if (!text) return;
+    history.push({
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text }],
+      end_turn: true,
+    });
+  }
 }
