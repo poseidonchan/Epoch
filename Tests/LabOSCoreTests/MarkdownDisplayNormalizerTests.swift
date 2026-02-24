@@ -74,4 +74,24 @@ final class MarkdownDisplayNormalizerTests: XCTestCase {
         let output = MarkdownDisplayNormalizer.normalizeChatMessage(input)
         XCTAssertEqual(output, input)
     }
+
+    func testNormalizeChatMessageStripsIndentedWholeMessageBlockquoteWithoutCreatingCodeBlock() {
+        let input = """
+            > I’m your **LabOS research assistant**—a concise helper.
+            >
+            > I can help with experiments and debugging.
+        """
+
+        let output = MarkdownDisplayNormalizer.normalizeChatMessage(input)
+        XCTAssertFalse(output.contains(">"))
+        XCTAssertFalse(MarkdownDisplayNormalizer.likelyContainsCodeBlock(output))
+        XCTAssertEqual(
+            output,
+            """
+            I’m your **LabOS research assistant**—a concise helper.
+
+            I can help with experiments and debugging.
+            """
+        )
+    }
 }

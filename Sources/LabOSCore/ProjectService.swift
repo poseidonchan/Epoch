@@ -16,6 +16,36 @@ internal final class ProjectService {
     func createProject(name: String) async -> Project? {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalName = trimmed.isEmpty ? "Untitled Project" : trimmed
+        if store.preferredBackendEngine == "codex-app-server", !store.shouldUseCodexRPC {
+            _ = await store.ensureCodexConnectedForChat()
+            if !store.shouldUseCodexRPC {
+                store.lastGatewayErrorMessage = "Codex backend is selected, but /codex is not connected."
+                return nil
+            }
+        }
+
+        if store.shouldUseCodexRPC {
+            struct Params: Codable, Sendable {
+                var name: String
+                var backendEngine: String?
+            }
+            do {
+                let response = try await store.requestCodex(
+                    method: "labos/project/create",
+                    params: Params(name: finalName, backendEngine: store.preferredBackendEngine)
+                )
+                let project: Project = try store.decodeCodexResult(response.result, key: "project")
+                upsertProject(project)
+                store.sessionsByProject[project.id] = store.sessionsByProject[project.id] ?? []
+                store.artifactsByProject[project.id] = store.artifactsByProject[project.id] ?? []
+                store.runsByProject[project.id] = store.runsByProject[project.id] ?? []
+                store.activeProjectID = project.id
+                store.activeSessionID = nil
+                return project
+            } catch {
+                store.lastGatewayErrorMessage = error.localizedDescription
+            }
+        }
 
         if store.isGatewayConfigured {
             if !store.isGatewayConnected {
@@ -41,7 +71,7 @@ internal final class ProjectService {
             }
         }
 
-        let project = Project(name: finalName)
+        let project = Project(name: finalName, backendEngine: store.preferredBackendEngine)
         store.projects.insert(project, at: 0)
         store.sessionsByProject[project.id] = []
         store.artifactsByProject[project.id] = []
@@ -56,7 +86,15 @@ internal final class ProjectService {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        if store.isGatewayConnected, let gatewayClient = store.gatewayClient {
+        if store.shouldUseCodexRPC {
+            struct Params: Codable, Sendable { var projectId: String; var name: String }
+            Task {
+                _ = try? await store.requestCodex(
+                    method: "labos/project/rename",
+                    params: Params(projectId: AppStore.gatewayID(projectID), name: trimmed)
+                )
+            }
+        } else if store.isGatewayConnected, let gatewayClient = store.gatewayClient {
             struct Params: Codable, Sendable { var projectId: String; var name: String }
             Task {
                 _ = try? await gatewayClient.request(
@@ -71,6 +109,17 @@ internal final class ProjectService {
     }
 
     func deleteProject(projectID: UUID) {
+        if store.shouldUseCodexRPC {
+            struct Params: Codable, Sendable { var projectId: String }
+            Task {
+                _ = try? await store.requestCodex(
+                    method: "labos/project/delete",
+                    params: Params(projectId: AppStore.gatewayID(projectID))
+                )
+            }
+            removeProjectLocally(projectID: projectID)
+            return
+        }
         if store.isGatewayConnected, let gatewayClient = store.gatewayClient {
             struct Params: Codable, Sendable { var projectId: String }
             Task {
@@ -103,6 +152,16 @@ internal final class ProjectService {
 
         for sessionID in removedSessionIDs {
             store.messagesBySession[sessionID] = nil
+            store.codexItemsBySession[sessionID] = nil
+            store.codexPendingApprovalsBySession[sessionID] = nil
+            store.codexPendingPromptBySession[sessionID] = nil
+            store.codexStatusTextBySession[sessionID] = nil
+            store.codexTokenUsageBySession[sessionID] = nil
+            store.codexFullAccessBySession[sessionID] = nil
+            if let threadId = store.codexThreadBySession[sessionID] {
+                store.codexSessionByThread[threadId] = nil
+                store.codexThreadBySession[sessionID] = nil
+            }
             store.composerService.pruneAttachmentPayloads(for: sessionID, keptMessageIDs: [])
             store.planService.pendingApprovalsBySession[sessionID] = nil
             store.livePlanBySession[sessionID] = nil
@@ -168,9 +227,84 @@ internal final class ProjectService {
         }
     }
 
+    func refreshProjectsFromCodex() async {
+        struct EmptyParams: Codable, Sendable {}
+        do {
+            let response = try await store.requestCodex(method: "labos/project/list", params: EmptyParams())
+            let projects: [Project] = try store.decodeCodexResult(response.result, key: "projects")
+
+            let sorted = projects.sorted { $0.updatedAt > $1.updatedAt }
+            let projectIDs = Set(sorted.map(\.id))
+            store.projects = sorted
+
+            store.sessionsByProject = store.sessionsByProject.filter { projectIDs.contains($0.key) }
+            store.artifactsByProject = store.artifactsByProject.filter { projectIDs.contains($0.key) }
+            store.runsByProject = store.runsByProject.filter { projectIDs.contains($0.key) }
+            for (prefetchProjectID, task) in store.chatService.sessionHistoryPrefetchTasksByProject where !projectIDs.contains(prefetchProjectID) {
+                task.cancel()
+                store.chatService.sessionHistoryPrefetchTasksByProject[prefetchProjectID] = nil
+            }
+            let validSessionIDs = Set(store.sessionsByProject.values.flatMap { $0.map(\.id) })
+            store.chatService.sessionHistoryRequestsInFlight = store.chatService.sessionHistoryRequestsInFlight.filter { validSessionIDs.contains($0) }
+            store.chatService.sessionHistoryLastFetchedAtBySession = store.chatService.sessionHistoryLastFetchedAtBySession.filter { validSessionIDs.contains($0.key) }
+
+            if let activeProjectID = store.activeProjectID, !projectIDs.contains(activeProjectID) {
+                store.activeProjectID = nil
+                store.activeSessionID = nil
+            }
+        } catch {
+            store.lastGatewayErrorMessage = error.localizedDescription
+            store.codexConnectionState = .failed(message: error.localizedDescription)
+        }
+    }
+
     // MARK: - Session lifecycle
 
     func createSession(projectID: UUID, title: String?) async -> Session? {
+        if store.preferredBackendEngine == "codex-app-server", !store.shouldUseCodexRPC {
+            _ = await store.ensureCodexConnectedForChat()
+            if !store.shouldUseCodexRPC {
+                store.lastGatewayErrorMessage = "Codex backend is selected, but /codex is not connected."
+                return nil
+            }
+        }
+        if store.shouldUseCodexRPC {
+            struct Params: Codable, Sendable {
+                var projectId: String
+                var title: String?
+                var backendEngine: String?
+            }
+            do {
+                let response = try await store.requestCodex(
+                    method: "labos/session/create",
+                    params: Params(
+                        projectId: AppStore.gatewayID(projectID),
+                        title: title,
+                        backendEngine: store.preferredBackendEngine
+                    )
+                )
+                var session: Session = try store.decodeCodexResult(response.result, key: "session")
+                if session.codexThreadId == nil,
+                   let resultObject = response.result?.objectValue,
+                   let threadObject = resultObject["thread"]?.objectValue,
+                   let threadId = threadObject["id"]?.stringValue,
+                   !threadId.isEmpty {
+                    session.codexThreadId = threadId
+                }
+                store.lastGatewayErrorMessage = nil
+                upsertSession(session)
+                syncCodexSessionMapping(for: session)
+                store.codexItemsBySession[session.id] = store.codexItemsBySession[session.id] ?? []
+                store.messagesBySession[session.id] = store.messagesBySession[session.id] ?? []
+                store.activeProjectID = session.projectID
+                store.activeSessionID = session.id
+                return session
+            } catch {
+                store.lastGatewayErrorMessage = error.localizedDescription
+                return nil
+            }
+        }
+
         if store.isGatewayConfigured {
             let fallbackProjectName = store.projects.first(where: { $0.id == projectID })?.name
 
@@ -227,7 +361,8 @@ internal final class ProjectService {
         let finalTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
         let session = Session(
             projectID: projectID,
-            title: finalTitle?.isEmpty == false ? finalTitle! : "Session \(sessionCount)"
+            title: finalTitle?.isEmpty == false ? finalTitle! : "Session \(sessionCount)",
+            backendEngine: store.preferredBackendEngine
         )
 
         store.sessionsByProject[projectID, default: []].insert(session, at: 0)
@@ -247,7 +382,19 @@ internal final class ProjectService {
         let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        if store.isGatewayConnected, let gatewayClient = store.gatewayClient {
+        if store.shouldUseCodexRPC {
+            struct Params: Codable, Sendable { var projectId: String; var sessionId: String; var title: String }
+            Task {
+                _ = try? await store.requestCodex(
+                    method: "labos/session/update",
+                    params: Params(
+                        projectId: AppStore.gatewayID(projectID),
+                        sessionId: AppStore.gatewayID(sessionID),
+                        title: trimmed
+                    )
+                )
+            }
+        } else if store.isGatewayConnected, let gatewayClient = store.gatewayClient {
             struct Params: Codable, Sendable { var projectId: String; var sessionId: String; var title: String }
             Task {
                 _ = try? await gatewayClient.request(
@@ -267,7 +414,19 @@ internal final class ProjectService {
     }
 
     func archiveSession(projectID: UUID, sessionID: UUID) {
-        if store.isGatewayConnected, let gatewayClient = store.gatewayClient {
+        if store.shouldUseCodexRPC {
+            struct Params: Codable, Sendable { var projectId: String; var sessionId: String; var lifecycle: String }
+            Task {
+                _ = try? await store.requestCodex(
+                    method: "labos/session/update",
+                    params: Params(
+                        projectId: AppStore.gatewayID(projectID),
+                        sessionId: AppStore.gatewayID(sessionID),
+                        lifecycle: "archived"
+                    )
+                )
+            }
+        } else if store.isGatewayConnected, let gatewayClient = store.gatewayClient {
             struct Params: Codable, Sendable { var projectId: String; var sessionId: String; var lifecycle: String }
             Task {
                 _ = try? await gatewayClient.request(
@@ -288,7 +447,19 @@ internal final class ProjectService {
     }
 
     func unarchiveSession(projectID: UUID, sessionID: UUID) {
-        if store.isGatewayConnected, let gatewayClient = store.gatewayClient {
+        if store.shouldUseCodexRPC {
+            struct Params: Codable, Sendable { var projectId: String; var sessionId: String; var lifecycle: String }
+            Task {
+                _ = try? await store.requestCodex(
+                    method: "labos/session/update",
+                    params: Params(
+                        projectId: AppStore.gatewayID(projectID),
+                        sessionId: AppStore.gatewayID(sessionID),
+                        lifecycle: "active"
+                    )
+                )
+            }
+        } else if store.isGatewayConnected, let gatewayClient = store.gatewayClient {
             struct Params: Codable, Sendable { var projectId: String; var sessionId: String; var lifecycle: String }
             Task {
                 _ = try? await gatewayClient.request(
@@ -306,6 +477,20 @@ internal final class ProjectService {
     }
 
     func deleteSession(projectID: UUID, sessionID: UUID) {
+        if store.shouldUseCodexRPC {
+            struct Params: Codable, Sendable { var projectId: String; var sessionId: String }
+            Task {
+                _ = try? await store.requestCodex(
+                    method: "labos/session/delete",
+                    params: Params(
+                        projectId: AppStore.gatewayID(projectID),
+                        sessionId: AppStore.gatewayID(sessionID)
+                    )
+                )
+            }
+            removeSessionLocally(projectID: projectID, sessionID: sessionID)
+            return
+        }
         if store.isGatewayConnected, let gatewayClient = store.gatewayClient {
             struct Params: Codable, Sendable { var projectId: String; var sessionId: String }
             Task {
@@ -334,12 +519,145 @@ internal final class ProjectService {
         store.composerService.ensureComposerPrefs(sessionID: session.id)
     }
 
+    func updateSessionBackend(projectID: UUID, sessionID: UUID, backendEngine: String) async {
+        let normalized = store.normalizeBackendEngine(backendEngine) ?? "pi"
+        if normalized == "codex-app-server", !store.shouldUseCodexRPC {
+            _ = await store.ensureCodexConnectedForChat()
+            if !store.shouldUseCodexRPC {
+                store.lastGatewayErrorMessage = "Codex backend is selected, but /codex is not connected."
+                return
+            }
+        }
+
+        if store.shouldUseCodexRPC {
+            struct Params: Codable, Sendable {
+                var projectId: String
+                var sessionId: String
+                var backendEngine: String
+            }
+            do {
+                let response = try await store.requestCodex(
+                    method: "labos/session/update",
+                    params: Params(
+                        projectId: AppStore.gatewayID(projectID),
+                        sessionId: AppStore.gatewayID(sessionID),
+                        backendEngine: normalized
+                    )
+                )
+                var session: Session = try store.decodeCodexResult(response.result, key: "session")
+                if session.codexThreadId == nil,
+                   let resultObject = response.result?.objectValue,
+                   let threadObject = resultObject["thread"]?.objectValue,
+                   let threadId = threadObject["id"]?.stringValue,
+                   !threadId.isEmpty {
+                    session.codexThreadId = threadId
+                }
+                upsertSession(session)
+                syncCodexSessionMapping(for: session)
+                if normalized != "codex-app-server" {
+                    clearCodexSessionState(sessionID)
+                }
+                store.lastGatewayErrorMessage = nil
+            } catch {
+                store.lastGatewayErrorMessage = error.localizedDescription
+            }
+            return
+        }
+
+        if store.isGatewayConnected, let gatewayClient = store.gatewayClient {
+            struct Params: Codable, Sendable {
+                var projectId: String
+                var sessionId: String
+                var backendEngine: String
+            }
+            do {
+                let response = try await gatewayClient.request(
+                    method: "sessions.update",
+                    params: Params(
+                        projectId: AppStore.gatewayID(projectID),
+                        sessionId: AppStore.gatewayID(sessionID),
+                        backendEngine: normalized
+                    )
+                )
+                if let updated: Session = try? store.decodeGatewayPayload(response.payload, key: "session") {
+                    upsertSession(updated)
+                    syncCodexSessionMapping(for: updated)
+                } else {
+                    mutateLocalSession(projectID: projectID, sessionID: sessionID) { session in
+                        session.backendEngine = normalized
+                    }
+                }
+                if normalized != "codex-app-server" {
+                    clearCodexSessionState(sessionID)
+                }
+                store.lastGatewayErrorMessage = nil
+            } catch {
+                store.lastGatewayErrorMessage = error.localizedDescription
+            }
+            return
+        }
+
+        mutateLocalSession(projectID: projectID, sessionID: sessionID) { session in
+            session.backendEngine = normalized
+            if normalized != "codex-app-server" {
+                session.codexThreadId = nil
+            }
+        }
+        if normalized != "codex-app-server" {
+            clearCodexSessionState(sessionID)
+        }
+    }
+
+    private func mutateLocalSession(projectID: UUID, sessionID: UUID, apply: (inout Session) -> Void) {
+        guard var sessions = store.sessionsByProject[projectID],
+              let index = sessions.firstIndex(where: { $0.id == sessionID })
+        else { return }
+        var session = sessions[index]
+        apply(&session)
+        session.updatedAt = .now
+        sessions[index] = session
+        store.sessionsByProject[projectID] = sessions
+    }
+
+    private func syncCodexSessionMapping(for session: Session) {
+        if let threadId = session.codexThreadId, !threadId.isEmpty {
+            store.codexThreadBySession[session.id] = threadId
+            store.codexSessionByThread[threadId] = session.id
+        } else if let existingThreadId = store.codexThreadBySession[session.id] {
+            store.codexThreadBySession[session.id] = nil
+            store.codexSessionByThread[existingThreadId] = nil
+        }
+    }
+
+    private func clearCodexSessionState(_ sessionID: UUID) {
+        store.codexItemsBySession[sessionID] = nil
+        store.codexPendingApprovalsBySession[sessionID] = nil
+        store.codexPendingPromptBySession[sessionID] = nil
+        store.codexStatusTextBySession[sessionID] = nil
+        store.codexTokenUsageBySession[sessionID] = nil
+        store.codexFullAccessBySession[sessionID] = nil
+        if let threadId = store.codexThreadBySession[sessionID] {
+            store.codexThreadBySession[sessionID] = nil
+            store.codexSessionByThread[threadId] = nil
+        }
+    }
+
     func removeSessionLocally(projectID: UUID, sessionID: UUID) {
         guard var sessions = store.sessionsByProject[projectID] else { return }
         sessions.removeAll { $0.id == sessionID }
         store.sessionsByProject[projectID] = sessions
 
         store.messagesBySession[sessionID] = nil
+        store.codexItemsBySession[sessionID] = nil
+        store.codexPendingApprovalsBySession[sessionID] = nil
+        store.codexPendingPromptBySession[sessionID] = nil
+        store.codexStatusTextBySession[sessionID] = nil
+        store.codexTokenUsageBySession[sessionID] = nil
+        store.codexFullAccessBySession[sessionID] = nil
+        if let threadId = store.codexThreadBySession[sessionID] {
+            store.codexSessionByThread[threadId] = nil
+            store.codexThreadBySession[sessionID] = nil
+        }
         store.composerService.pruneAttachmentPayloads(for: sessionID, keptMessageIDs: [])
         store.planService.pendingApprovalsBySession[sessionID] = nil
         store.livePlanBySession[sessionID] = nil
@@ -382,6 +700,54 @@ internal final class ProjectService {
         store.sessionsByProject[projectID] = sessions
     }
 
+    func refreshProjectFromCodex(projectID: UUID) async {
+        struct SessionsListParams: Codable, Sendable { var projectId: String; var includeArchived: Bool }
+        struct ArtifactsListParams: Codable, Sendable { var projectId: String; var limit: Int }
+        struct RunsListParams: Codable, Sendable { var projectId: String; var limit: Int }
+
+        do {
+            let sessionsResponse = try await store.requestCodex(
+                method: "labos/session/list",
+                params: SessionsListParams(projectId: AppStore.gatewayID(projectID), includeArchived: true)
+            )
+            let sessions: [Session] = try store.decodeCodexResult(sessionsResponse.result, key: "sessions")
+            store.sessionsByProject[projectID] = sessions
+            for session in sessions {
+                store.composerService.ensureComposerPrefs(sessionID: session.id)
+                if let threadId = session.codexThreadId {
+                    store.codexThreadBySession[session.id] = threadId
+                    store.codexSessionByThread[threadId] = session.id
+                }
+            }
+
+            let artifactsResponse = try await store.requestCodex(
+                method: "labos/artifact/list",
+                params: ArtifactsListParams(projectId: AppStore.gatewayID(projectID), limit: 500)
+            )
+            let artifacts: [Artifact] = try store.decodeCodexResult(artifactsResponse.result, key: "artifacts")
+            store.artifactsByProject[projectID] = artifacts
+
+            let runsResponse = try await store.requestCodex(
+                method: "labos/run/list",
+                params: RunsListParams(projectId: AppStore.gatewayID(projectID), limit: 500)
+            )
+            let runs: [RunRecord] = try store.decodeCodexResult(runsResponse.result, key: "runs")
+            let existing = Dictionary(uniqueKeysWithValues: (store.runsByProject[projectID] ?? []).map { ($0.id, $0) })
+            let merged = runs.map { remote in
+                var updated = remote
+                if let local = existing[remote.id] {
+                    if updated.activity.isEmpty, !local.activity.isEmpty { updated.activity = local.activity }
+                    if updated.stepDetails.isEmpty, !local.stepDetails.isEmpty { updated.stepDetails = local.stepDetails }
+                }
+                return updated
+            }
+            store.runsByProject[projectID] = merged
+        } catch {
+            store.lastGatewayErrorMessage = error.localizedDescription
+            store.codexConnectionState = .failed(message: error.localizedDescription)
+        }
+    }
+
     func refreshProjectFromGateway(projectID: UUID) async {
         guard let gatewayClient = store.gatewayClient else { return }
 
@@ -398,6 +764,10 @@ internal final class ProjectService {
             store.sessionsByProject[projectID] = sessions
             for session in sessions {
                 store.composerService.ensureComposerPrefs(sessionID: session.id)
+                if let threadId = session.codexThreadId {
+                    store.codexThreadBySession[session.id] = threadId
+                    store.codexSessionByThread[threadId] = session.id
+                }
             }
 
             let artifactsRes = try await gatewayClient.request(

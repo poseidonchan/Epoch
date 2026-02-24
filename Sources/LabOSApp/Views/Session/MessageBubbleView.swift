@@ -11,6 +11,7 @@ struct MessageBubbleView: View {
     let onEditMessage: (ChatMessage) -> Void
     let onRetryMessage: (ChatMessage, String?) -> Void
     let onBranchMessage: (ChatMessage) -> Void
+    let showAssistantActionBar: Bool
 
     @EnvironmentObject private var store: AppStore
     @Environment(\.colorScheme) private var colorScheme
@@ -34,6 +35,18 @@ struct MessageBubbleView: View {
         store.persistedProcessSummary(for: message.id)
     }
 
+    private var userImageArtifactRefs: [ChatArtifactReference] {
+        message.artifactRefs.filter { isUserImageArtifact($0) }
+    }
+
+    private var userNonImageArtifactRefs: [ChatArtifactReference] {
+        message.artifactRefs.filter { !isUserImageArtifact($0) }
+    }
+
+    private var userBubbleMaxWidth: CGFloat {
+        min(UIScreen.main.bounds.width * 0.8, 460)
+    }
+
     var body: some View {
         switch message.role {
         case .user:
@@ -46,24 +59,34 @@ struct MessageBubbleView: View {
     }
 
     private var userBubble: some View {
-        HStack(alignment: .bottom) {
+        let userText = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return HStack(alignment: .bottom) {
             Spacer(minLength: 48)
 
             VStack(alignment: .trailing, spacing: 8) {
-                Text(message.text)
-                    .font(.body)
-                    .foregroundStyle(colorScheme == .dark ? Color.black : Color.primary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .background(
-                        RoundedRectangle(cornerRadius: 22, style: .continuous)
-                            .fill(colorScheme == .dark ? Color.white.opacity(0.95) : Color(uiColor: .secondarySystemBackground))
-                    )
+                if !userImageArtifactRefs.isEmpty {
+                    userImageAttachmentsRow
+                        .frame(maxWidth: userBubbleMaxWidth, alignment: .trailing)
+                }
 
-                if !message.artifactRefs.isEmpty {
+                if !userText.isEmpty {
+                    Text(userText)
+                        .font(.body)
+                        .foregroundStyle(colorScheme == .dark ? Color.black : Color.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: userBubbleMaxWidth, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                .fill(colorScheme == .dark ? Color.white.opacity(0.95) : Color(uiColor: .secondarySystemBackground))
+                        )
+                }
+
+                if !userNonImageArtifactRefs.isEmpty {
                     VStack(alignment: .trailing, spacing: 6) {
-                        ForEach(Array(message.artifactRefs.enumerated()), id: \.offset) { _, ref in
+                        ForEach(Array(userNonImageArtifactRefs.enumerated()), id: \.offset) { _, ref in
                             artifactReferenceBadge(ref)
                         }
                     }
@@ -75,6 +98,161 @@ struct MessageBubbleView: View {
         .contextMenu {
             messageActionsMenu
         }
+    }
+
+    private var userImageAttachmentsRow: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Array(userImageArtifactRefs.enumerated()), id: \.offset) { _, ref in
+                        userImageThumbnail(ref)
+                    }
+                }
+                .padding(.leading, 2)
+                .padding(.trailing, 2)
+            }
+            .frame(maxWidth: userBubbleMaxWidth, alignment: .trailing)
+        }
+    }
+
+    @ViewBuilder
+    private func userImageThumbnail(_ ref: ChatArtifactReference) -> some View {
+        ZStack {
+            if let image = userPreviewImage(for: ref) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color(.tertiarySystemFill))
+                    .overlay(
+                        Image(systemName: "photo")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    )
+            }
+        }
+        .frame(width: 88, height: 88)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.1))
+        )
+    }
+
+    private func userPreviewImage(for ref: ChatArtifactReference) -> UIImage? {
+        if let image = imageFromBase64(ref.inlineDataBase64) {
+            return image
+        }
+
+        if let data = cachedAttachmentImageData(for: ref),
+           let image = UIImage(data: data) {
+            return image
+        }
+
+        if let image = imageFromFilePath(ref.path) {
+            return image
+        }
+
+        return nil
+    }
+
+    private func isUserImageArtifact(_ ref: ChatArtifactReference) -> Bool {
+        let mime = (ref.mimeType ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if mime.hasPrefix("image/") {
+            return true
+        }
+
+        if Self.imageExtensions.contains(pathExtension(of: ref.path)) {
+            return true
+        }
+
+        if let sourceName = ref.sourceName,
+           Self.imageExtensions.contains(pathExtension(of: sourceName)) {
+            return true
+        }
+
+        if Self.imageExtensions.contains(pathExtension(of: ref.displayText)) {
+            return true
+        }
+
+        return cachedAttachmentImageData(for: ref) != nil
+    }
+
+    private static let imageExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "heic", "heif", "gif", "webp", "bmp", "tiff", "tif", "avif",
+    ]
+
+    private func imageFromBase64(_ base64: String?) -> UIImage? {
+        guard let base64,
+              let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters),
+              let image = UIImage(data: data) else {
+            return nil
+        }
+        return image
+    }
+
+    private func cachedAttachmentImageData(for ref: ChatArtifactReference) -> Data? {
+        let payloads = store.attachmentPayload(for: message.sessionID, messageID: message.id)
+        guard !payloads.isEmpty else { return nil }
+
+        let normalizedRefName = normalizedAttachmentName(ref.sourceName ?? ref.displayText)
+
+        let matched = payloads.first { attachment in
+            if let artifactID = ref.artifactID, attachment.id == artifactID {
+                return true
+            }
+            let attachmentName = normalizedAttachmentName(attachment.displayName)
+            return !normalizedRefName.isEmpty && attachmentName == normalizedRefName
+        }
+
+        let fallbackAttachment: ComposerAttachment? = {
+            if let matched { return matched }
+            if payloads.count == 1 { return payloads[0] }
+            return payloads.first { ($0.mimeType ?? "").lowercased().hasPrefix("image/") }
+        }()
+
+        guard let base64 = fallbackAttachment?.inlineDataBase64 else { return nil }
+        return Data(base64Encoded: base64, options: .ignoreUnknownCharacters)
+    }
+
+    private func imageFromFilePath(_ rawPath: String?) -> UIImage? {
+        guard let rawPath else { return nil }
+        let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let parsed = URL(string: trimmed),
+           parsed.isFileURL,
+           let image = UIImage(contentsOfFile: parsed.path) {
+            return image
+        }
+
+        if trimmed.hasPrefix("/") {
+            return UIImage(contentsOfFile: trimmed)
+        }
+
+        return nil
+    }
+
+    private func normalizedAttachmentName(_ raw: String?) -> String {
+        raw?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+    }
+
+    private func pathExtension(of rawPath: String?) -> String {
+        guard let rawPath else { return "" }
+        let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        if let parsed = URL(string: trimmed),
+           !parsed.pathExtension.isEmpty {
+            return parsed.pathExtension.lowercased()
+        }
+
+        return URL(fileURLWithPath: trimmed).pathExtension.lowercased()
     }
 
     private var assistantMessage: some View {
@@ -111,7 +289,9 @@ struct MessageBubbleView: View {
                     }
                 }
 
-                assistantActionBar
+                if showAssistantActionBar {
+                    assistantActionBar
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -401,35 +581,37 @@ struct MessageBubbleView: View {
                 Label("Copy", systemImage: "doc.on.doc")
             }
 
-            Button {
-                onEditMessage(message)
-            } label: {
-                Label("Edit", systemImage: "pencil")
-            }
+            if showAssistantActionBar {
+                Button {
+                    onEditMessage(message)
+                } label: {
+                    Label("Edit", systemImage: "pencil")
+                }
 
-            Button {
-                onRetryMessage(message, nil)
-            } label: {
-                Label("Retry", systemImage: "arrow.clockwise")
-            }
+                Button {
+                    onRetryMessage(message, nil)
+                } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                }
 
-            if !modelOptions.isEmpty {
-                Menu {
-                    let currentModelId = store.selectedModelId(for: message.sessionID)
-                    ForEach(modelOptions, id: \.id) { model in
-                        Button {
-                            onRetryMessage(message, model.id)
-                        } label: {
-                            HStack {
-                                Text(model.name)
-                                if model.id == currentModelId {
-                                    Image(systemName: "checkmark")
+                if !modelOptions.isEmpty {
+                    Menu {
+                        let currentModelId = store.selectedModelId(for: message.sessionID)
+                        ForEach(modelOptions, id: \.id) { model in
+                            Button {
+                                onRetryMessage(message, model.id)
+                            } label: {
+                                HStack {
+                                    Text(model.name)
+                                    if model.id == currentModelId {
+                                        Image(systemName: "checkmark")
+                                    }
                                 }
                             }
                         }
+                    } label: {
+                        Label("Retry With Different Model", systemImage: "shuffle")
                     }
-                } label: {
-                    Label("Retry With Different Model", systemImage: "shuffle")
                 }
             }
         case .tool, .system:

@@ -37,6 +37,24 @@ internal final class ChatSessionService {
         var byteCount: Int?
     }
 
+    private struct CodexTurnStartParams: Codable, Sendable {
+        var threadId: String
+        var input: [CodexTurnInputPart]
+        var model: String?
+    }
+
+    private struct CodexSessionReadParams: Codable, Sendable {
+        var projectId: String
+        var sessionId: String
+        var includeTurns: Bool
+    }
+
+    private struct CodexTurnInputPart: Codable, Sendable {
+        var type: String
+        var text: String?
+        var path: String?
+    }
+
     // MARK: - Session History State
 
     private var pendingLocalUserEchosBySession: [UUID: [PendingLocalUserEcho]] = [:]
@@ -109,8 +127,16 @@ internal final class ChatSessionService {
         attachments: [ComposerAttachment]? = nil
     ) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        let hasText = !trimmed.isEmpty
         let effectiveAttachments = attachments ?? store.composerService.pendingComposerAttachments(for: sessionID)
+        let hasAttachments = !effectiveAttachments.isEmpty
+
+        guard hasText || hasAttachments else { return }
+        if !store.sessionUsesCodex(sessionID: sessionID), !hasText {
+            store.lastGatewayErrorMessage = "Text is required for the current backend."
+            return
+        }
+
         let attachmentRefs = store.composerService.makeSessionAttachmentReferences(
             projectID: projectID,
             sessionID: sessionID,
@@ -119,6 +145,17 @@ internal final class ChatSessionService {
 
         beginInlineProcess(sessionID: sessionID, runID: UUID())
         clearLiveAgentEvents(sessionID: sessionID)
+
+        if store.sessionUsesCodex(sessionID: sessionID) {
+            sendCodexTurnMessage(
+                projectID: projectID,
+                sessionID: sessionID,
+                text: trimmed,
+                attachments: effectiveAttachments
+            )
+            store.clearPendingComposerAttachments(sessionID: sessionID)
+            return
+        }
 
         if store.isGatewayConfigured {
             let localUserMessage = ChatMessage(sessionID: sessionID, role: .user, text: trimmed, artifactRefs: attachmentRefs)
@@ -171,6 +208,150 @@ internal final class ChatSessionService {
         }
     }
 
+    private func sendCodexTurnMessage(
+        projectID: UUID,
+        sessionID: UUID,
+        text: String,
+        attachments: [ComposerAttachment]
+    ) {
+        store.streamingSessions.insert(sessionID)
+        store.codexStatusTextBySession[sessionID] = "connecting"
+
+        Task { [weak self] in
+            guard let self else { return }
+            let codexReady = await self.store.ensureCodexConnectedForChat()
+            guard codexReady else {
+                self.store.lastGatewayErrorMessage = "Codex backend is selected, but /codex is not connected."
+                self.store.codexStatusTextBySession[sessionID] = "failed"
+                self.store.streamingSessions.remove(sessionID)
+                return
+            }
+
+            guard let threadId = await self.resolveCodexThreadId(projectID: projectID, sessionID: sessionID) else {
+                self.store.lastGatewayErrorMessage = "Session is missing codex thread mapping."
+                self.store.codexStatusTextBySession[sessionID] = "failed"
+                self.store.streamingSessions.remove(sessionID)
+                return
+            }
+
+            self.store.codexThreadBySession[sessionID] = threadId
+            self.store.codexSessionByThread[threadId] = sessionID
+
+            let input = await self.makeCodexInputParts(text: text, attachments: attachments)
+            guard !input.isEmpty else {
+                self.store.lastGatewayErrorMessage = "No Codex-compatible input was provided."
+                self.store.codexStatusTextBySession[sessionID] = "failed"
+                self.store.streamingSessions.remove(sessionID)
+                return
+            }
+            let model = self.store.selectedModelId(for: sessionID).trimmingCharacters(in: .whitespacesAndNewlines)
+            do {
+                let response = try await self.store.requestCodex(
+                    method: "turn/start",
+                    params: CodexTurnStartParams(
+                        threadId: threadId,
+                        input: input,
+                        model: model.isEmpty ? nil : model
+                    )
+                )
+                if let payload = response.result?.objectValue {
+                    if let returnedThreadId = payload["threadId"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !returnedThreadId.isEmpty {
+                        let previousThreadId = self.store.codexThreadBySession[sessionID]
+                        if let previousThreadId, previousThreadId != returnedThreadId {
+                            self.store.codexSessionByThread[previousThreadId] = nil
+                        }
+                        self.store.codexThreadBySession[sessionID] = returnedThreadId
+                        self.store.codexSessionByThread[returnedThreadId] = sessionID
+                    }
+                    if let turn = payload["turn"]?.objectValue,
+                       let status = turn["status"]?.stringValue {
+                        self.store.codexStatusTextBySession[sessionID] = status
+                    }
+                }
+            } catch {
+                self.store.lastGatewayErrorMessage = error.localizedDescription
+                self.store.codexStatusTextBySession[sessionID] = "failed"
+                self.store.streamingSessions.remove(sessionID)
+            }
+        }
+    }
+
+    private func resolveCodexThreadId(projectID: UUID, sessionID: UUID) async -> String? {
+        if let mapped = store.codexThreadBySession[sessionID], !mapped.isEmpty {
+            return mapped
+        }
+        if let thread = store.sessions(for: projectID).first(where: { $0.id == sessionID })?.codexThreadId,
+           !thread.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return thread
+        }
+
+        do {
+            let response = try await store.requestCodex(
+                method: "labos/session/read",
+                params: CodexSessionReadParams(
+                    projectId: AppStore.gatewayID(projectID),
+                    sessionId: AppStore.gatewayID(sessionID),
+                    includeTurns: false
+                )
+            )
+            var session: Session = try store.decodeCodexResult(response.result, key: "session")
+            if session.codexThreadId == nil,
+               let resultObject = response.result?.objectValue,
+               let threadObject = resultObject["thread"]?.objectValue,
+               let threadId = threadObject["id"]?.stringValue,
+               !threadId.isEmpty {
+                session.codexThreadId = threadId
+            }
+            store.projectService.upsertSession(session)
+            if let thread = session.codexThreadId, !thread.isEmpty {
+                store.codexThreadBySession[sessionID] = thread
+                store.codexSessionByThread[thread] = sessionID
+                return thread
+            }
+        } catch {
+            return nil
+        }
+        return nil
+    }
+
+    private func makeCodexInputParts(text: String, attachments: [ComposerAttachment]) async -> [CodexTurnInputPart] {
+        var parts: [CodexTurnInputPart] = []
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedText.isEmpty {
+            parts.append(CodexTurnInputPart(type: "text", text: trimmedText, path: nil))
+        }
+
+        for attachment in attachments {
+            guard (attachment.mimeType ?? "").lowercased().hasPrefix("image/") else { continue }
+            guard let base64 = attachment.inlineDataBase64,
+                  let data = Data(base64Encoded: base64),
+                  let localPath = stageAttachmentImageLocally(data: data, fileName: attachment.displayName)
+            else { continue }
+            parts.append(CodexTurnInputPart(type: "localImage", text: nil, path: localPath))
+        }
+
+        return parts
+    }
+
+    private func stageAttachmentImageLocally(data: Data, fileName: String) -> String? {
+        let cleaned = fileName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "\\", with: "_")
+        let ext = URL(fileURLWithPath: cleaned).pathExtension.isEmpty ? "jpg" : URL(fileURLWithPath: cleaned).pathExtension
+        let stem = URL(fileURLWithPath: cleaned).deletingPathExtension().lastPathComponent
+        let finalName = "\(stem.isEmpty ? "image" : stem)-\(UUID().uuidString).\(ext)"
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("labos-codex-inputs").appendingPathComponent(finalName)
+        do {
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: destination, options: [.atomic])
+            return destination.path
+        } catch {
+            return nil
+        }
+    }
+
     func overwriteUserMessage(
         projectID: UUID,
         sessionID: UUID,
@@ -179,6 +360,11 @@ internal final class ChatSessionService {
     ) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+
+        if store.sessionUsesCodex(sessionID: sessionID) {
+            sendCodexTurnMessage(projectID: projectID, sessionID: sessionID, text: trimmed, attachments: [])
+            return
+        }
 
         var msgs = messages(for: sessionID)
         guard let editIndex = msgs.firstIndex(where: { $0.id == messageID }) else { return }

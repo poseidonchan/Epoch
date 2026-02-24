@@ -29,6 +29,7 @@ struct InlineComposerView: View {
     var thinkingLevelOptions: [ThinkingLevel] = ThinkingLevel.allCases
     var contextRemainingFraction: Double? = nil
     var contextWindowTokens: Int = 258_000
+    var useEstimatedContextFallback = true
     let onSubmit: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
@@ -36,6 +37,18 @@ struct InlineComposerView: View {
 
     private var trimmedText: String {
         text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var displayStatusText: String? {
+        guard let statusText else { return nil }
+        let trimmed = statusText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        switch trimmed.lowercased() {
+        case "completed", "failed":
+            return nil
+        default:
+            return trimmed
+        }
     }
 
     private var canSubmit: Bool {
@@ -61,8 +74,11 @@ struct InlineComposerView: View {
         if let contextRemainingFraction {
             return min(max(contextRemainingFraction, 0), 1)
         }
-        let estimate = 1 - (Double(text.count) / 6000)
-        return min(max(estimate, 0.04), 1)
+        if useEstimatedContextFallback {
+            let estimate = 1 - (Double(text.count) / 6000)
+            return min(max(estimate, 0.04), 1)
+        }
+        return 1
     }
 
     private var isFullAccessPermission: Bool {
@@ -113,7 +129,7 @@ struct InlineComposerView: View {
     }
 
     private var chatComposer: some View {
-        let hasStatusRow = statusText != nil || !pendingAttachments.isEmpty
+        let hasStatusRow = displayStatusText != nil || !pendingAttachments.isEmpty
 
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .bottom, spacing: 12) {
@@ -124,7 +140,7 @@ struct InlineComposerView: View {
                         pendingAttachmentsRow
                     }
 
-                    if let statusText {
+                    if let statusText = displayStatusText {
                         statusChip(text: statusText, iconSystemName: statusIconSystemName)
                     }
 

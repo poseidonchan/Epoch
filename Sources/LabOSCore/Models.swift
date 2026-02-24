@@ -10,12 +10,38 @@ public struct Project: Identifiable, Hashable, Codable, Sendable {
     public var name: String
     public let createdAt: Date
     public var updatedAt: Date
+    public var backendEngine: String?
+    public var codexModelProvider: String?
+    public var codexModel: String?
+    public var codexApprovalPolicy: String?
+    public var codexSandbox: JSONValue?
+    public var hpcWorkspacePath: String?
+    public var hpcWorkspaceState: String?
 
-    public init(id: UUID = UUID(), name: String, createdAt: Date = .now, updatedAt: Date = .now) {
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        createdAt: Date = .now,
+        updatedAt: Date = .now,
+        backendEngine: String? = nil,
+        codexModelProvider: String? = nil,
+        codexModel: String? = nil,
+        codexApprovalPolicy: String? = nil,
+        codexSandbox: JSONValue? = nil,
+        hpcWorkspacePath: String? = nil,
+        hpcWorkspaceState: String? = nil
+    ) {
         self.id = id
         self.name = name
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.backendEngine = backendEngine
+        self.codexModelProvider = codexModelProvider
+        self.codexModel = codexModel
+        self.codexApprovalPolicy = codexApprovalPolicy
+        self.codexSandbox = codexSandbox
+        self.hpcWorkspacePath = hpcWorkspacePath
+        self.hpcWorkspaceState = hpcWorkspaceState
     }
 }
 
@@ -26,6 +52,13 @@ public struct Session: Identifiable, Hashable, Codable, Sendable {
     public var lifecycle: SessionLifecycle
     public let createdAt: Date
     public var updatedAt: Date
+    public var backendEngine: String?
+    public var codexThreadId: String?
+    public var codexModel: String?
+    public var codexModelProvider: String?
+    public var codexApprovalPolicy: String?
+    public var codexSandbox: JSONValue?
+    public var hpcWorkspaceState: String?
 
     public init(
         id: UUID = UUID(),
@@ -33,7 +66,14 @@ public struct Session: Identifiable, Hashable, Codable, Sendable {
         title: String,
         lifecycle: SessionLifecycle = .active,
         createdAt: Date = .now,
-        updatedAt: Date = .now
+        updatedAt: Date = .now,
+        backendEngine: String? = nil,
+        codexThreadId: String? = nil,
+        codexModel: String? = nil,
+        codexModelProvider: String? = nil,
+        codexApprovalPolicy: String? = nil,
+        codexSandbox: JSONValue? = nil,
+        hpcWorkspaceState: String? = nil
     ) {
         self.id = id
         self.projectID = projectID
@@ -41,6 +81,13 @@ public struct Session: Identifiable, Hashable, Codable, Sendable {
         self.lifecycle = lifecycle
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.backendEngine = backendEngine
+        self.codexThreadId = codexThreadId
+        self.codexModel = codexModel
+        self.codexModelProvider = codexModelProvider
+        self.codexApprovalPolicy = codexApprovalPolicy
+        self.codexSandbox = codexSandbox
+        self.hpcWorkspaceState = hpcWorkspaceState
     }
 }
 
@@ -935,6 +982,8 @@ public enum MarkdownDisplayNormalizer {
         if next < line.endIndex, line[next] == " " {
             next = line.index(after: next)
         }
-        return String(line[..<idx]) + line[next...]
+        // Remove the accidental leading indentation along with the quote marker
+        // so de-quoted prose is not reinterpreted as an indented code block.
+        return String(line[next...])
     }
 }

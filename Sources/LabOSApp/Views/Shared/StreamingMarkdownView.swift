@@ -6,7 +6,7 @@ import SwiftUI
 struct StreamingMarkdownView: View {
     let text: String
     var isStreaming: Bool
-    var throttleInterval: TimeInterval = 0.08
+    var throttleInterval: TimeInterval = 0.2
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -29,25 +29,8 @@ struct StreamingMarkdownView: View {
             if shouldRenderMarkdown {
                 Markdown(normalizedRenderedText)
                     .markdownTheme(.gitHub)
-                    .markdownTextStyle(\.code) {
-                        FontFamilyVariant(.monospaced)
-                        FontSize(.em(0.9))
-                        ForegroundColor(.primary)
-                        BackgroundColor(Color.black.opacity(colorScheme == .dark ? 0.22 : 0.06))
-                    }
-                    .markdownBlockStyle(\.codeBlock) { configuration in
-                        ScrollView(.horizontal) {
-                            configuration.label
-                                .padding(12)
-                        }
-                        .background(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(Color(.secondarySystemBackground))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08))
-                        )
+                    .markdownTextStyle(\.text) {
+                        BackgroundColor(nil)
                     }
                     .markdownBlockStyle(\.blockquote) { configuration in
                         HStack(alignment: .top, spacing: 10) {
@@ -60,12 +43,14 @@ struct StreamingMarkdownView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.disabled)
             } else {
                 Text(normalizedRenderedText)
                     .font(.body)
                     .foregroundStyle(.primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.disabled)
             }
         }
         .onAppear {
@@ -98,6 +83,8 @@ struct StreamingMarkdownView: View {
         let now = Date()
         let elapsed = now.timeIntervalSince(lastFlush)
         if elapsed >= throttleInterval {
+            scheduledFlush?.cancel()
+            scheduledFlush = nil
             renderedText = pendingText
             lastFlush = now
             return
@@ -143,6 +130,5 @@ struct StreamingMarkdownView: View {
         }
         return false
     }
-
 }
 #endif

@@ -7,6 +7,7 @@ public final class AppStore: ObservableObject {
         static let gatewayDeviceID = "LabOS.gateway.deviceID"
         static let gatewayWSURL = "LabOS.gateway.wsURL"
         static let gatewayToken = "LabOS.gateway.token"
+        static let backendEngine = "LabOS.backend.engine"
         static let hpcPartition = "LabOS.hpc.partition"
         static let hpcAccount = "LabOS.hpc.account"
         static let hpcQos = "LabOS.hpc.qos"
@@ -59,6 +60,12 @@ public final class AppStore: ObservableObject {
     @Published public internal(set) var artifactsByProject: [UUID: [Artifact]] = [:]
     @Published public internal(set) var runsByProject: [UUID: [RunRecord]] = [:]
     @Published public internal(set) var messagesBySession: [UUID: [ChatMessage]] = [:]
+    @Published public internal(set) var codexItemsBySession: [UUID: [CodexThreadItem]] = [:]
+    @Published public internal(set) var codexPendingApprovalsBySession: [UUID: [CodexPendingApproval]] = [:]
+    @Published public internal(set) var codexPendingPromptBySession: [UUID: CodexPendingPrompt] = [:]
+    @Published public internal(set) var codexStatusTextBySession: [UUID: String] = [:]
+    @Published public internal(set) var codexTokenUsageBySession: [UUID: CodexTokenUsage] = [:]
+    @Published public internal(set) var codexFullAccessBySession: [UUID: Bool] = [:]
 
     @Published public internal(set) var streamingSessions: Set<UUID> = []
     @Published public internal(set) var streamingAssistantMessageIDBySession: [UUID: UUID] = [:]
@@ -84,8 +91,10 @@ public final class AppStore: ObservableObject {
     @Published public var resourceStatus: ResourceStatus = .placeholder
 
     @Published public internal(set) var gatewayConnectionState: GatewayConnectionState = .disconnected
+    @Published public internal(set) var codexConnectionState: CodexConnectionState = .disconnected
     @Published public var gatewayWSURLString: String = ""
     @Published public var gatewayToken: String = ""
+    @Published public var preferredBackendEngine: String = "pi"
 
     @Published public var hpcPartition: String = ""
     @Published public var hpcAccount: String = ""
@@ -138,11 +147,17 @@ public final class AppStore: ObservableObject {
     internal let backend: BackendClient
     internal let defaults: UserDefaults
     internal var gatewayClient: GatewayClient?
+    internal var codexClient: CodexRPCClient?
     private var gatewayEventsTask: Task<Void, Never>?
+    private var codexNotificationsTask: Task<Void, Never>?
+    private var codexServerRequestsTask: Task<Void, Never>?
     private var gatewayStateCancellable: AnyCancellable?
     private var gatewayEnsureConnectedTask: Task<Bool, Never>?
+    private var codexEnsureConnectedTask: Task<Bool, Never>?
     internal var gatewayDeviceID: UUID = UUID()
     private var resourcesPollTask: Task<Void, Never>?
+    internal var codexThreadBySession: [UUID: String] = [:]
+    internal var codexSessionByThread: [String: UUID] = [:]
 
     internal let gatewayJSONEncoder: JSONEncoder = {
         let encoder = JSONEncoder()
@@ -199,6 +214,15 @@ public final class AppStore: ObservableObject {
     public var isGatewayConnected: Bool {
         if case .connected = gatewayConnectionState { return true }
         return false
+    }
+
+    public var isCodexConnected: Bool {
+        if case .connected = codexConnectionState { return true }
+        return false
+    }
+
+    public var shouldUseCodexRPC: Bool {
+        isCodexConnected
     }
 
     public var hpcStorageRemainingPercent: Double {
@@ -260,6 +284,7 @@ public final class AppStore: ObservableObject {
 
         gatewayWSURLString = defaults.string(forKey: DefaultsKey.gatewayWSURL) ?? ""
         gatewayToken = defaults.string(forKey: DefaultsKey.gatewayToken) ?? ""
+        preferredBackendEngine = normalizeBackendEngine(defaults.string(forKey: DefaultsKey.backendEngine)) ?? "pi"
     }
 
     public func setRunCompletionNotificationsEnabled(_ enabled: Bool) {
@@ -276,6 +301,12 @@ public final class AppStore: ObservableObject {
         defaults.set(trimmedToken, forKey: DefaultsKey.gatewayToken)
     }
 
+    public func savePreferredBackendEngine(_ backendEngine: String) {
+        let normalized = normalizeBackendEngine(backendEngine) ?? "pi"
+        preferredBackendEngine = normalized
+        defaults.set(normalized, forKey: DefaultsKey.backendEngine)
+    }
+
     public func saveHpcSettings(partition: String, account: String, qos: String) {
         composerService.saveHpcSettings(partition: partition, account: account, qos: qos)
     }
@@ -287,6 +318,18 @@ public final class AppStore: ObservableObject {
     internal func normalizedOptionalString(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    internal func normalizeBackendEngine(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized == "pi" || normalized == "pi-adapter" {
+            return "pi"
+        }
+        if normalized == "codex" || normalized == "codex-app-server" {
+            return "codex-app-server"
+        }
+        return nil
     }
 
     public func connectGateway() async {
@@ -308,15 +351,23 @@ public final class AppStore: ObservableObject {
         }
 
         await client.connect()
+        if isGatewayConnected {
+            lastGatewayErrorMessage = nil
+            await composerService.refreshModelsFromGateway()
+            composerService.pushHpcPreferencesToGateway()
+            startGatewayEventLoop()
+            startResourcePolling()
+        }
 
-        guard isGatewayConnected else { return }
+        await connectCodex()
 
-        lastGatewayErrorMessage = nil
-        await composerService.refreshModelsFromGateway()
-        await refreshProjectsFromGateway()
-        composerService.pushHpcPreferencesToGateway()
-        startGatewayEventLoop()
-        startResourcePolling()
+        if isCodexConnected {
+            await refreshProjectsFromCodex()
+        } else if isGatewayConnected {
+            await refreshProjectsFromGateway()
+        } else {
+            lastGatewayErrorMessage = "Unable to connect to /ws or /codex."
+        }
     }
 
     // Best-effort connect for chat sends. Avoids resetting local project/session UI state.
@@ -369,6 +420,34 @@ public final class AppStore: ObservableObject {
         }
 
         gatewayEnsureConnectedTask = task
+        return await task.value
+    }
+
+    internal func ensureCodexConnectedForChat() async -> Bool {
+        if isCodexConnected { return true }
+        guard isGatewayConfigured else { return false }
+
+        if let task = codexEnsureConnectedTask {
+            return await task.value
+        }
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return false }
+            defer { self.codexEnsureConnectedTask = nil }
+
+            if !self.isGatewayConnected {
+                let gatewayReady = await self.ensureGatewayConnectedForChat()
+                guard gatewayReady else { return false }
+            }
+
+            await self.connectCodex()
+            if self.isCodexConnected {
+                self.lastGatewayErrorMessage = nil
+            }
+            return self.isCodexConnected
+        }
+
+        codexEnsureConnectedTask = task
         return await task.value
     }
 
@@ -503,13 +582,24 @@ public final class AppStore: ObservableObject {
         chatService.sessionHistoryPrefetchTasksByProject.removeAll()
         gatewayEventsTask?.cancel()
         gatewayEventsTask = nil
+        codexNotificationsTask?.cancel()
+        codexNotificationsTask = nil
+        codexServerRequestsTask?.cancel()
+        codexServerRequestsTask = nil
         gatewayStateCancellable?.cancel()
         gatewayStateCancellable = nil
+        gatewayEnsureConnectedTask?.cancel()
+        gatewayEnsureConnectedTask = nil
+        codexEnsureConnectedTask?.cancel()
+        codexEnsureConnectedTask = nil
         resourcesPollTask?.cancel()
         resourcesPollTask = nil
         gatewayClient?.disconnect()
         gatewayClient = nil
+        codexClient?.disconnect()
+        codexClient = nil
         gatewayConnectionState = .disconnected
+        codexConnectionState = .disconnected
         planService.pendingApprovalsBySession.removeAll()
         planService.planSessionByPlanID.removeAll()
         livePlanBySession.removeAll()
@@ -521,6 +611,14 @@ public final class AppStore: ObservableObject {
         selectedThinkingLevelBySession.removeAll()
         streamingSessions.removeAll()
         streamingAssistantMessageIDBySession.removeAll()
+        codexItemsBySession.removeAll()
+        codexPendingApprovalsBySession.removeAll()
+        codexPendingPromptBySession.removeAll()
+        codexStatusTextBySession.removeAll()
+        codexTokenUsageBySession.removeAll()
+        codexFullAccessBySession.removeAll()
+        codexThreadBySession.removeAll()
+        codexSessionByThread.removeAll()
         chatService.sessionHistoryRequestsInFlight.removeAll()
         chatService.sessionHistoryLastFetchedAtBySession.removeAll()
     }
@@ -578,12 +676,349 @@ public final class AppStore: ObservableObject {
         return components?.url
     }
 
+    internal func codexWSURL() -> URL? {
+        let normalized = Self.normalizedGatewayWSURLString(gatewayWSURLString) ?? gatewayWSURLString
+        guard let wsURL = URL(string: normalized) else { return nil }
+        guard var components = URLComponents(url: wsURL, resolvingAgainstBaseURL: false) else { return nil }
+        components.path = "/codex"
+        components.query = nil
+        components.fragment = nil
+        return components.url
+    }
+
+    private func connectCodex() async {
+        guard isGatewayConfigured else { return }
+        guard let wsURL = codexWSURL() else {
+            codexConnectionState = .failed(message: "Invalid Codex URL")
+            return
+        }
+
+        codexNotificationsTask?.cancel()
+        codexNotificationsTask = nil
+        codexServerRequestsTask?.cancel()
+        codexServerRequestsTask = nil
+
+        let client = CodexRPCClient(wsURL: wsURL, token: gatewayToken)
+        codexClient = client
+        await client.connect()
+        codexConnectionState = client.connectionState
+        guard isCodexConnected else { return }
+
+        startCodexEventLoops()
+    }
+
+    private func startCodexEventLoops() {
+        guard let codexClient else { return }
+
+        codexNotificationsTask?.cancel()
+        codexNotificationsTask = Task { [weak self] in
+            guard let self else { return }
+            for await notification in codexClient.notifications {
+                self.handleCodexNotification(notification)
+            }
+        }
+
+        codexServerRequestsTask?.cancel()
+        codexServerRequestsTask = Task { [weak self] in
+            guard let self else { return }
+            for await request in codexClient.serverRequests {
+                await self.handleCodexServerRequest(request)
+            }
+        }
+    }
+
+    internal func requestCodex<Params: Encodable>(method: String, params: Params) async throws -> CodexRPCResponse {
+        guard let codexClient, isCodexConnected else {
+            throw NSError(domain: "LabOS", code: -1, userInfo: [NSLocalizedDescriptionKey: "Codex client is not connected"])
+        }
+        return try await codexClient.request(method: method, params: params)
+    }
+
+    internal func decodeCodexResult<T: Decodable>(_ result: JSONValue?, key: String? = nil) throws -> T {
+        let value: JSONValue
+        if let key {
+            guard let object = result?.objectValue, let nested = object[key] else {
+                throw NSError(domain: "LabOS", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing codex result key \(key)"])
+            }
+            value = nested
+        } else {
+            guard let result else {
+                throw NSError(domain: "LabOS", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing codex result payload"])
+            }
+            value = result
+        }
+        let data = try gatewayJSONEncoder.encode(value)
+        return try gatewayJSONDecoder.decode(T.self, from: data)
+    }
+
+    private func handleCodexNotification(_ notification: CodexRPCNotification) {
+        guard let params = notification.params?.objectValue else { return }
+        let threadId = params["threadId"]?.stringValue
+        let sessionID = threadId.flatMap { codexSessionByThread[$0] }
+
+        switch notification.method {
+        case "turn/started":
+            if let sessionID {
+                if let turn = params["turn"]?.objectValue,
+                   let status = turn["status"]?.stringValue {
+                    codexStatusTextBySession[sessionID] = status
+                }
+            }
+        case "turn/completed":
+            if let sessionID,
+               let turn = params["turn"]?.objectValue,
+               let status = turn["status"]?.stringValue {
+                codexStatusTextBySession[sessionID] = status
+                streamingSessions.remove(sessionID)
+            }
+        case "turn/plan/updated":
+            break
+        case "turn/diff/updated":
+            break
+        case "item/started":
+            applyCodexItem(notificationParams: params, sessionID: sessionID)
+        case "item/completed":
+            applyCodexItem(notificationParams: params, sessionID: sessionID)
+        case "item/agentMessage/delta":
+            applyCodexAgentMessageDelta(notificationParams: params, sessionID: sessionID)
+        case "item/commandExecution/outputDelta":
+            applyCodexCommandOutputDelta(notificationParams: params, sessionID: sessionID)
+        case "thread/tokenUsage/updated":
+            applyCodexTokenUsage(notificationParams: params, sessionID: sessionID)
+        case "codex/event/background_event":
+            if let sessionID,
+               let details = params["event"]?.objectValue,
+               let text = details["message"]?.stringValue ?? details["event"]?.stringValue {
+                codexStatusTextBySession[sessionID] = text
+            }
+        case "codex/event/error":
+            if let sessionID,
+               let error = params["error"]?.objectValue,
+               let message = error["message"]?.stringValue {
+                codexStatusTextBySession[sessionID] = "error: \(message)"
+            }
+        default:
+            if let sessionID, notification.method.hasPrefix("codex/event/"),
+               let statusText = extractCodexStatusText(notificationMethod: notification.method, params: params) {
+                codexStatusTextBySession[sessionID] = statusText
+            }
+            break
+        }
+    }
+
+    private func extractCodexStatusText(
+        notificationMethod: String,
+        params: [String: JSONValue]
+    ) -> String? {
+        if let direct = params["message"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !direct.isEmpty {
+            return direct
+        }
+
+        if let event = params["event"]?.objectValue {
+            let candidates: [String?] = [
+                event["message"]?.stringValue,
+                event["status"]?.stringValue,
+                event["event"]?.stringValue,
+                event["phase"]?.stringValue,
+                event["type"]?.stringValue,
+            ]
+            for candidate in candidates {
+                let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !trimmed.isEmpty {
+                    return trimmed
+                }
+            }
+        }
+
+        if let suffix = notificationMethod.split(separator: "/").last {
+            let raw = String(suffix).trimmingCharacters(in: .whitespacesAndNewlines)
+            return raw.isEmpty ? nil : raw
+        }
+        return nil
+    }
+
+    private func applyCodexItem(notificationParams params: [String: JSONValue], sessionID: UUID?) {
+        guard let sessionID else { return }
+        guard let itemValue = params["item"] else { return }
+        guard let itemData = try? gatewayJSONEncoder.encode(itemValue),
+              let item = try? gatewayJSONDecoder.decode(CodexThreadItem.self, from: itemData)
+        else { return }
+
+        var items = codexItemsBySession[sessionID] ?? []
+        if let index = items.firstIndex(where: { $0.id == item.id }) {
+            items[index] = item
+        } else {
+            items.append(item)
+        }
+        codexItemsBySession[sessionID] = items
+    }
+
+    private func applyCodexAgentMessageDelta(notificationParams params: [String: JSONValue], sessionID: UUID?) {
+        guard let sessionID else { return }
+        guard let itemId = params["itemId"]?.stringValue else { return }
+        let delta = params["delta"]?.stringValue ?? ""
+        guard !delta.isEmpty else { return }
+
+        var items = codexItemsBySession[sessionID] ?? []
+        if let index = items.firstIndex(where: { $0.id == itemId }) {
+            if case let .agentMessage(existing) = items[index] {
+                let merged = CodexAgentMessageItem(type: existing.type, id: existing.id, text: existing.text + delta)
+                items[index] = .agentMessage(merged)
+                codexItemsBySession[sessionID] = items
+                return
+            }
+        }
+
+        let fallback = CodexAgentMessageItem(type: "agentMessage", id: itemId, text: delta)
+        items.append(.agentMessage(fallback))
+        codexItemsBySession[sessionID] = items
+    }
+
+    private func applyCodexCommandOutputDelta(notificationParams params: [String: JSONValue], sessionID: UUID?) {
+        guard let sessionID else { return }
+        guard let itemId = params["itemId"]?.stringValue else { return }
+        let delta = params["delta"]?.stringValue ?? ""
+        guard !delta.isEmpty else { return }
+
+        var items = codexItemsBySession[sessionID] ?? []
+        guard let index = items.firstIndex(where: { $0.id == itemId }) else { return }
+        guard case let .commandExecution(command) = items[index] else { return }
+
+        let merged = CodexCommandExecutionItem(
+            type: command.type,
+            id: command.id,
+            command: command.command,
+            cwd: command.cwd,
+            processId: command.processId,
+            status: command.status,
+            aggregatedOutput: (command.aggregatedOutput ?? "") + delta,
+            exitCode: command.exitCode,
+            durationMs: command.durationMs,
+            commandActions: command.commandActions
+        )
+        items[index] = .commandExecution(merged)
+        codexItemsBySession[sessionID] = items
+    }
+
+    private func applyCodexTokenUsage(notificationParams params: [String: JSONValue], sessionID: UUID?) {
+        guard let sessionID else { return }
+        guard let threadId = params["threadId"]?.stringValue else { return }
+        guard let tokenUsage = params["tokenUsage"]?.objectValue else { return }
+
+        let contextWindow = tokenUsage["contextWindow"]?.intValue ?? tokenUsage["contextWindowTokens"]?.intValue
+        let inputTokens = tokenUsage["inputTokens"]?.intValue ?? tokenUsage["totalInputTokens"]?.intValue
+        let outputTokens = tokenUsage["outputTokens"]?.intValue ?? tokenUsage["totalOutputTokens"]?.intValue
+        let totalTokens = tokenUsage["totalTokens"]?.intValue ?? inputTokens
+        let remaining: Int? = {
+            guard let contextWindow, let inputTokens else { return nil }
+            return max(0, contextWindow - inputTokens)
+        }()
+
+        let usage = CodexTokenUsage(
+            threadId: threadId,
+            inputTokens: inputTokens,
+            outputTokens: outputTokens,
+            totalTokens: totalTokens,
+            contextWindowTokens: contextWindow,
+            remainingTokens: remaining,
+            model: tokenUsage["model"]?.stringValue ?? tokenUsage["modelId"]?.stringValue
+        )
+        codexTokenUsageBySession[sessionID] = usage
+
+        if let projectID = sessionProjectID(sessionID),
+           let contextWindow,
+           let inputTokens {
+            sessionContextBySession[sessionID] = SessionContextState(
+                projectId: projectID,
+                sessionId: sessionID,
+                modelId: usage.model,
+                contextWindowTokens: contextWindow,
+                usedInputTokens: inputTokens,
+                usedTokens: totalTokens,
+                remainingTokens: max(0, contextWindow - inputTokens),
+                updatedAt: Date()
+            )
+        }
+    }
+
+    private func sessionProjectID(_ sessionID: UUID) -> UUID? {
+        for (projectID, sessions) in sessionsByProject where sessions.contains(where: { $0.id == sessionID }) {
+            return projectID
+        }
+        return activeProjectID
+    }
+
+    private func handleCodexServerRequest(_ request: CodexRPCRequest) async {
+        guard let params = request.params?.objectValue else {
+            try? await codexClient?.respond(
+                error: CodexRPCError(code: -32602, message: "Missing params"),
+                for: request.id
+            )
+            return
+        }
+
+        let threadId = params["threadId"]?.stringValue ?? ""
+        guard let sessionID = codexSessionByThread[threadId] else {
+            try? await codexClient?.respond(
+                error: CodexRPCError(code: -32004, message: "Unknown thread"),
+                for: request.id
+            )
+            return
+        }
+
+        switch request.method {
+        case CodexApprovalKind.commandExecution.rawValue, CodexApprovalKind.fileChange.rawValue:
+            let kind: CodexApprovalKind = request.method == CodexApprovalKind.commandExecution.rawValue ? .commandExecution : .fileChange
+            let approval = CodexPendingApproval(
+                requestID: request.id,
+                kind: kind,
+                sessionID: sessionID,
+                threadId: threadId,
+                turnId: params["turnId"]?.stringValue,
+                itemId: params["itemId"]?.stringValue,
+                reason: params["reason"]?.stringValue,
+                command: params["command"]?.stringValue,
+                cwd: params["cwd"]?.stringValue,
+                grantRoot: params["grantRoot"]?.stringValue,
+                rawParams: request.params
+            )
+            var approvals = codexPendingApprovalsBySession[sessionID] ?? []
+            approvals.removeAll { $0.requestID == request.id }
+            approvals.append(approval)
+            codexPendingApprovalsBySession[sessionID] = approvals
+        case "item/tool/requestUserInput":
+            let prompt = CodexPendingPrompt(
+                requestID: request.id,
+                sessionID: sessionID,
+                threadId: threadId,
+                turnId: params["turnId"]?.stringValue,
+                prompt: params["prompt"]?.stringValue ?? params["message"]?.stringValue,
+                rawParams: request.params
+            )
+            codexPendingPromptBySession[sessionID] = prompt
+        default:
+            try? await codexClient?.respond(
+                error: CodexRPCError(code: -32601, message: "Unsupported server request: \(request.method)"),
+                for: request.id
+            )
+        }
+    }
+
     private func refreshProjectsFromGateway() async {
         await projectService.refreshProjectsFromGateway()
     }
 
     private func refreshProjectFromGateway(projectID: UUID) async {
         await projectService.refreshProjectFromGateway(projectID: projectID)
+    }
+
+    private func refreshProjectsFromCodex() async {
+        await projectService.refreshProjectsFromCodex()
+    }
+
+    private func refreshProjectFromCodex(projectID: UUID) async {
+        await projectService.refreshProjectFromCodex(projectID: projectID)
     }
 
     func applySessionHistorySnapshot(
@@ -698,6 +1133,56 @@ public final class AppStore: ObservableObject {
 
     private func upsertSession(_ session: Session) {
         projectService.upsertSession(session)
+        let previousThreadId = codexThreadBySession[session.id]
+        if let rawThreadId = session.codexThreadId,
+           let threadId = normalizedOptionalString(rawThreadId),
+           !threadId.isEmpty {
+            if let previousThreadId, previousThreadId != threadId {
+                codexSessionByThread[previousThreadId] = nil
+            }
+            codexThreadBySession[session.id] = threadId
+            codexSessionByThread[threadId] = session.id
+        } else {
+            codexThreadBySession[session.id] = nil
+            if let previousThreadId {
+                codexSessionByThread[previousThreadId] = nil
+            }
+        }
+        if let sandbox = session.codexSandbox?.objectValue,
+           let mode = sandbox["mode"]?.stringValue {
+            codexFullAccessBySession[session.id] = (mode == "danger-full-access")
+        } else {
+            codexFullAccessBySession[session.id] = false
+        }
+    }
+
+    private func sessionRecord(for sessionID: UUID) -> Session? {
+        for sessions in sessionsByProject.values {
+            if let session = sessions.first(where: { $0.id == sessionID }) {
+                return session
+            }
+        }
+        return nil
+    }
+
+    public func backendEngine(for sessionID: UUID) -> String? {
+        normalizeBackendEngine(sessionRecord(for: sessionID)?.backendEngine)
+    }
+
+    public func sessionUsesCodex(sessionID: UUID) -> Bool {
+        if let mappedThread = codexThreadBySession[sessionID], !mappedThread.isEmpty {
+            return true
+        }
+        guard let session = sessionRecord(for: sessionID) else { return false }
+        if normalizeBackendEngine(session.backendEngine) == "codex-app-server" {
+            return true
+        }
+        if let rawThreadId = session.codexThreadId,
+           let threadId = normalizedOptionalString(rawThreadId),
+           !threadId.isEmpty {
+            return true
+        }
+        return false
     }
 
     private func upsertRun(projectID: UUID, run: RunRecord) {
@@ -729,11 +1214,28 @@ public final class AppStore: ObservableObject {
     }
 
     public func contextRemainingFraction(for sessionID: UUID) -> Double? {
-        composerService.contextRemainingFraction(for: sessionID)
+        if let usage = codexTokenUsageBySession[sessionID],
+           let contextWindow = usage.contextWindowTokens,
+           contextWindow > 0 {
+            let used = usage.inputTokens ?? usage.totalTokens ?? 0
+            let remaining = max(0, contextWindow - used)
+            return min(1, max(0, Double(remaining) / Double(contextWindow)))
+        }
+        if sessionUsesCodex(sessionID: sessionID) {
+            return nil
+        }
+        return composerService.contextRemainingFraction(for: sessionID)
     }
 
     public func contextWindowTokens(for sessionID: UUID) -> Int? {
-        composerService.contextWindowTokens(for: sessionID)
+        if let usage = codexTokenUsageBySession[sessionID],
+           let contextWindow = usage.contextWindowTokens {
+            return contextWindow
+        }
+        if sessionUsesCodex(sessionID: sessionID) {
+            return nil
+        }
+        return composerService.contextWindowTokens(for: sessionID)
     }
 
     public func permissionLevel(for sessionID: UUID) -> SessionPermissionLevel {
@@ -826,6 +1328,56 @@ public final class AppStore: ObservableObject {
         chatService.messages(for: sessionID)
     }
 
+    public func codexItems(for sessionID: UUID) -> [CodexThreadItem] {
+        codexItemsBySession[sessionID] ?? []
+    }
+
+    public func codexPendingApprovals(for sessionID: UUID) -> [CodexPendingApproval] {
+        codexPendingApprovalsBySession[sessionID] ?? []
+    }
+
+    public func codexPendingPrompt(for sessionID: UUID) -> CodexPendingPrompt? {
+        codexPendingPromptBySession[sessionID]
+    }
+
+    public func codexStatusText(for sessionID: UUID) -> String? {
+        codexStatusTextBySession[sessionID]
+    }
+
+    public func codexFullAccessEnabled(for sessionID: UUID) -> Bool {
+        codexFullAccessBySession[sessionID] ?? false
+    }
+
+    public func respondToCodexApproval(
+        sessionID: UUID,
+        requestID: CodexRequestID,
+        decision: String
+    ) {
+        Task { [weak self] in
+            guard let self, let codexClient = self.codexClient else { return }
+            let result = JSONValue.object(["decision": .string(decision)])
+            try? await codexClient.respond(result: result, for: requestID)
+            var approvals = self.codexPendingApprovalsBySession[sessionID] ?? []
+            approvals.removeAll { $0.requestID == requestID }
+            self.codexPendingApprovalsBySession[sessionID] = approvals
+        }
+    }
+
+    public func respondToCodexPrompt(
+        sessionID: UUID,
+        requestID: CodexRequestID,
+        answers: [String: String]
+    ) {
+        Task { [weak self] in
+            guard let self, let codexClient = self.codexClient else { return }
+            let payload = JSONValue.object([
+                "answers": .object(answers.mapValues { .string($0) }),
+            ])
+            try? await codexClient.respond(result: payload, for: requestID)
+            self.codexPendingPromptBySession[sessionID] = nil
+        }
+    }
+
     public func pendingComposerAttachments(for sessionID: UUID) -> [ComposerAttachment] {
         composerService.pendingComposerAttachments(for: sessionID)
     }
@@ -840,6 +1392,10 @@ public final class AppStore: ObservableObject {
 
     public func clearPendingComposerAttachments(sessionID: UUID) {
         composerService.clearPendingComposerAttachments(sessionID: sessionID)
+    }
+
+    public func attachmentPayload(for sessionID: UUID, messageID: UUID) -> [ComposerAttachment] {
+        composerService.attachmentPayload(for: sessionID, messageID: messageID)
     }
 
     static func messageDisplayOrder(_ lhs: ChatMessage, _ rhs: ChatMessage) -> Bool {
@@ -1008,7 +1564,12 @@ public final class AppStore: ObservableObject {
             chatService.sessionHistoryPrefetchTasksByProject[id] = nil
         }
 
-        if isGatewayConnected {
+        if shouldUseCodexRPC {
+            Task { [weak self] in
+                guard let self else { return }
+                await self.refreshProjectFromCodex(projectID: projectID)
+            }
+        } else if isGatewayConnected {
             chatService.scheduleSessionHistoryPrefetch(projectID: projectID)
             Task { [weak self] in
                 guard let self else { return }
@@ -1024,7 +1585,11 @@ public final class AppStore: ObservableObject {
         activeSessionID = sessionID
         ensureComposerPrefs(sessionID: sessionID)
 
-        if isGatewayConnected {
+        if sessionUsesCodex(sessionID: sessionID) {
+            if let threadId = codexThreadBySession[sessionID] {
+                codexSessionByThread[threadId] = sessionID
+            }
+        } else if isGatewayConnected {
             Task { [weak self] in
                 await self?.chatService.refreshSessionHistoryFromGateway(projectID: projectID, sessionID: sessionID, trigger: .interactive)
             }
@@ -1043,6 +1608,10 @@ public final class AppStore: ObservableObject {
     @discardableResult
     public func createSession(projectID: UUID, title: String? = nil) async -> Session? {
         await projectService.createSession(projectID: projectID, title: title)
+    }
+
+    public func updateSessionBackend(projectID: UUID, sessionID: UUID, backendEngine: String) async {
+        await projectService.updateSessionBackend(projectID: projectID, sessionID: sessionID, backendEngine: backendEngine)
     }
 
     public func createSessionAndSend(projectID: UUID, firstMessage: String) {

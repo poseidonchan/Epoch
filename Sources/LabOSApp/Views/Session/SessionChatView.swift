@@ -40,12 +40,38 @@ struct SessionChatView: View {
     private let maxInlineAttachmentBytes = 900 * 1024
     private let maxInlinePhotoDimension: CGFloat = 1_536
 
+    private var activeBackendEngine: String {
+        normalizedBackendEngine(
+            store.backendEngine(for: sessionID) ?? session?.backendEngine ?? store.preferredBackendEngine
+        )
+    }
+
     private var session: Session? {
         store.sessions(for: projectID).first(where: { $0.id == sessionID })
     }
 
     private var messages: [ChatMessage] {
         store.messages(for: sessionID)
+    }
+
+    private var codexItems: [CodexThreadItem] {
+        store.codexItems(for: sessionID)
+    }
+
+    private var isCodexSession: Bool {
+        store.sessionUsesCodex(sessionID: sessionID)
+    }
+
+    private var codexApprovals: [CodexPendingApproval] {
+        store.codexPendingApprovals(for: sessionID)
+    }
+
+    private var codexPrompt: CodexPendingPrompt? {
+        store.codexPendingPrompt(for: sessionID)
+    }
+
+    private var codexStatusText: String? {
+        displayCodexStatus(store.codexStatusText(for: sessionID))
     }
 
     private var activeRun: RunRecord? {
@@ -79,40 +105,70 @@ struct SessionChatView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(messages) { message in
-                            MessageBubbleView(
-                                message: message,
+                        if isCodexSession {
+                            CodexItemTimelineView(
+                                items: codexItems,
+                                statusText: codexStatusText,
+                                isStreaming: store.streamingSessions.contains(sessionID),
                                 modelOptions: store.availableModels,
-                                onArtifactTap: { ref in
-                                    store.openArtifactReference(ref)
+                                selectedModelId: store.selectedModelId(for: sessionID),
+                                showAssistantActionBar: true,
+                                onEditUserMessage: { item in
+                                    editCodexUserMessage(item)
                                 },
-                                onEditMessage: { msg in
-                                    editMessage(msg)
+                                onRetryAgentMessage: { item, modelIdOverride in
+                                    retryCodexAgentMessage(item, modelIdOverride: modelIdOverride)
                                 },
-                                onRetryMessage: { msg, modelId in
-                                    retryMessage(msg, modelIdOverride: modelId)
-                                },
-                                onBranchMessage: { msg in
-                                    branchFromMessage(msg)
+                                onBranchAgentMessage: { item in
+                                    branchFromCodexAgentMessage(item)
                                 }
                             )
-                        }
-
-                        if let pendingProcess = store.pendingInlineProcess(for: sessionID),
-                           let activeLine = pendingProcess.activeLine {
-                            HStack(alignment: .top) {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    AssistantProcessInlineView(
-                                        activeLine: activeLine,
-                                        isBlinking: pendingProcess.phase == .thinking,
-                                        summary: nil
-                                    )
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 12)
+                                .padding(.bottom, 8)
+                            if codexItems.isEmpty {
+                                Text("Codex session ready.")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 12)
                             }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .accessibilityIdentifier("session.pending.process")
+                        } else {
+                            ForEach(messages) { message in
+                                MessageBubbleView(
+                                    message: message,
+                                    modelOptions: store.availableModels,
+                                    onArtifactTap: { ref in
+                                        store.openArtifactReference(ref)
+                                    },
+                                    onEditMessage: { msg in
+                                        editMessage(msg)
+                                    },
+                                    onRetryMessage: { msg, modelId in
+                                        retryMessage(msg, modelIdOverride: modelId)
+                                    },
+                                    onBranchMessage: { msg in
+                                        branchFromMessage(msg)
+                                    },
+                                    showAssistantActionBar: !store.sessionUsesCodex(sessionID: sessionID)
+                                )
+                            }
+
+                            if let pendingProcess = store.pendingInlineProcess(for: sessionID),
+                               let activeLine = pendingProcess.activeLine {
+                                HStack(alignment: .top) {
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        AssistantProcessInlineView(
+                                            activeLine: activeLine,
+                                            isBlinking: pendingProcess.phase == .thinking,
+                                            summary: nil
+                                        )
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .accessibilityIdentifier("session.pending.process")
+                            }
                         }
 
                         Color.clear
@@ -170,6 +226,11 @@ struct SessionChatView: View {
                     guard autoScrollEnabled else { return }
                     requestAutoScroll(proxy: proxy, animated: false)
                 }
+                .onChange(of: codexItems.count) { _, _ in
+                    guard isCodexSession else { return }
+                    guard autoScrollEnabled else { return }
+                    requestAutoScroll(proxy: proxy, animated: false)
+                }
                 .onChange(of: messages.last?.text) { _, _ in
                     guard AppStore.shouldAutoScrollOnIncomingDelta() else { return }
                     guard autoScrollEnabled else { return }
@@ -205,7 +266,7 @@ struct SessionChatView: View {
                                 Color.clear.preference(key: RunProgressHeightPreferenceKey.self, value: proxy.size.height)
                             }
                         )
-                } else if let plan = store.livePlanBySession[sessionID] {
+                } else if !isCodexSession, let plan = store.livePlanBySession[sessionID] {
                     agentPlanCard(plan)
                         .padding(.horizontal, 12)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -214,6 +275,11 @@ struct SessionChatView: View {
                                 Color.clear.preference(key: AgentPlanHeightPreferenceKey.self, value: proxy.size.height)
                             }
                         )
+                }
+
+                ForEach(codexApprovals) { approval in
+                    codexApprovalCard(approval)
+                        .padding(.horizontal, 12)
                 }
 
                 sessionComposer
@@ -229,7 +295,7 @@ struct SessionChatView: View {
             }
         }
         .onPreferenceChange(AgentPlanHeightPreferenceKey.self) { value in
-            let nextHeight = activeRun == nil && store.livePlanBySession[sessionID] != nil ? value : 0
+            let nextHeight = !isCodexSession && activeRun == nil && store.livePlanBySession[sessionID] != nil ? value : 0
             guard abs(planCardHeight - nextHeight) > 0.5 else { return }
             withAnimation(runProgressAnimation) {
                 planCardHeight = nextHeight
@@ -424,66 +490,265 @@ struct SessionChatView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    private var sessionComposer: some View {
-        InlineComposerView(
-            placeholder: "Ask LabOS",
-            text: $composerText,
-            isPlanModeEnabled: Binding(
-                get: { store.planModeEnabled(for: sessionID) },
-                set: { store.setPlanModeEnabled(for: sessionID, enabled: $0) }
-            ),
-            selectedModelId: Binding(
-                get: { store.selectedModelId(for: sessionID) },
-                set: { store.setSelectedModelId(for: sessionID, modelId: $0) }
-            ),
-            selectedThinkingLevel: Binding(
-                get: { store.selectedThinkingLevel(for: sessionID) },
-                set: { store.setSelectedThinkingLevel(for: sessionID, level: $0) }
-            ),
-            selectedPermissionLevel: Binding(
-                get: { store.permissionLevel(for: sessionID) },
-                set: { store.setPermissionLevel(projectID: projectID, sessionID: sessionID, level: $0) }
-            ),
-            submitLabel: editingMessageID == nil ? "Send" : "Update",
-            style: .chatGPT,
-            statusText: editingMessageID == nil ? nil : "Editing",
-            statusIconSystemName: "pencil",
-            statusAction: editingMessageID == nil ? nil : {
-                editingMessageID = nil
-                composerText = ""
-                store.clearPendingComposerAttachments(sessionID: sessionID)
-            },
-            attachmentAction: {
-                showFileSheet = true
-            },
-            pendingAttachments: store.pendingComposerAttachments(for: sessionID),
-            onRemoveAttachment: { attachmentID in
-                store.removePendingComposerAttachment(sessionID: sessionID, attachmentID: attachmentID)
-            },
-            modelOptions: store.availableModels,
-            thinkingLevelOptions: store.availableThinkingLevels.isEmpty ? ThinkingLevel.allCases : store.availableThinkingLevels,
-            contextRemainingFraction: store.contextRemainingFraction(for: sessionID),
-            contextWindowTokens: store.contextWindowTokens(for: sessionID) ?? 258_000
-        ) {
-            let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return }
-                if let editingMessageID {
-                    store.overwriteUserMessage(
-                        projectID: projectID,
-                        sessionID: sessionID,
-                        messageID: editingMessageID,
-                        text: text
-                    )
-                    self.editingMessageID = nil
-                } else {
-                    store.sendMessage(projectID: projectID, sessionID: sessionID, text: text)
-                }
-            composerText = ""
-        }
-        .background(
-            GeometryReader { proxy in
-                Color.clear.preference(key: ComposerHeightPreferenceKey.self, value: proxy.size.height)
+    private func displayCodexStatus(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let lower = trimmed.lowercased()
+        switch lower {
+        case "completed", "failed":
+            return nil
+        case "inprogress", "in_progress", "running", "thinking":
+            return "Thinking..."
+        default:
+            if lower.contains("waiting for updates")
+                || lower.contains("waiting for response")
+                || lower == "reasoning" {
+                return "Thinking..."
             }
+            return trimmed
+        }
+    }
+
+    @ViewBuilder
+    private var sessionComposer: some View {
+        if let prompt = codexPrompt {
+            codexPromptComposer(prompt)
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(key: ComposerHeightPreferenceKey.self, value: proxy.size.height)
+                    }
+                )
+        } else {
+            InlineComposerView(
+                placeholder: "Ask LabOS",
+                text: $composerText,
+                isPlanModeEnabled: Binding(
+                    get: { store.planModeEnabled(for: sessionID) },
+                    set: { store.setPlanModeEnabled(for: sessionID, enabled: $0) }
+                ),
+                selectedModelId: Binding(
+                    get: { store.selectedModelId(for: sessionID) },
+                    set: { store.setSelectedModelId(for: sessionID, modelId: $0) }
+                ),
+                selectedThinkingLevel: Binding(
+                    get: { store.selectedThinkingLevel(for: sessionID) },
+                    set: { store.setSelectedThinkingLevel(for: sessionID, level: $0) }
+                ),
+                selectedPermissionLevel: Binding(
+                    get: {
+                        if isCodexSession {
+                            return store.codexFullAccessEnabled(for: sessionID) ? .full : .default
+                        }
+                        return store.permissionLevel(for: sessionID)
+                    },
+                    set: { level in
+                        if !isCodexSession {
+                            store.setPermissionLevel(projectID: projectID, sessionID: sessionID, level: level)
+                        }
+                    }
+                ),
+                submitLabel: editingMessageID == nil ? "Send" : "Update",
+                style: .chatGPT,
+                statusText: editingMessageID == nil ? nil : "Editing",
+                statusIconSystemName: "pencil",
+                statusAction: editingMessageID == nil ? nil : {
+                    editingMessageID = nil
+                    composerText = ""
+                    store.clearPendingComposerAttachments(sessionID: sessionID)
+                },
+                attachmentAction: {
+                    showFileSheet = true
+                },
+                pendingAttachments: store.pendingComposerAttachments(for: sessionID),
+                onRemoveAttachment: { attachmentID in
+                    store.removePendingComposerAttachment(sessionID: sessionID, attachmentID: attachmentID)
+                },
+                modelOptions: store.availableModels,
+                thinkingLevelOptions: store.availableThinkingLevels.isEmpty ? ThinkingLevel.allCases : store.availableThinkingLevels,
+                contextRemainingFraction: store.contextRemainingFraction(for: sessionID),
+                contextWindowTokens: store.contextWindowTokens(for: sessionID) ?? 258_000,
+                useEstimatedContextFallback: !isCodexSession
+            ) {
+                let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+                let attachments = store.pendingComposerAttachments(for: sessionID)
+                guard !text.isEmpty || !attachments.isEmpty else { return }
+                    if let editingMessageID {
+                        store.overwriteUserMessage(
+                            projectID: projectID,
+                            sessionID: sessionID,
+                            messageID: editingMessageID,
+                            text: text
+                        )
+                        self.editingMessageID = nil
+                    } else {
+                        store.sendMessage(projectID: projectID, sessionID: sessionID, text: text, attachments: attachments)
+                    }
+                composerText = ""
+            }
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(key: ComposerHeightPreferenceKey.self, value: proxy.size.height)
+                }
+            )
+        }
+    }
+
+    private func codexPromptComposer(_ prompt: CodexPendingPrompt) -> some View {
+        let quickQuestion = codexQuickPromptQuestion(prompt)
+        return VStack(alignment: .leading, spacing: 10) {
+            Text(prompt.prompt ?? "Codex is waiting for input")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let quickQuestion, !quickQuestion.options.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    if !quickQuestion.prompt.isEmpty {
+                        Text(quickQuestion.prompt)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(quickQuestion.options, id: \.id) { option in
+                        Button(option.label) {
+                            store.respondToCodexPrompt(
+                                sessionID: sessionID,
+                                requestID: prompt.requestID,
+                                answers: [quickQuestion.id: option.label]
+                            )
+                            composerText = ""
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            TextField("Type your response", text: $composerText, axis: .vertical)
+                .lineLimit(1...4)
+                .textFieldStyle(.roundedBorder)
+            HStack(spacing: 8) {
+                Button("Cancel") {
+                    store.respondToCodexPrompt(sessionID: sessionID, requestID: prompt.requestID, answers: [:])
+                    composerText = ""
+                }
+                .buttonStyle(.bordered)
+
+                Button("Send Response") {
+                    let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !text.isEmpty else { return }
+                    store.respondToCodexPrompt(
+                        sessionID: sessionID,
+                        requestID: prompt.requestID,
+                        answers: codexPromptTextAnswer(prompt, text: text)
+                    )
+                    composerText = ""
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
+        .padding(.horizontal, 12)
+        .padding(.bottom, 10)
+    }
+
+    private struct CodexPromptOption {
+        var id: String
+        var label: String
+    }
+
+    private struct CodexPromptQuestion {
+        var id: String
+        var prompt: String
+        var options: [CodexPromptOption]
+    }
+
+    private func codexQuickPromptQuestion(_ prompt: CodexPendingPrompt) -> CodexPromptQuestion? {
+        guard case let .object(params)? = prompt.rawParams else { return nil }
+        guard case let .array(questions)? = params["questions"], questions.count == 1 else { return nil }
+        guard case let .object(question)? = questions.first else { return nil }
+
+        let id = codexPromptString(question["id"]) ?? "response"
+        let promptText = codexPromptString(question["question"]) ?? ""
+        let options: [CodexPromptOption] = {
+            guard case let .array(rawOptions)? = question["options"] else { return [] }
+            return rawOptions.compactMap { value -> CodexPromptOption? in
+                guard case let .object(object) = value else { return nil }
+                guard let label = codexPromptString(object["label"]), !label.isEmpty else {
+                    return nil
+                }
+                let optionId = codexPromptString(object["id"]) ?? label
+                return CodexPromptOption(id: optionId, label: label)
+            }
+        }()
+        guard !options.isEmpty else { return nil }
+        return CodexPromptQuestion(id: id, prompt: promptText, options: options)
+    }
+
+    private func codexPromptString(_ value: JSONValue?) -> String? {
+        guard let value else { return nil }
+        let raw: String
+        switch value {
+        case let .string(text):
+            raw = text
+        case let .number(number):
+            raw = String(number)
+        case let .bool(flag):
+            raw = flag ? "true" : "false"
+        default:
+            return nil
+        }
+        let trimmed = raw.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func codexPromptTextAnswer(_ prompt: CodexPendingPrompt, text: String) -> [String: String] {
+        if let question = codexQuickPromptQuestion(prompt) {
+            return [question.id: text]
+        }
+        return ["response": text]
+    }
+
+    private func codexApprovalCard(_ approval: CodexPendingApproval) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(approval.kind == .commandExecution ? "Command approval needed" : "File change approval needed")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            if let reason = approval.reason, !reason.isEmpty {
+                Text(reason)
+                    .font(.subheadline)
+            }
+            if let command = approval.command, !command.isEmpty {
+                Text(command)
+                    .font(.system(.subheadline, design: .monospaced))
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color(.tertiarySystemFill))
+                    )
+            }
+            HStack(spacing: 8) {
+                Button("Accept Once") {
+                    store.respondToCodexApproval(sessionID: sessionID, requestID: approval.requestID, decision: "accept")
+                }
+                .buttonStyle(.borderedProminent)
+                Button("Accept Similar") {
+                    store.respondToCodexApproval(sessionID: sessionID, requestID: approval.requestID, decision: "acceptForSession")
+                }
+                .buttonStyle(.bordered)
+                Button("Reject") {
+                    store.respondToCodexApproval(sessionID: sessionID, requestID: approval.requestID, decision: "decline")
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
         )
     }
 
@@ -510,16 +775,21 @@ struct SessionChatView: View {
         cacheSeeds.reserveCapacity(items.count)
         for (index, item) in items.enumerated() {
             let selectionToken = photoSelectionToken(for: item, index: index)
-            let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
             let mimeType = item.supportedContentTypes.first?.preferredMIMEType
             let data = try? await item.loadTransferable(type: Data.self)
-            guard let normalizedData = normalizedInlineData(from: data, mimeType: mimeType) else { continue }
+            let preferredExt = item.supportedContentTypes.first?.preferredFilenameExtension
+            guard let normalized = normalizedInlinePayload(
+                from: data,
+                mimeType: mimeType,
+                fileExtension: preferredExt
+            ) else { continue }
+            let finalExt = normalized.fileExtension ?? "jpg"
             results.append(
                 ComposerAttachment(
-                    displayName: "photo-\(timestamp)-\(index + 1).\(ext)",
-                    mimeType: "image/jpeg",
-                    inlineDataBase64: normalizedData.base64EncodedString(),
-                    byteCount: normalizedData.count,
+                    displayName: "photo-\(timestamp)-\(index + 1).\(finalExt)",
+                    mimeType: normalized.mimeType ?? "image/jpeg",
+                    inlineDataBase64: normalized.data.base64EncodedString(),
+                    byteCount: normalized.data.count,
                     sourceToken: selectionToken
                 )
             )
@@ -527,10 +797,10 @@ struct SessionChatView: View {
                 CachedInlinePhotoSeed(
                     token: selectionToken,
                     sourceIdentifier: item.itemIdentifier,
-                    data: normalizedData,
-                    mimeType: "image/jpeg",
-                    fileExtension: "jpg",
-                    thumbnailData: normalizedData
+                    data: normalized.data,
+                    mimeType: normalized.mimeType ?? "image/jpeg",
+                    fileExtension: finalExt,
+                    thumbnailData: normalized.data
                 )
             )
         }
@@ -540,7 +810,7 @@ struct SessionChatView: View {
 
     private func addCameraCaptureAttachment(_ image: UIImage) {
         guard let seedData = image.jpegData(compressionQuality: 0.92),
-              let normalizedData = normalizedInlineData(from: seedData, mimeType: "image/jpeg")
+              let normalized = normalizedInlinePayload(from: seedData, mimeType: "image/jpeg", fileExtension: "jpg")
         else {
             importErrorMessage = "The captured photo was too large to attach."
             return
@@ -548,10 +818,10 @@ struct SessionChatView: View {
 
         let timestamp = Int(Date().timeIntervalSince1970)
         let attachment = ComposerAttachment(
-            displayName: "camera-\(timestamp).jpg",
-            mimeType: "image/jpeg",
-            inlineDataBase64: normalizedData.base64EncodedString(),
-            byteCount: normalizedData.count
+            displayName: "camera-\(timestamp).\(normalized.fileExtension ?? "jpg")",
+            mimeType: normalized.mimeType ?? "image/jpeg",
+            inlineDataBase64: normalized.data.base64EncodedString(),
+            byteCount: normalized.data.count
         )
         store.addPendingComposerAttachments(sessionID: sessionID, attachments: [attachment])
     }
@@ -564,14 +834,18 @@ struct SessionChatView: View {
 
         Task {
             if let cached = await RecentInlinePhotoCache.shared.payload(for: selectionToken),
-               let normalizedData = normalizedInlineData(from: cached.data, mimeType: cached.mimeType) {
+               let normalized = normalizedInlinePayload(
+                from: cached.data,
+                mimeType: cached.mimeType,
+                fileExtension: cached.fileExtension
+               ) {
                 let timestamp = Int(Date().timeIntervalSince1970)
-                let ext = cached.fileExtension ?? "jpg"
+                let ext = normalized.fileExtension ?? cached.fileExtension ?? "jpg"
                 let attachment = ComposerAttachment(
                     displayName: "photo-\(timestamp).\(ext)",
-                    mimeType: cached.mimeType ?? "image/jpeg",
-                    inlineDataBase64: normalizedData.base64EncodedString(),
-                    byteCount: normalizedData.count,
+                    mimeType: normalized.mimeType ?? "image/jpeg",
+                    inlineDataBase64: normalized.data.base64EncodedString(),
+                    byteCount: normalized.data.count,
                     sourceToken: selectionToken
                 )
 
@@ -589,7 +863,11 @@ struct SessionChatView: View {
                 : selectionToken
 
             guard let payload = await loadPhotoAsset(localIdentifier: assetLocalIdentifier),
-                  let normalizedData = normalizedInlineData(from: payload.data, mimeType: payload.mimeType)
+                  let normalized = normalizedInlinePayload(
+                    from: payload.data,
+                    mimeType: payload.mimeType,
+                    fileExtension: payload.fileExtension
+                  )
             else {
                 await MainActor.run {
                     importErrorMessage = "The selected photo could not be added."
@@ -598,12 +876,12 @@ struct SessionChatView: View {
             }
 
             let timestamp = Int(Date().timeIntervalSince1970)
-            let ext = payload.fileExtension ?? "jpg"
+            let ext = normalized.fileExtension ?? payload.fileExtension ?? "jpg"
             let attachment = ComposerAttachment(
                 displayName: "photo-\(timestamp).\(ext)",
-                mimeType: payload.mimeType ?? "image/jpeg",
-                inlineDataBase64: normalizedData.base64EncodedString(),
-                byteCount: normalizedData.count,
+                mimeType: normalized.mimeType ?? "image/jpeg",
+                inlineDataBase64: normalized.data.base64EncodedString(),
+                byteCount: normalized.data.count,
                 sourceToken: selectionToken
             )
 
@@ -663,27 +941,78 @@ struct SessionChatView: View {
             }
         }
         let data = try? Data(contentsOf: url)
-        guard let normalizedData = normalizedInlineData(from: data, mimeType: mimeType) else { return nil }
+        guard let normalized = normalizedInlinePayload(from: data, mimeType: mimeType, fileExtension: url.pathExtension) else {
+            return nil
+        }
+        let displayName = adjustedAttachmentDisplayName(
+            original: url.lastPathComponent,
+            preferredExtension: normalized.fileExtension
+        )
         return ComposerAttachment(
-            displayName: url.lastPathComponent,
-            mimeType: mimeType,
-            inlineDataBase64: normalizedData.base64EncodedString(),
-            byteCount: normalizedData.count
+            displayName: displayName,
+            mimeType: normalized.mimeType,
+            inlineDataBase64: normalized.data.base64EncodedString(),
+            byteCount: normalized.data.count
         )
     }
 
-    private func normalizedInlineData(from data: Data?, mimeType: String?) -> Data? {
+    private struct NormalizedInlinePayload {
+        var data: Data
+        var mimeType: String?
+        var fileExtension: String?
+    }
+
+    private func normalizedInlinePayload(from data: Data?, mimeType: String?, fileExtension: String?) -> NormalizedInlinePayload? {
         guard let data, !data.isEmpty else { return nil }
-        if data.count <= maxInlineAttachmentBytes {
-            return data
+
+        let loweredMime = (mimeType ?? "").lowercased()
+        let loweredExt = (fileExtension ?? "").lowercased()
+        let isImage = loweredMime.hasPrefix("image/")
+            || ["png", "jpg", "jpeg", "heic", "heif", "webp", "gif"].contains(loweredExt)
+
+        guard isImage else {
+            guard data.count <= maxInlineAttachmentBytes else { return nil }
+            return NormalizedInlinePayload(
+                data: data,
+                mimeType: mimeType,
+                fileExtension: loweredExt.isEmpty ? nil : loweredExt
+            )
         }
 
-        guard (mimeType ?? "").lowercased().hasPrefix("image/"),
-              let image = UIImage(data: data) else {
+        let isHeicLike = loweredMime.contains("heic")
+            || loweredMime.contains("heif")
+            || loweredExt == "heic"
+            || loweredExt == "heif"
+
+        if data.count <= maxInlineAttachmentBytes && !isHeicLike {
+            return NormalizedInlinePayload(
+                data: data,
+                mimeType: mimeType,
+                fileExtension: loweredExt.isEmpty ? nil : loweredExt
+            )
+        }
+
+        guard let image = UIImage(data: data),
+              let normalizedJPEG = compressedImageDataForInlineSend(image) else {
             return nil
         }
+        return NormalizedInlinePayload(
+            data: normalizedJPEG,
+            mimeType: "image/jpeg",
+            fileExtension: "jpg"
+        )
+    }
 
-        return compressedImageDataForInlineSend(image)
+    private func adjustedAttachmentDisplayName(original: String, preferredExtension: String?) -> String {
+        let trimmed = original.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "attachment" }
+        guard let preferredExtension, !preferredExtension.isEmpty else { return trimmed }
+        let url = URL(fileURLWithPath: trimmed)
+        let currentExt = url.pathExtension.lowercased()
+        guard currentExt != preferredExtension.lowercased() else { return trimmed }
+        let stem = url.deletingPathExtension().lastPathComponent
+        let baseName = stem.isEmpty ? "attachment" : stem
+        return "\(baseName).\(preferredExtension)"
     }
 
     private func compressedImageDataForInlineSend(_ image: UIImage) -> Data? {
@@ -740,12 +1069,40 @@ struct SessionChatView: View {
         composerText = trimmed
     }
 
+    private func editCodexUserMessage(_ item: CodexUserMessageItem) {
+        let text = codexUserText(from: item.content)
+        let attachments = codexComposerAttachments(from: item.content)
+        editingMessageID = nil
+        composerText = text
+        store.clearPendingComposerAttachments(sessionID: sessionID)
+        if !attachments.isEmpty {
+            store.addPendingComposerAttachments(sessionID: sessionID, attachments: attachments)
+        }
+    }
+
     private func retryMessage(_ message: ChatMessage, modelIdOverride: String?) {
         store.retryMessage(
             projectID: projectID,
             sessionID: sessionID,
             fromMessageID: message.id,
             modelIdOverride: modelIdOverride
+        )
+    }
+
+    private func retryCodexAgentMessage(_ item: CodexAgentMessageItem, modelIdOverride: String?) {
+        if let modelIdOverride {
+            let normalizedModel = modelIdOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !normalizedModel.isEmpty {
+                store.setSelectedModelId(for: sessionID, modelId: normalizedModel)
+            }
+        }
+
+        guard let source = codexRetrySource(for: item.id) else { return }
+        store.sendMessage(
+            projectID: projectID,
+            sessionID: sessionID,
+            text: source.text,
+            attachments: source.attachments
         )
     }
 
@@ -757,6 +1114,133 @@ struct SessionChatView: View {
                 fromMessageID: message.id
             )
         }
+    }
+
+    private func branchFromCodexAgentMessage(_ item: CodexAgentMessageItem) {
+        Task {
+            guard let source = codexRetrySource(for: item.id) else { return }
+
+            let sourceTitle = session?.title
+            let branchTitle = sourceTitle.map { "\($0) (Branch)" }
+
+            guard let branched = await store.createSession(projectID: projectID, title: branchTitle) else { return }
+
+            let selectedModel = store.selectedModelId(for: sessionID)
+            let selectedThinking = store.selectedThinkingLevel(for: sessionID)
+            let selectedPlanMode = store.planModeEnabled(for: sessionID)
+            let selectedPermission = store.permissionLevel(for: sessionID)
+
+            if !selectedModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                store.setSelectedModelId(for: branched.id, modelId: selectedModel)
+            }
+            store.setSelectedThinkingLevel(for: branched.id, level: selectedThinking)
+            store.setPlanModeEnabled(for: branched.id, enabled: selectedPlanMode)
+            store.setPermissionLevel(projectID: branched.projectID, sessionID: branched.id, level: selectedPermission)
+
+            store.sendMessage(
+                projectID: branched.projectID,
+                sessionID: branched.id,
+                text: source.text,
+                attachments: source.attachments
+            )
+        }
+    }
+
+    private func codexRetrySource(for assistantItemID: String) -> (text: String, attachments: [ComposerAttachment])? {
+        let assistantIndex = codexItems.lastIndex(where: { $0.id == assistantItemID })
+        let candidateItems: ArraySlice<CodexThreadItem>
+        if let assistantIndex {
+            candidateItems = codexItems[..<assistantIndex]
+        } else {
+            candidateItems = codexItems[...]
+        }
+
+        let userItem = candidateItems.reversed().compactMap { item -> CodexUserMessageItem? in
+            if case let .userMessage(userItem) = item {
+                return userItem
+            }
+            return nil
+        }.first
+
+        guard let userItem else { return nil }
+
+        let text = codexUserText(from: userItem.content)
+        let attachments = codexComposerAttachments(from: userItem.content)
+        guard !text.isEmpty || !attachments.isEmpty else { return nil }
+        return (text: text, attachments: attachments)
+    }
+
+    private func codexUserText(from content: [CodexUserInput]) -> String {
+        content
+            .compactMap { input in
+                if input.type.lowercased() == "text" {
+                    return input.text
+                }
+                return nil
+            }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func codexComposerAttachments(from content: [CodexUserInput]) -> [ComposerAttachment] {
+        var attachments: [ComposerAttachment] = []
+
+        let imageInputs = content.filter { input in
+            let type = input.type.lowercased()
+            if type == "localimage" { return true }
+            if type == "image" {
+                return input.path != nil || input.url != nil
+            }
+            return false
+        }
+
+        for (index, input) in imageInputs.enumerated() {
+            guard let fileURL = codexInputFileURL(input) else { continue }
+            guard let fileData = try? Data(contentsOf: fileURL) else { continue }
+
+            let fileExtension = fileURL.pathExtension
+            let mimeType = UTType(filenameExtension: fileExtension.lowercased())?.preferredMIMEType
+            guard let normalized = normalizedInlinePayload(
+                from: fileData,
+                mimeType: mimeType,
+                fileExtension: fileExtension
+            ) else { continue }
+
+            let fallbackName = fileURL.lastPathComponent.isEmpty
+                ? "image-\(index + 1).\(normalized.fileExtension ?? "jpg")"
+                : fileURL.lastPathComponent
+            let displayName = adjustedAttachmentDisplayName(
+                original: fallbackName,
+                preferredExtension: normalized.fileExtension
+            )
+
+            attachments.append(
+                ComposerAttachment(
+                    displayName: displayName,
+                    mimeType: normalized.mimeType ?? "image/jpeg",
+                    inlineDataBase64: normalized.data.base64EncodedString(),
+                    byteCount: normalized.data.count
+                )
+            )
+        }
+
+        return attachments
+    }
+
+    private func codexInputFileURL(_ input: CodexUserInput) -> URL? {
+        if let rawPath = input.path?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !rawPath.isEmpty {
+            return URL(fileURLWithPath: rawPath)
+        }
+
+        if let rawURL = input.url?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !rawURL.isEmpty,
+           let parsed = URL(string: rawURL),
+           parsed.isFileURL {
+            return parsed
+        }
+
+        return nil
     }
 
     private var header: some View {
@@ -782,6 +1266,11 @@ struct SessionChatView: View {
             .buttonStyle(.bordered)
 
             Menu {
+                Menu("Backend") {
+                    backendMenuButton(title: "Pi Adapter", value: "pi")
+                    backendMenuButton(title: "Codex App Server", value: "codex-app-server")
+                }
+
                 Button("Rename Session") {
                     renameSessionPresented = true
                 }
@@ -812,14 +1301,50 @@ struct SessionChatView: View {
 
     private var pendingApprovalBinding: Binding<PendingApproval?> {
         Binding<PendingApproval?>(
-            get: { store.pendingApproval(for: sessionID) },
+            get: { isCodexSession ? nil : store.pendingApproval(for: sessionID) },
             set: { newValue in
                 guard newValue == nil else { return }
+                guard !isCodexSession else { return }
                 if store.pendingApproval(for: sessionID) != nil {
                     store.cancelPlan(sessionID: sessionID)
                 }
             }
         )
+    }
+
+    @ViewBuilder
+    private func backendMenuButton(title: String, value: String) -> some View {
+        let normalizedValue = normalizedBackendEngine(value)
+        Button {
+            applyBackendSelection(normalizedValue)
+        } label: {
+            HStack {
+                Text(title)
+                if activeBackendEngine == normalizedValue {
+                    Image(systemName: "checkmark")
+                }
+            }
+        }
+    }
+
+    private func applyBackendSelection(_ backend: String) {
+        let normalized = normalizedBackendEngine(backend)
+        store.savePreferredBackendEngine(normalized)
+        Task { @MainActor in
+            await store.updateSessionBackend(
+                projectID: projectID,
+                sessionID: sessionID,
+                backendEngine: normalized
+            )
+        }
+    }
+
+    private func normalizedBackendEngine(_ value: String?) -> String {
+        let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if normalized == "codex" || normalized == "codex-app-server" {
+            return "codex-app-server"
+        }
+        return "pi"
     }
 
     private func agentPlanCard(_ payload: AgentPlanUpdatedPayload) -> some View {
