@@ -101,6 +101,7 @@ export class PiAgentEngineAdapter implements CodexEngineSession {
     });
 
     try {
+      const historyMessages = await buildPiHistoryMessages(args.historyTurns ?? []);
       const userContent = await buildPiUserContentFromCodexInput(args.input);
       const resolution = resolveHubModelForRun(this.config, { modelIdOverride: args.model });
 
@@ -110,6 +111,7 @@ export class PiAgentEngineAdapter implements CodexEngineSession {
         const context: PiContext = {
           systemPrompt: "You are LabOS, a concise and helpful assistant.",
           messages: [
+            ...historyMessages,
             {
               role: "user",
               content: piUserMessageContent(userContent),
@@ -213,6 +215,100 @@ export class PiAgentEngineAdapter implements CodexEngineSession {
       queue.finish();
     }
   }
+}
+
+async function buildPiHistoryMessages(turns: Turn[]): Promise<Array<{ role: "user" | "assistant"; content: string | PiUserContentPart[]; timestamp: number }>> {
+  const messages: Array<{ role: "user" | "assistant"; content: string | PiUserContentPart[]; timestamp: number }> = [];
+
+  for (const turn of turns) {
+    for (const item of turn.items) {
+      if (item.type === "userMessage") {
+        const normalizedInput = normalizeUserInputList(item.content);
+        const userContent = await buildPiUserContentFromCodexInput(normalizedInput);
+        if (userContent.length === 0) continue;
+        if (userContent.length === 1 && userContent[0]?.type === "text" && !userContent[0].text.trim()) continue;
+        messages.push({
+          role: "user",
+          content: piUserMessageContent(userContent),
+          timestamp: Date.now(),
+        });
+        continue;
+      }
+
+      if (item.type === "agentMessage" || item.type === "plan") {
+        const rawText = String(item.text ?? "");
+        const text = normalizeAssistantHistoryText(rawText);
+        if (!text) continue;
+        messages.push({
+          role: "assistant",
+          content: text,
+          timestamp: Date.now(),
+        });
+      }
+    }
+  }
+
+  return messages;
+}
+
+function normalizeAssistantHistoryText(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.toLowerCase();
+  if (
+    normalized === "thinking" ||
+    normalized === "thinking..." ||
+    normalized === "inprogress" ||
+    normalized === "in_progress" ||
+    normalized === "running" ||
+    normalized === "reasoning" ||
+    normalized.includes("waiting for updates") ||
+    normalized.includes("waiting for response")
+  ) {
+    return null;
+  }
+  return trimmed;
+}
+
+function normalizeUserInputList(input: UserInput[] | unknown): UserInput[] {
+  if (!Array.isArray(input)) return [];
+
+  const normalized: UserInput[] = [];
+  for (const part of input) {
+    if (!part || typeof part !== "object" || Array.isArray(part)) continue;
+    const record = part as Record<string, unknown>;
+    const type = String(record.type ?? "").trim();
+    if (!type) continue;
+
+    if (type === "text") {
+      normalized.push({
+        type: "text",
+        text: String(record.text ?? ""),
+        text_elements: [],
+      });
+      continue;
+    }
+    if (type === "image") {
+      const url = String(record.url ?? "").trim();
+      if (!url) continue;
+      normalized.push({
+        type: "image",
+        url,
+      });
+      continue;
+    }
+    if (type === "localImage") {
+      const path = String(record.path ?? "").trim();
+      if (!path) continue;
+      normalized.push({
+        type: "localImage",
+        path,
+      });
+      continue;
+    }
+  }
+
+  return normalized;
 }
 
 export type PiUserContentPart = TextContent | ImageContent;

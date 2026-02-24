@@ -14,42 +14,152 @@ struct CodexItemTimelineView: View {
     var onRetryAgentMessage: (CodexAgentMessageItem, String?) -> Void = { _, _ in }
     var onBranchAgentMessage: (CodexAgentMessageItem) -> Void = { _ in }
 
+    private struct AgentSegment: Identifiable {
+        let id: String
+        let text: String
+        let isStreaming: Bool
+    }
+
+    private struct AgentGroup: Identifiable {
+        let id: String
+        let segments: [AgentSegment]
+        let actionTarget: CodexAgentMessageItem?
+        let isActionTargetStreaming: Bool
+    }
+
+    private enum TimelineEntry: Identifiable {
+        case item(CodexThreadItem)
+        case agentGroup(AgentGroup)
+
+        var id: String {
+            switch self {
+            case let .item(item):
+                return "item:\(item.id)"
+            case let .agentGroup(group):
+                return "group:\(group.id)"
+            }
+        }
+    }
+
     var body: some View {
         LazyVStack(spacing: 10) {
-            if let statusText = displayStatus(statusText) {
-                statusPill(statusText)
-            }
-            ForEach(items, id: \CodexThreadItem.id) { item in
-                timelineRow(for: item)
+            ForEach(timelineEntries) { entry in
+                timelineRow(for: entry)
             }
         }
     }
 
     @ViewBuilder
-    private func timelineRow(for item: CodexThreadItem) -> some View {
-        switch item {
-        case let .userMessage(userItem):
-            userBubble(item: userItem)
-        case let .agentMessage(agentItem):
-            agentFlat(
-                item: agentItem,
-                isStreaming: isStreaming && agentItem.id == latestStreamingAgentMessageID
-            )
-        case let .plan(planItem):
-            bubble(title: "Plan", text: planItem.text)
-        case let .commandExecution(commandItem):
-            CodexCommandExecutionCard(item: commandItem)
-        case let .fileChange(fileItem):
-            CodexFileChangeCard(item: fileItem)
-        case let .mcpToolCall(toolItem):
-            bubble(title: "Tool \(toolItem.tool)", text: toolItem.status)
-        case let .unknown(unknown):
-            if isReasoningItem(unknown) {
-                reasoningFlat(text: reasoningText(unknown))
-            } else {
+    private func timelineRow(for entry: TimelineEntry) -> some View {
+        switch entry {
+        case let .item(item):
+            switch item {
+            case let .userMessage(userItem):
+                userBubble(item: userItem)
+            case let .plan(planItem):
+                bubble(title: "Plan", text: planItem.text)
+            case let .commandExecution(commandItem):
+                CodexCommandExecutionCard(item: commandItem)
+            case let .fileChange(fileItem):
+                CodexFileChangeCard(item: fileItem)
+            case let .mcpToolCall(toolItem):
+                bubble(title: "Tool \(toolItem.tool)", text: toolItem.status)
+            case let .unknown(unknown):
                 bubble(title: unknown.type, text: unknownText(unknown))
+            case let .agentMessage(agentItem):
+                // Agent items should normally be coalesced in `timelineEntries`.
+                agentGroup(
+                    AgentGroup(
+                        id: agentItem.id,
+                        segments: [
+                            AgentSegment(
+                                id: agentItem.id,
+                                text: normalizedAgentSegmentText(agentItem.text),
+                                isStreaming: isStreaming && agentItem.id == latestStreamingAgentMessageID
+                            )
+                        ],
+                        actionTarget: agentItem,
+                        isActionTargetStreaming: isStreaming && agentItem.id == latestStreamingAgentMessageID
+                    )
+                )
+            }
+        case let .agentGroup(group):
+            agentGroup(group)
+        }
+    }
+
+    private var timelineEntries: [TimelineEntry] {
+        var entries: [TimelineEntry] = []
+        var pendingSegments: [AgentSegment] = []
+        var pendingActionTarget: CodexAgentMessageItem?
+        var pendingActionTargetStreaming = false
+
+        func shouldAppend(_ text: String, to existing: [AgentSegment]) -> Bool {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return false }
+            guard let last = existing.last else { return true }
+            return last.text != trimmed
+        }
+
+        func flushPendingGroup() {
+            guard !pendingSegments.isEmpty || pendingActionTarget != nil else { return }
+            let groupId = pendingActionTarget?.id ?? pendingSegments.first?.id ?? UUID().uuidString
+            entries.append(
+                .agentGroup(
+                    AgentGroup(
+                        id: groupId,
+                        segments: pendingSegments,
+                        actionTarget: pendingActionTarget,
+                        isActionTargetStreaming: pendingActionTargetStreaming
+                    )
+                )
+            )
+            pendingSegments.removeAll()
+            pendingActionTarget = nil
+            pendingActionTargetStreaming = false
+        }
+
+        for item in items {
+            switch item {
+            case let .agentMessage(agentItem):
+                let text = normalizedAgentSegmentText(agentItem.text)
+                if shouldAppend(text, to: pendingSegments) {
+                    pendingSegments.append(
+                        AgentSegment(
+                            id: agentItem.id,
+                            text: text,
+                            isStreaming: isStreaming && agentItem.id == latestStreamingAgentMessageID
+                        )
+                    )
+                }
+
+                if !agentItem.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    pendingActionTarget = agentItem
+                    pendingActionTargetStreaming = isStreaming && agentItem.id == latestStreamingAgentMessageID
+                }
+
+            case let .unknown(unknown) where isReasoningItem(unknown):
+                let text = normalizeReasoningCopy(reasoningText(unknown))
+                if shouldAppend(text, to: pendingSegments) {
+                    pendingSegments.append(AgentSegment(id: unknown.id, text: text, isStreaming: false))
+                }
+
+            default:
+                flushPendingGroup()
+                entries.append(.item(item))
             }
         }
+
+        flushPendingGroup()
+        return entries
+    }
+
+    private func normalizedAgentSegmentText(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return "Thinking..."
+        }
+        return trimmed
     }
 
     private var latestStreamingAgentMessageID: String? {
@@ -113,13 +223,16 @@ struct CodexItemTimelineView: View {
                 if !text.isEmpty {
                     Text(text)
                         .font(.body)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
-                        .frame(maxWidth: userBubbleMaxWidth, alignment: .leading)
                         .background(
                             RoundedRectangle(cornerRadius: 22, style: .continuous)
                                 .fill(Color(uiColor: .secondarySystemBackground))
                         )
+                        .fixedSize(horizontal: true, vertical: false)
+                        .frame(maxWidth: userBubbleMaxWidth, alignment: .trailing)
                 }
             }
         }
@@ -142,20 +255,18 @@ struct CodexItemTimelineView: View {
     }
 
     private func codexUserImageRow(_ inputs: [CodexUserInput]) -> some View {
-        HStack(spacing: 0) {
-            Spacer(minLength: 0)
+        let rowWidth = userImageRowWidth(imageCount: inputs.count)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(Array(inputs.enumerated()), id: \.offset) { _, input in
-                        codexUserImageThumbnail(input)
-                    }
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Array(inputs.enumerated()), id: \.offset) { _, input in
+                    codexUserImageThumbnail(input)
                 }
-                .padding(.leading, 2)
-                .padding(.trailing, 2)
             }
-            .frame(maxWidth: userBubbleMaxWidth, alignment: .trailing)
+            .padding(.horizontal, 2)
         }
+        .frame(width: rowWidth, alignment: .trailing)
+        .frame(maxWidth: userBubbleMaxWidth, alignment: .trailing)
     }
 
     @ViewBuilder
@@ -224,71 +335,84 @@ struct CodexItemTimelineView: View {
         return nil
     }
 
-    private func agentFlat(item: CodexAgentMessageItem, isStreaming: Bool) -> some View {
-        let text = item.text.isEmpty ? "Thinking..." : item.text
+    private func agentGroup(_ group: AgentGroup) -> some View {
+        let isActionableGroup = actionTargetIsActionable(group)
+
         return VStack(alignment: .leading, spacing: 6) {
             Text("Agent")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            codexMarkdownText(text, isStreaming: isStreaming)
 
-            if showAssistantActionBar {
-                assistantActionBar(item: item)
+            ForEach(group.segments) { segment in
+                agentSegmentView(segment)
+            }
+
+            if isActionableGroup,
+               let actionItem = group.actionTarget,
+               !group.isActionTargetStreaming {
+                assistantActionBar(item: actionItem)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 6)
         .contextMenu {
-            Button {
-                copyToPasteboard(item.text)
-            } label: {
-                Label("Copy", systemImage: "doc.on.doc")
-            }
-
-            if showAssistantActionBar {
+            if let actionItem = group.actionTarget {
                 Button {
-                    onRetryAgentMessage(item, nil)
+                    copyToPasteboard(actionItem.text)
                 } label: {
-                    Label("Regenerate", systemImage: "arrow.clockwise")
+                    Label("Copy", systemImage: "doc.on.doc")
                 }
 
-                if !modelOptions.isEmpty {
-                    Menu {
-                        ForEach(modelOptions, id: \.id) { model in
-                            Button {
-                                onRetryAgentMessage(item, model.id)
-                            } label: {
-                                HStack {
-                                    Text(model.name)
-                                    if model.id == selectedModelId {
-                                        Image(systemName: "checkmark")
+                if isActionableGroup, !group.isActionTargetStreaming {
+                    Button {
+                        onRetryAgentMessage(actionItem, nil)
+                    } label: {
+                        Label("Regenerate", systemImage: "arrow.clockwise")
+                    }
+
+                    if !modelOptions.isEmpty {
+                        Menu {
+                            ForEach(modelOptions, id: \.id) { model in
+                                Button {
+                                    onRetryAgentMessage(actionItem, model.id)
+                                } label: {
+                                    HStack {
+                                        Text(model.name)
+                                        if model.id == selectedModelId {
+                                            Image(systemName: "checkmark")
+                                        }
                                     }
                                 }
                             }
+                        } label: {
+                            Label("Choose Model", systemImage: "shuffle")
                         }
-                    } label: {
-                        Label("Choose Model", systemImage: "shuffle")
                     }
-                }
 
-                Button {
-                    onBranchAgentMessage(item)
-                } label: {
-                    Label("Fork", systemImage: "arrow.triangle.branch")
+                    Button {
+                        onBranchAgentMessage(actionItem)
+                    } label: {
+                        Label("Fork", systemImage: "arrow.triangle.branch")
+                    }
                 }
             }
         }
     }
 
-    private func reasoningFlat(text: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Agent")
-                .font(.caption)
+    @ViewBuilder
+    private func agentSegmentView(_ segment: AgentSegment) -> some View {
+        if isThinkingSegment(segment.text) {
+            Text("Thinking...")
+                .font(.body)
                 .foregroundStyle(.secondary)
-            codexMarkdownText(text, isStreaming: false)
+        } else {
+            codexMarkdownText(segment.text, isStreaming: segment.isStreaming)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 6)
+    }
+
+    private func isThinkingSegment(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return trimmed == "thinking" || trimmed == "thinking..."
     }
 
     @ViewBuilder
@@ -459,6 +583,53 @@ struct CodexItemTimelineView: View {
         default:
             return nil
         }
+    }
+
+    private var actionableAgentMessageIDs: Set<String> {
+        var ids: Set<String> = []
+        var currentCandidate: String?
+
+        for item in items {
+            switch item {
+            case .userMessage:
+                if let currentCandidate {
+                    ids.insert(currentCandidate)
+                }
+                currentCandidate = nil
+            case let .agentMessage(agent):
+                let trimmed = agent.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    currentCandidate = agent.id
+                }
+            default:
+                break
+            }
+        }
+
+        if let currentCandidate {
+            ids.insert(currentCandidate)
+        }
+
+        return ids
+    }
+
+    private func actionTargetIsActionable(_ group: AgentGroup) -> Bool {
+        guard showAssistantActionBar,
+              let actionItem = group.actionTarget else {
+            return false
+        }
+        return actionableAgentMessageIDs.contains(actionItem.id)
+    }
+
+    private func userImageRowWidth(imageCount: Int) -> CGFloat {
+        guard imageCount > 0 else { return userBubbleMaxWidth }
+        let thumbnailWidth: CGFloat = 88
+        let spacing: CGFloat = 8
+        let horizontalPadding: CGFloat = 4
+        let totalWidth = (CGFloat(imageCount) * thumbnailWidth)
+            + (CGFloat(max(0, imageCount - 1)) * spacing)
+            + horizontalPadding
+        return min(userBubbleMaxWidth, totalWidth)
     }
 }
 #endif

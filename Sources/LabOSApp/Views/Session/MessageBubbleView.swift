@@ -74,14 +74,16 @@ struct MessageBubbleView: View {
                     Text(userText)
                         .font(.body)
                         .foregroundStyle(colorScheme == .dark ? Color.black : Color.primary)
+                        .lineLimit(nil)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
-                        .frame(maxWidth: userBubbleMaxWidth, alignment: .leading)
                         .background(
                             RoundedRectangle(cornerRadius: 22, style: .continuous)
                                 .fill(colorScheme == .dark ? Color.white.opacity(0.95) : Color(uiColor: .secondarySystemBackground))
                         )
+                        .fixedSize(horizontal: true, vertical: false)
+                        .frame(maxWidth: userBubbleMaxWidth, alignment: .trailing)
                 }
 
                 if !userNonImageArtifactRefs.isEmpty {
@@ -101,20 +103,18 @@ struct MessageBubbleView: View {
     }
 
     private var userImageAttachmentsRow: some View {
-        HStack(spacing: 0) {
-            Spacer(minLength: 0)
+        let rowWidth = userImageRowWidth(imageCount: userImageArtifactRefs.count)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(Array(userImageArtifactRefs.enumerated()), id: \.offset) { _, ref in
-                        userImageThumbnail(ref)
-                    }
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Array(userImageArtifactRefs.enumerated()), id: \.offset) { _, ref in
+                    userImageThumbnail(ref)
                 }
-                .padding(.leading, 2)
-                .padding(.trailing, 2)
             }
-            .frame(maxWidth: userBubbleMaxWidth, alignment: .trailing)
+            .padding(.horizontal, 2)
         }
+        .frame(width: rowWidth, alignment: .trailing)
+        .frame(maxWidth: userBubbleMaxWidth, alignment: .trailing)
     }
 
     @ViewBuilder
@@ -253,6 +253,17 @@ struct MessageBubbleView: View {
         }
 
         return URL(fileURLWithPath: trimmed).pathExtension.lowercased()
+    }
+
+    private func userImageRowWidth(imageCount: Int) -> CGFloat {
+        guard imageCount > 0 else { return userBubbleMaxWidth }
+        let thumbnailWidth: CGFloat = 88
+        let spacing: CGFloat = 8
+        let horizontalPadding: CGFloat = 4
+        let totalWidth = (CGFloat(imageCount) * thumbnailWidth)
+            + (CGFloat(max(0, imageCount - 1)) * spacing)
+            + horizontalPadding
+        return min(userBubbleMaxWidth, totalWidth)
     }
 
     private var assistantMessage: some View {

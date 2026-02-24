@@ -295,6 +295,92 @@ final class AppStoreMessageActionsTests: XCTestCase {
         XCTAssertEqual(finalMessages.last(where: { $0.role == .user })?.text, "Teach me to write C# code")
     }
 
+    func testCodexRegeneratePlanDropsTailTurnsFromTargetAssistant() {
+        let thread = CodexThread(
+            id: "thr_1",
+            preview: "third",
+            modelProvider: "openai",
+            createdAt: 1,
+            updatedAt: 3,
+            path: nil,
+            cwd: "/tmp",
+            cliVersion: "@labos/hub/0.1.0",
+            source: "appServer",
+            gitInfo: nil,
+            turns: [
+                CodexTurn(
+                    id: "turn_1",
+                    items: [
+                        .userMessage(
+                            CodexUserMessageItem(
+                                type: "userMessage",
+                                id: "item_u_1",
+                                content: [CodexUserInput(type: "text", text: "first", url: nil, path: nil)]
+                            )
+                        ),
+                        .agentMessage(CodexAgentMessageItem(type: "agentMessage", id: "item_a_1", text: "r1")),
+                    ],
+                    status: "completed",
+                    error: nil
+                ),
+                CodexTurn(
+                    id: "turn_2",
+                    items: [
+                        .userMessage(
+                            CodexUserMessageItem(
+                                type: "userMessage",
+                                id: "item_u_2",
+                                content: [CodexUserInput(type: "text", text: "second", url: nil, path: nil)]
+                            )
+                        ),
+                        .agentMessage(CodexAgentMessageItem(type: "agentMessage", id: "item_a_2", text: "r2")),
+                    ],
+                    status: "completed",
+                    error: nil
+                ),
+                CodexTurn(
+                    id: "turn_3",
+                    items: [
+                        .userMessage(
+                            CodexUserMessageItem(
+                                type: "userMessage",
+                                id: "item_u_3",
+                                content: [CodexUserInput(type: "text", text: "third", url: nil, path: nil)]
+                            )
+                        ),
+                        .agentMessage(CodexAgentMessageItem(type: "agentMessage", id: "item_a_3", text: "r3")),
+                    ],
+                    status: "completed",
+                    error: nil
+                ),
+            ]
+        )
+
+        let plan = ChatSessionService.codexRegeneratePlan(thread: thread, assistantItemID: "item_a_2")
+        XCTAssertNotNil(plan)
+        XCTAssertEqual(plan?.numTurnsToRollback, 2)
+        XCTAssertEqual(plan?.sourceInput.first?.text, "second")
+    }
+
+    func testCodexRegeneratePlanReturnsNilWhenAssistantNotFound() {
+        let thread = CodexThread(
+            id: "thr_1",
+            preview: "",
+            modelProvider: "openai",
+            createdAt: 1,
+            updatedAt: 1,
+            path: nil,
+            cwd: "/tmp",
+            cliVersion: "@labos/hub/0.1.0",
+            source: "appServer",
+            gitInfo: nil,
+            turns: []
+        )
+
+        let plan = ChatSessionService.codexRegeneratePlan(thread: thread, assistantItemID: "missing")
+        XCTAssertNil(plan)
+    }
+
     private func waitUntil(
         timeoutSeconds: TimeInterval,
         pollEvery interval: TimeInterval = 0.05,

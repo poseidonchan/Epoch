@@ -1090,19 +1090,11 @@ struct SessionChatView: View {
     }
 
     private func retryCodexAgentMessage(_ item: CodexAgentMessageItem, modelIdOverride: String?) {
-        if let modelIdOverride {
-            let normalizedModel = modelIdOverride.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !normalizedModel.isEmpty {
-                store.setSelectedModelId(for: sessionID, modelId: normalizedModel)
-            }
-        }
-
-        guard let source = codexRetrySource(for: item.id) else { return }
-        store.sendMessage(
+        store.retryCodexAgentMessage(
             projectID: projectID,
             sessionID: sessionID,
-            text: source.text,
-            attachments: source.attachments
+            assistantItemID: item.id,
+            modelIdOverride: modelIdOverride
         )
     }
 

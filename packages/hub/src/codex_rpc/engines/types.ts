@@ -4,6 +4,7 @@ export type EngineStartTurnArgs = {
   threadId: string;
   turnId: string;
   input: UserInput[];
+  historyTurns?: Turn[];
   cwd: string;
   model: string | null;
   modelProvider: string;
@@ -38,6 +39,7 @@ export interface CodexEngineSession {
   threadResume?(params: Record<string, unknown>): Promise<Record<string, unknown>>;
   threadRead?(params: Record<string, unknown>): Promise<Record<string, unknown>>;
   threadList?(params: Record<string, unknown>): Promise<Record<string, unknown>>;
+  threadRollback?(params: Record<string, unknown>): Promise<Record<string, unknown>>;
   modelList?(params: Record<string, unknown>): Promise<Record<string, unknown>>;
 
   startTurn(args: EngineStartTurnArgs): Promise<EngineStartTurnResult>;

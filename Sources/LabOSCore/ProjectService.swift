@@ -554,9 +554,6 @@ internal final class ProjectService {
                 }
                 upsertSession(session)
                 syncCodexSessionMapping(for: session)
-                if normalized != "codex-app-server" {
-                    clearCodexSessionState(sessionID)
-                }
                 store.lastGatewayErrorMessage = nil
             } catch {
                 store.lastGatewayErrorMessage = error.localizedDescription
@@ -587,9 +584,6 @@ internal final class ProjectService {
                         session.backendEngine = normalized
                     }
                 }
-                if normalized != "codex-app-server" {
-                    clearCodexSessionState(sessionID)
-                }
                 store.lastGatewayErrorMessage = nil
             } catch {
                 store.lastGatewayErrorMessage = error.localizedDescription
@@ -599,12 +593,6 @@ internal final class ProjectService {
 
         mutateLocalSession(projectID: projectID, sessionID: sessionID) { session in
             session.backendEngine = normalized
-            if normalized != "codex-app-server" {
-                session.codexThreadId = nil
-            }
-        }
-        if normalized != "codex-app-server" {
-            clearCodexSessionState(sessionID)
         }
     }
 

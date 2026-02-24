@@ -1,4 +1,4 @@
-import { appendFile, mkdir, rm } from "node:fs/promises";
+import { appendFile, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { DbPool } from "../db/db.js";
@@ -348,6 +348,57 @@ export class CodexRepository {
     return toThread(thread, mappedTurns);
   }
 
+  async removeTurns(threadId: string, turnIds: string[]) {
+    const normalizedTurnIds = Array.from(
+      new Set(
+        turnIds
+          .map((turnId) => (typeof turnId === "string" ? turnId.trim() : ""))
+          .filter((turnId) => turnId.length > 0)
+      )
+    );
+    if (normalizedTurnIds.length === 0) return;
+
+    const turnPlaceholders = normalizedTurnIds.map((_, idx) => `$${idx + 2}`).join(", ");
+    const turnParams: unknown[] = [threadId, ...normalizedTurnIds];
+
+    await this.pool.query(
+      `DELETE FROM items
+       WHERE thread_id=$1 AND turn_id IN (${turnPlaceholders})`,
+      turnParams as any[]
+    );
+
+    await this.pool.query(
+      `DELETE FROM turns
+       WHERE thread_id=$1 AND id IN (${turnPlaceholders})`,
+      turnParams as any[]
+    );
+
+    const eventRows = await this.pool.query<any>(
+      `SELECT id, event_json
+       FROM thread_events
+       WHERE thread_id=$1
+       ORDER BY created_at ASC, id ASC`,
+      [threadId]
+    );
+
+    const turnSet = new Set(normalizedTurnIds);
+    const eventIdsToDelete = eventRows.rows
+      .filter((row) => {
+        const turnId = extractTurnIdFromThreadEvent(row?.event_json);
+        return turnId ? turnSet.has(turnId) : false;
+      })
+      .map((row) => Number(row.id))
+      .filter((id) => Number.isFinite(id));
+
+    if (eventIdsToDelete.length > 0) {
+      const eventPlaceholders = eventIdsToDelete.map((_, idx) => `$${idx + 1}`).join(", ");
+      await this.pool.query(`DELETE FROM thread_events WHERE id IN (${eventPlaceholders})`, eventIdsToDelete as any[]);
+    }
+
+    await this.updateThread({ id: threadId, updatedAt: nowUnixSeconds() });
+    await this.rewriteThreadTranscript(threadId);
+  }
+
   async appendThreadEvent(args: { threadId: string; projectId?: string | null; event: Record<string, unknown>; createdAt?: number }) {
     const createdAt = args.createdAt ?? nowUnixSeconds();
     const payload = JSON.stringify(args.event);
@@ -421,6 +472,24 @@ export class CodexRepository {
   async removeSessionTranscript(projectId: string, sessionId: string) {
     await rm(sessionTranscriptPath({ stateDir: this.stateDir }, projectId, sessionId), { force: true });
   }
+
+  private async rewriteThreadTranscript(threadId: string) {
+    const thread = await this.getThreadRecord(threadId);
+    if (!thread) return;
+
+    const rows = await this.pool.query<any>(
+      `SELECT event_json
+       FROM thread_events
+       WHERE thread_id=$1
+       ORDER BY created_at ASC, id ASC`,
+      [threadId]
+    );
+
+    const logPath = threadTranscriptPath({ stateDir: this.stateDir }, { threadId, projectId: thread.projectId ?? undefined });
+    await mkdir(path.dirname(logPath), { recursive: true });
+    const content = rows.rows.map((row) => `${String(row.event_json ?? "{}")}\n`).join("");
+    await writeFile(logPath, content, "utf8");
+  }
 }
 
 function safeJsonParse<T>(raw: unknown): T | null {
@@ -430,6 +499,28 @@ function safeJsonParse<T>(raw: unknown): T | null {
   } catch {
     return null;
   }
+}
+
+function extractTurnIdFromThreadEvent(rawEvent: unknown): string | null {
+  const event = safeJsonParse<Record<string, unknown>>(rawEvent);
+  if (!event) return null;
+
+  const params = event.params;
+  if (!params || typeof params !== "object" || Array.isArray(params)) return null;
+  const paramsRecord = params as Record<string, unknown>;
+
+  const turnId = normalizeNonEmptyString(paramsRecord.turnId);
+  if (turnId) return turnId;
+
+  const turn = paramsRecord.turn;
+  if (!turn || typeof turn !== "object" || Array.isArray(turn)) return null;
+  return normalizeNonEmptyString((turn as Record<string, unknown>).id);
+}
+
+function normalizeNonEmptyString(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function mapThreadRow(row: any): CodexThreadRecord {

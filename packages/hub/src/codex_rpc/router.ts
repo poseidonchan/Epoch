@@ -17,7 +17,7 @@ import {
   handleLabosSessionUpdate,
 } from "./handlers/labos.js";
 import { handleModelList } from "./handlers/model.js";
-import { handleThreadList, handleThreadRead, handleThreadResume, handleThreadStart } from "./handlers/thread.js";
+import { handleThreadList, handleThreadRead, handleThreadResume, handleThreadRollback, handleThreadStart } from "./handlers/thread.js";
 import { handleTurnInterrupt, handleTurnStart } from "./handlers/turn.js";
 import type { CodexConnectionState } from "./connection_state.js";
 import type { CodexEngineRegistry } from "./engine_registry.js";
@@ -88,6 +88,11 @@ export class CodexRpcRouter {
         }
         case "thread/read": {
           const result = await handleThreadRead({ repository: this.repository, engines: this.engines }, params);
+          this.connection.sendResult(request.id, result);
+          return;
+        }
+        case "thread/rollback": {
+          const result = await handleThreadRollback({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
         }
@@ -302,7 +307,9 @@ export class CodexRpcRouter {
 
     const threadRecord = await this.repository.getThreadRecord(threadId);
     const projectId = threadRecord?.projectId ?? null;
-    const persistTurnItemState = threadRecord?.engine !== "codex-app-server";
+    // Persist turn/item lifecycle for all engines so sessions can switch backends
+    // without losing replayable history.
+    const persistTurnItemState = true;
 
     await this.repository.appendThreadEvent({
       threadId,

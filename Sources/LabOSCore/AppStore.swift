@@ -1482,6 +1482,20 @@ public final class AppStore: ObservableObject {
         chatService.retryMessage(projectID: projectID, sessionID: sessionID, fromMessageID: messageID, modelIdOverride: modelIdOverride)
     }
 
+    public func retryCodexAgentMessage(
+        projectID: UUID,
+        sessionID: UUID,
+        assistantItemID: String,
+        modelIdOverride: String? = nil
+    ) {
+        chatService.retryCodexAgentMessage(
+            projectID: projectID,
+            sessionID: sessionID,
+            assistantItemID: assistantItemID,
+            modelIdOverride: modelIdOverride
+        )
+    }
+
     public func overwriteUserMessage(
         projectID: UUID,
         sessionID: UUID,

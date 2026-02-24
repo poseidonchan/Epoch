@@ -80,6 +80,10 @@ export class CodexAppServerEngine implements CodexEngineSession {
     return await this.request("thread/list", params);
   }
 
+  async threadRollback(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return await this.request("thread/rollback", params);
+  }
+
   async modelList(params: Record<string, unknown>): Promise<Record<string, unknown>> {
     return await this.request("model/list", params);
   }

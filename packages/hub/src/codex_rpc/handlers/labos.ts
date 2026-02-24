@@ -5,7 +5,8 @@ import { v4 as uuidv4 } from "uuid";
 
 import type { CodexEngineRegistry } from "../engine_registry.js";
 import type { CodexRepository } from "../repository.js";
-import { nowUnixSeconds, type Thread } from "../types.js";
+import { nowUnixSeconds, previewFromText, type Thread, type ThreadItem } from "../types.js";
+import { maybePersistThreadFromResponse } from "./thread.js";
 
 type LabosHandlerContext = {
   repository: CodexRepository;
@@ -376,40 +377,33 @@ export async function handleLabosSessionUpdate(
 
   let sessionRow = sessionRows[0];
   const effectiveBackend = normalizeBackendEngine(sessionRow.backend_engine) ?? "pi";
-  let createdThread: Thread | null = null;
   const currentThreadId = normalizeNonEmptyString(sessionRow.codex_thread_id);
+  const modelProvider = normalizeNonEmptyString(sessionRow.codex_model_provider) ?? DEFAULT_MODEL_PROVIDER;
+  const modelId = normalizeNonEmptyString(sessionRow.codex_model);
+  const approvalPolicy = normalizeNonEmptyString(sessionRow.codex_approval_policy) ?? DEFAULT_APPROVAL_POLICY;
+  const sandbox = safeJsonParseObject(sessionRow.codex_sandbox_json) ?? normalizeSandboxPolicy(null) ?? {};
+  const nowIso = new Date().toISOString();
 
-  if (effectiveBackend === "codex-app-server" && !currentThreadId) {
-    const modelProvider = normalizeNonEmptyString(sessionRow.codex_model_provider) ?? DEFAULT_MODEL_PROVIDER;
-    const modelId = normalizeNonEmptyString(sessionRow.codex_model);
-    const approvalPolicy = normalizeNonEmptyString(sessionRow.codex_approval_policy) ?? DEFAULT_APPROVAL_POLICY;
-    const sandbox = safeJsonParseObject(sessionRow.codex_sandbox_json) ?? normalizeSandboxPolicy(null) ?? {};
-    const nowIso = new Date().toISOString();
+  const mappedThread = await ensureMappedThreadForSession(ctx, {
+    projectId,
+    sessionId,
+    backendEngine: effectiveBackend,
+    currentThreadId,
+    modelProvider,
+    modelId,
+    approvalPolicy,
+    sandbox,
+  });
 
-    createdThread = await createMappedThreadForSession(ctx.repository, ctx.engines, {
-      sessionId,
-      projectId,
-      backendEngine: "codex-app-server",
-      modelProvider,
-      modelId,
-      approvalPolicy,
-      sandbox,
-    });
-
-    await ctx.repository.query(
-      `UPDATE sessions SET codex_thread_id=$1, updated_at=$2 WHERE id=$3`,
-      [createdThread.id, nowIso, sessionId]
-    );
-  }
-
-  if (effectiveBackend !== "codex-app-server" && currentThreadId) {
-    const nowIso = new Date().toISOString();
+  await ctx.repository.assignThreadToSession({ threadId: mappedThread.id, sessionId });
+  if (currentThreadId && currentThreadId !== mappedThread.id) {
     await ctx.repository.assignThreadToSession({ threadId: currentThreadId, sessionId: null });
-    await ctx.repository.query(
-      `UPDATE sessions SET codex_thread_id=NULL, updated_at=$1 WHERE id=$2`,
-      [nowIso, sessionId]
-    );
   }
+
+  await ctx.repository.query(
+    `UPDATE sessions SET codex_thread_id=$1, updated_at=$2 WHERE id=$3`,
+    [mappedThread.id, nowIso, sessionId]
+  );
 
   const refreshedRows = await ctx.repository.query<any>(
     `SELECT * FROM sessions
@@ -422,7 +416,7 @@ export async function handleLabosSessionUpdate(
 
   return {
     session: mapSessionRow(sessionRow),
-    thread: createdThread,
+    thread: mappedThread,
   };
 }
 
@@ -799,6 +793,397 @@ async function createMappedThreadForSession(
     gitInfo: null,
     turns: [],
   };
+}
+
+async function ensureMappedThreadForSession(
+  ctx: LabosHandlerContext,
+  args: {
+    projectId: string;
+    sessionId: string;
+    backendEngine: "pi" | "codex-app-server";
+    currentThreadId: string | null;
+    modelProvider: string;
+    modelId: string | null;
+    approvalPolicy: string;
+    sandbox: Record<string, unknown>;
+  }
+): Promise<Thread> {
+  const settings = {
+    modelProvider: args.modelProvider,
+    model: args.modelId,
+    cwd: resolveProjectWorkspacePath(args.projectId),
+    approvalPolicy: args.approvalPolicy,
+    sandbox: args.sandbox,
+    reasoningEffort: null,
+  };
+
+  if (args.backendEngine === "pi") {
+    if (args.currentThreadId) {
+      const existing = await ctx.repository.getThreadRecord(args.currentThreadId);
+      if (existing) {
+        if (existing.engine === "codex-app-server") {
+          const codexEngine = await ctx.engines.getEngine("codex-app-server");
+          if (codexEngine.threadRead) {
+            try {
+              const proxied = await codexEngine.threadRead({
+                threadId: args.currentThreadId,
+                includeTurns: true,
+              });
+              await maybePersistThreadFromResponse(ctx.repository, proxied, "codex-app-server");
+            } catch {
+              // best effort: switching should still proceed with available local state.
+            }
+          }
+        }
+
+        await ctx.repository.updateThread({
+          id: args.currentThreadId,
+          modelProvider: args.modelProvider,
+          modelId: args.modelId,
+          cwd: settings.cwd,
+          statusJson: JSON.stringify(settings),
+          engine: "pi",
+          updatedAt: nowUnixSeconds(),
+        });
+
+        const thread = await ctx.repository.readThread(args.currentThreadId, true);
+        if (thread) return thread;
+      }
+    }
+
+    const created = await createMappedThreadForSession(ctx.repository, ctx.engines, {
+      sessionId: args.sessionId,
+      projectId: args.projectId,
+      backendEngine: "pi",
+      modelProvider: args.modelProvider,
+      modelId: args.modelId,
+      approvalPolicy: args.approvalPolicy,
+      sandbox: args.sandbox,
+    });
+    await hydratePiThreadFromLegacyMessages(ctx.repository, args.projectId, args.sessionId, created.id);
+    const hydrated = await ctx.repository.readThread(created.id, true);
+    return hydrated ?? created;
+  }
+
+  if (args.currentThreadId) {
+    const existing = await ctx.repository.getThreadRecord(args.currentThreadId);
+    if (existing?.engine === "codex-app-server") {
+      await ctx.repository.updateThread({
+        id: existing.id,
+        modelProvider: args.modelProvider,
+        modelId: args.modelId,
+        cwd: settings.cwd,
+        statusJson: JSON.stringify(settings),
+        engine: "codex-app-server",
+        updatedAt: nowUnixSeconds(),
+      });
+      const thread = await ctx.repository.readThread(existing.id, true);
+      if (thread) return thread;
+    }
+  }
+
+  const created = await createMappedThreadForSession(ctx.repository, ctx.engines, {
+    sessionId: args.sessionId,
+    projectId: args.projectId,
+    backendEngine: "codex-app-server",
+    modelProvider: args.modelProvider,
+    modelId: args.modelId,
+    approvalPolicy: args.approvalPolicy,
+    sandbox: args.sandbox,
+  });
+
+  const history = await buildSessionHistoryForCodex(ctx.repository, args.projectId, args.sessionId, args.currentThreadId);
+  if (history.length === 0) {
+    return created;
+  }
+
+  const codexEngine = await ctx.engines.getEngine("codex-app-server");
+  if (!codexEngine.threadResume) {
+    return created;
+  }
+
+  const sandboxMode = toCodexSandboxMode(args.sandbox);
+  let resumed: Record<string, unknown>;
+  try {
+    resumed = await codexEngine.threadResume({
+      threadId: created.id,
+      history,
+      cwd: settings.cwd,
+      modelProvider: args.modelProvider,
+      ...(args.modelId ? { model: args.modelId } : {}),
+      approvalPolicy: args.approvalPolicy,
+      ...(sandboxMode ? { sandbox: sandboxMode } : {}),
+    });
+  } catch {
+    return created;
+  }
+  await maybePersistThreadFromResponse(ctx.repository, resumed, "codex-app-server");
+
+  const resumedThreadRaw = (resumed.thread ?? null) as Record<string, unknown> | null;
+  const resumedThreadId = normalizeNonEmptyString(resumedThreadRaw?.id);
+  if (!resumedThreadId) {
+    return created;
+  }
+
+  if (resumedThreadId !== created.id) {
+    await ctx.repository.assignThreadToSession({ threadId: created.id, sessionId: null });
+  }
+
+  const persisted = await ctx.repository.getThreadRecord(resumedThreadId);
+  if (!persisted) {
+    const createdAt = Number(resumedThreadRaw?.createdAt ?? nowUnixSeconds());
+    await ctx.repository.createThread({
+      id: resumedThreadId,
+      projectId: args.projectId,
+      cwd: normalizeNonEmptyString(resumedThreadRaw?.cwd) ?? settings.cwd,
+      modelProvider: normalizeNonEmptyString(resumedThreadRaw?.modelProvider) ?? args.modelProvider,
+      modelId: args.modelId,
+      preview: normalizeNonEmptyString(resumedThreadRaw?.preview) ?? "",
+      statusJson: JSON.stringify(settings),
+      engine: "codex-app-server",
+      createdAt,
+    });
+  } else {
+    await ctx.repository.updateThread({
+      id: resumedThreadId,
+      modelProvider: args.modelProvider,
+      modelId: args.modelId,
+      cwd: settings.cwd,
+      statusJson: JSON.stringify(settings),
+      engine: "codex-app-server",
+      updatedAt: nowUnixSeconds(),
+    });
+  }
+
+  const thread = await ctx.repository.readThread(resumedThreadId, true);
+  return (
+    thread ?? {
+      ...created,
+      id: resumedThreadId,
+    }
+  );
+}
+
+async function buildSessionHistoryForCodex(
+  repository: CodexRepository,
+  projectId: string,
+  sessionId: string,
+  currentThreadId: string | null
+): Promise<Array<Record<string, unknown>>> {
+  if (currentThreadId) {
+    const thread = await repository.readThread(currentThreadId, true);
+    if (thread && thread.turns.length > 0) {
+      const fromThread = responseHistoryFromThread(thread);
+      if (fromThread.length > 0) return fromThread;
+    }
+  }
+  return await responseHistoryFromLegacyMessages(repository, projectId, sessionId);
+}
+
+function responseHistoryFromThread(thread: Thread): Array<Record<string, unknown>> {
+  const history: Array<Record<string, unknown>> = [];
+  for (const turn of thread.turns) {
+    for (const item of turn.items) {
+      appendResponseItemsFromThreadItem(history, item);
+    }
+  }
+  return history;
+}
+
+function appendResponseItemsFromThreadItem(history: Array<Record<string, unknown>>, item: ThreadItem) {
+  if (item.type === "userMessage") {
+    const content: Array<Record<string, unknown>> = [];
+    for (const part of item.content) {
+      if (part.type === "text") {
+        const text = String(part.text ?? "").trim();
+        if (text) {
+          content.push({ type: "input_text", text });
+        }
+        continue;
+      }
+      if (part.type === "image") {
+        const imageUrl = String(part.url ?? "").trim();
+        if (imageUrl) {
+          content.push({ type: "input_image", image_url: imageUrl });
+        }
+        continue;
+      }
+      if (part.type === "localImage") {
+        const localPath = String(part.path ?? "").trim();
+        if (localPath) {
+          const imageUrl = localPath.startsWith("file://") ? localPath : `file://${localPath}`;
+          content.push({ type: "input_image", image_url: imageUrl });
+        }
+      }
+    }
+    if (content.length > 0) {
+      history.push({
+        type: "message",
+        role: "user",
+        content,
+        end_turn: true,
+      });
+    }
+    return;
+  }
+
+  if (item.type === "agentMessage") {
+    const text = String(item.text ?? "").trim();
+    if (!text) return;
+    history.push({
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text }],
+      end_turn: true,
+    });
+    return;
+  }
+
+  if (item.type === "plan") {
+    const text = String(item.text ?? "").trim();
+    if (!text) return;
+    history.push({
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text }],
+      end_turn: true,
+    });
+  }
+}
+
+async function responseHistoryFromLegacyMessages(
+  repository: CodexRepository,
+  projectId: string,
+  sessionId: string
+): Promise<Array<Record<string, unknown>>> {
+  const rows = await repository.query<any>(
+    `SELECT role, content
+     FROM messages
+     WHERE project_id=$1 AND session_id=$2
+     ORDER BY ts ASC, id ASC`,
+    [projectId, sessionId]
+  );
+
+  const history: Array<Record<string, unknown>> = [];
+  for (const row of rows) {
+    const role = normalizeNonEmptyString(row.role)?.toLowerCase() ?? "";
+    const contentText = String(row.content ?? "").trim();
+    if (!contentText) continue;
+    if (role === "user") {
+      history.push({
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: contentText }],
+        end_turn: true,
+      });
+      continue;
+    }
+    if (role === "assistant" || role === "system") {
+      history.push({
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: contentText }],
+        end_turn: true,
+      });
+    }
+  }
+  return history;
+}
+
+async function hydratePiThreadFromLegacyMessages(
+  repository: CodexRepository,
+  projectId: string,
+  sessionId: string,
+  threadId: string
+) {
+  const existing = await repository.readThread(threadId, true);
+  if (existing && existing.turns.length > 0) {
+    return;
+  }
+
+  const rows = await repository.query<any>(
+    `SELECT id, role, content, ts
+     FROM messages
+     WHERE project_id=$1 AND session_id=$2
+     ORDER BY ts ASC, id ASC`,
+    [projectId, sessionId]
+  );
+  if (rows.length === 0) {
+    return;
+  }
+
+  let activeTurnId: string | null = null;
+  for (const row of rows) {
+    const role = normalizeNonEmptyString(row.role)?.toLowerCase() ?? "";
+    const content = String(row.content ?? "");
+    const messageId = normalizeNonEmptyString(row.id) ?? uuidv4();
+    const timestamp = toUnixSeconds(row.ts);
+
+    if (role === "user") {
+      activeTurnId = `turn_${messageId.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+      await repository.createTurn({
+        id: activeTurnId,
+        threadId,
+        status: "inProgress",
+        error: null,
+        createdAt: timestamp,
+      });
+      const userItem: ThreadItem = {
+        type: "userMessage",
+        id: `item_${messageId.replace(/[^a-zA-Z0-9_-]/g, "_")}`,
+        content: [{ type: "text", text: content, text_elements: [] }],
+      };
+      await repository.upsertItem({
+        id: userItem.id,
+        threadId,
+        turnId: activeTurnId,
+        type: userItem.type,
+        payload: userItem,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      continue;
+    }
+
+    if (role === "assistant" && activeTurnId) {
+      const assistantItem: ThreadItem = {
+        type: "agentMessage",
+        id: `item_${messageId.replace(/[^a-zA-Z0-9_-]/g, "_")}`,
+        text: content,
+      };
+      await repository.upsertItem({
+        id: assistantItem.id,
+        threadId,
+        turnId: activeTurnId,
+        type: assistantItem.type,
+        payload: assistantItem,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      await repository.updateTurn({
+        id: activeTurnId,
+        status: "completed",
+        completedAt: timestamp,
+        touchThreadId: threadId,
+      });
+      await repository.updateThread({
+        id: threadId,
+        preview: previewFromText(content),
+        updatedAt: timestamp,
+      });
+    }
+  }
+}
+
+function toUnixSeconds(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.floor(value);
+  }
+  const parsed = Date.parse(String(value ?? ""));
+  if (!Number.isFinite(parsed)) {
+    return nowUnixSeconds();
+  }
+  return Math.floor(parsed / 1000);
 }
 
 async function ensureBootstrapDefaults(stateDir: string, projectId: string) {
