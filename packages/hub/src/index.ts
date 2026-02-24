@@ -6,7 +6,6 @@ export * from "./codex_rpc/types.js";
 export * from "./codex_rpc/backpressure.js";
 export * from "./codex_rpc/connection_state.js";
 export * from "./codex_rpc/engine_registry.js";
-export * from "./codex_rpc/engines/pi_adapter.js";
 export * from "./codex_rpc/payload_shapes.js";
 export * from "./codex_rpc/handlers/initialize.js";
 export * from "./codex_rpc/handlers/thread.js";

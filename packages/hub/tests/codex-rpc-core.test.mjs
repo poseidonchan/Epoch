@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { BoundedWorkQueue, CodexConnectionState, handleInitialize, updateThreadPreviewFromItems } from "../dist/index.js";
+import { BoundedWorkQueue, CodexConnectionState, CodexEngineRegistry, handleInitialize, normalizeEngineName, updateThreadPreviewFromItems } from "../dist/index.js";
 
 test("handleInitialize stores capabilities and supports optOutNotificationMethods extension", () => {
   const sent = [];
@@ -95,6 +95,76 @@ test("updateThreadPreviewFromItems prefers latest user text and falls back to as
   ]);
 
   assert.equal(preview, "Most recent user question");
+});
+
+test("engine normalization and defaults are codex-only", async () => {
+  assert.equal(normalizeEngineName("codex"), "codex-app-server");
+  assert.equal(normalizeEngineName("codex-app-server"), "codex-app-server");
+  assert.equal(normalizeEngineName("pi"), "codex-app-server");
+  assert.equal(normalizeEngineName("pi-adapter"), "codex-app-server");
+
+  const registry = new CodexEngineRegistry({
+    config: null,
+    stateDir: "/tmp",
+  });
+  assert.equal(registry.defaultEngineName(), "codex-app-server");
+  await registry.close();
+});
+
+test("CodexConnectionState replays unresolved server requests to replacement websocket and tracks pending by session", async () => {
+  const ws1Sent = [];
+  const ws2Sent = [];
+
+  const ws1 = {
+    send(payload) {
+      ws1Sent.push(JSON.parse(payload));
+    },
+    close() {},
+  };
+  const ws2 = {
+    send(payload) {
+      ws2Sent.push(JSON.parse(payload));
+    },
+    close() {},
+  };
+
+  const conn = new CodexConnectionState(ws1, { maxIngressQueueDepth: 8 });
+  const pendingPromise = conn.sendServerRequest(
+    "item/tool/requestUserInput",
+    {
+      threadId: "thr_replay_1",
+      turnId: "turn_replay_1",
+      itemId: "item_prompt_1",
+      questions: [],
+    },
+    undefined,
+    "req_replay_1",
+    {
+      sessionId: "session_replay_1",
+      kind: "prompt",
+    }
+  );
+
+  assert.equal(ws1Sent.length, 1);
+  assert.equal(ws1Sent[0].id, "req_replay_1");
+  assert.equal(conn.pendingUserInputSummaryMap().get("session_replay_1")?.count, 1);
+
+  conn.attachWebSocket(ws2);
+
+  assert.equal(ws2Sent.length, 1);
+  assert.equal(ws2Sent[0].id, "req_replay_1");
+  assert.equal(ws2Sent[0].method, "item/tool/requestUserInput");
+
+  const handled = conn.handleClientResponse({
+    id: "req_replay_1",
+    result: {
+      answers: {},
+    },
+  });
+  assert.equal(handled, true);
+  await pendingPromise;
+
+  assert.equal(conn.pendingUserInputSummaryMap().get("session_replay_1"), undefined);
 });
 
 function deferred() {

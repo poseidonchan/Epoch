@@ -18,7 +18,7 @@ import {
 } from "./handlers/labos.js";
 import { handleModelList } from "./handlers/model.js";
 import { handleThreadList, handleThreadRead, handleThreadResume, handleThreadRollback, handleThreadStart } from "./handlers/thread.js";
-import { handleTurnInterrupt, handleTurnStart } from "./handlers/turn.js";
+import { handleTurnInterrupt, handleTurnStart, handleTurnSteer } from "./handlers/turn.js";
 import type { CodexConnectionState } from "./connection_state.js";
 import type { CodexEngineRegistry } from "./engine_registry.js";
 import type { CodexRepository } from "./repository.js";
@@ -125,6 +125,11 @@ export class CodexRpcRouter {
           this.connection.sendResult(request.id, result);
           return;
         }
+        case "turn/steer": {
+          const result = await handleTurnSteer({ repository: this.repository, engines: this.engines }, params);
+          this.connection.sendResult(request.id, result);
+          return;
+        }
         case "model/list": {
           const result = await handleModelList({ engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
@@ -151,7 +156,14 @@ export class CodexRpcRouter {
           return;
         }
         case "labos/session/list": {
-          const result = await handleLabosSessionList({ repository: this.repository, engines: this.engines }, params);
+          const result = await handleLabosSessionList(
+            {
+              repository: this.repository,
+              engines: this.engines,
+              pendingUserInputSummaryBySession: this.connection.pendingUserInputSummaryMap(),
+            },
+            params
+          );
           this.connection.sendResult(request.id, result);
           return;
         }
@@ -171,7 +183,14 @@ export class CodexRpcRouter {
           return;
         }
         case "labos/session/read": {
-          const result = await handleLabosSessionRead({ repository: this.repository, engines: this.engines }, params);
+          const result = await handleLabosSessionRead(
+            {
+              repository: this.repository,
+              engines: this.engines,
+              pendingUserInputSummaryBySession: this.connection.pendingUserInputSummaryMap(),
+            },
+            params
+          );
           this.connection.sendResult(request.id, result);
           return;
         }
@@ -234,7 +253,7 @@ export class CodexRpcRouter {
     threadId: string;
     turnId: string;
     seedTurn: Turn;
-    events: AsyncIterable<{ type: string; method: string; params: Record<string, unknown>; respond?: (response: { result?: unknown; error?: { code: number; message: string; data?: unknown } }) => Promise<void> }>;
+    events: AsyncIterable<{ type: string; id?: string | number; method: string; params: Record<string, unknown>; respond?: (response: { result?: unknown; error?: { code: number; message: string; data?: unknown } }) => Promise<void> }>;
   }) {
     let sawTurnCompleted = false;
 
@@ -250,7 +269,20 @@ export class CodexRpcRouter {
 
         if (event.type === "serverRequest") {
           try {
-            const response = await this.connection.sendServerRequest(event.method, event.params, 5 * 60_000, event.id);
+            const sessionMapping = await this.repository.findSessionByThread(args.threadId);
+            const pendingKind = pendingInputKindForMethod(event.method);
+            const response = await this.connection.sendServerRequest(
+              event.method,
+              event.params,
+              5 * 60_000,
+              event.id,
+              pendingKind && sessionMapping
+                ? {
+                    sessionId: sessionMapping.sessionId,
+                    kind: pendingKind,
+                  }
+                : undefined
+            );
             if (event.respond) {
               await event.respond({ result: response });
             }
@@ -325,17 +357,12 @@ export class CodexRpcRouter {
       const turn = params.turn as Record<string, unknown> | undefined;
       const turnId = normalizeNonEmptyString(turn?.id);
       if (turnId) {
-        try {
-          await this.repository.createTurn({
-            id: turnId,
-            threadId,
-            status: normalizeTurnStatus(turn?.status),
-            error: normalizeTurnError(turn?.error),
-            createdAt: nowUnixSeconds(),
-          });
-        } catch {
-          // Turn may already exist if this was created before the stream started.
-        }
+        await this.resolveOrCreatePersistedTurnId({
+          threadId,
+          rawTurnId: turnId,
+          status: normalizeTurnStatus(turn?.status),
+          error: normalizeTurnError(turn?.error),
+        });
       }
     }
 
@@ -345,10 +372,17 @@ export class CodexRpcRouter {
       const itemId = normalizeNonEmptyString(itemRaw?.id);
       const itemType = normalizeNonEmptyString(itemRaw?.type);
       if (turnId && itemId && itemType) {
-        await this.repository.upsertItem({
-          id: itemId,
+        const persistedTurnId = await this.resolveOrCreatePersistedTurnId({
           threadId,
-          turnId,
+          rawTurnId: turnId,
+          status: "inProgress",
+          error: null,
+        });
+
+        await this.repository.upsertItem({
+          id: scopedItemId(threadId, itemId),
+          threadId,
+          turnId: persistedTurnId,
           type: itemType,
           payload: itemRaw as ThreadItem,
           updatedAt: nowUnixSeconds(),
@@ -396,9 +430,16 @@ export class CodexRpcRouter {
       const turn = params.turn as Record<string, unknown> | undefined;
       const turnId = normalizeNonEmptyString(turn?.id);
       if (turnId) {
+        const persistedTurnId = await this.resolveOrCreatePersistedTurnId({
+          threadId,
+          rawTurnId: turnId,
+          status: normalizeTurnStatus(turn?.status),
+          error: normalizeTurnError(turn?.error),
+        });
+
         if (persistTurnItemState) {
           await this.repository.updateTurn({
-            id: turnId,
+            id: persistedTurnId,
             status: normalizeTurnStatus(turn?.status),
             error: normalizeTurnError(turn?.error),
             completedAt: nowUnixSeconds(),
@@ -441,6 +482,40 @@ export class CodexRpcRouter {
     this.connection.sendNotification(method, params);
   }
 
+  private async resolveOrCreatePersistedTurnId(args: {
+    threadId: string;
+    rawTurnId: string;
+    status: TurnStatus;
+    error: { message: string; codexErrorInfo: unknown | null; additionalDetails: string | null } | null;
+  }): Promise<string> {
+    const rawTurnId = args.rawTurnId.trim();
+    const scoped = scopedTurnId(args.threadId, rawTurnId);
+    const existing = await this.repository.query<{ id: string }>(
+      `SELECT id
+       FROM turns
+       WHERE thread_id=$1 AND (id=$2 OR id=$3)
+       ORDER BY CASE WHEN id=$2 THEN 0 ELSE 1 END
+       LIMIT 1`,
+      [args.threadId, scoped, rawTurnId]
+    );
+    if (existing.length > 0) {
+      return String(existing[0]?.id ?? scoped);
+    }
+
+    try {
+      await this.repository.createTurn({
+        id: scoped,
+        threadId: args.threadId,
+        status: args.status,
+        error: args.error,
+        createdAt: nowUnixSeconds(),
+      });
+    } catch {
+      // Another event may create the same row first.
+    }
+    return scoped;
+  }
+
   private async onItemCompleted(args: { threadId: string; turnId: string; item: ThreadItem }) {
     const aggregator = this.turnAggregators.get(args.turnId) ?? new TurnAggregationState();
     const diffChanged = aggregator.ingestCompletedItem(args.item);
@@ -454,6 +529,16 @@ export class CodexRpcRouter {
       });
     }
   }
+}
+
+function pendingInputKindForMethod(method: string): string | null {
+  if (method === "item/tool/requestUserInput") {
+    return "prompt";
+  }
+  if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
+    return "approval";
+  }
+  return null;
 }
 
 function normalizeParams(raw: unknown): Record<string, unknown> {
@@ -521,6 +606,22 @@ function normalizeNumericTokenCount(raw: unknown): number | null {
     }
   }
   return null;
+}
+
+function scopedTurnId(threadId: string, turnId: string): string {
+  const normalizedThread = threadId.trim();
+  const normalizedTurn = turnId.trim();
+  if (!normalizedThread || !normalizedTurn) return normalizedTurn;
+  const prefix = `${normalizedThread}::turn::`;
+  return normalizedTurn.startsWith(prefix) ? normalizedTurn : `${prefix}${normalizedTurn}`;
+}
+
+function scopedItemId(threadId: string, itemId: string): string {
+  const normalizedThread = threadId.trim();
+  const normalizedItem = itemId.trim();
+  if (!normalizedThread || !normalizedItem) return normalizedItem;
+  const prefix = `${normalizedThread}::item::`;
+  return normalizedItem.startsWith(prefix) ? normalizedItem : `${prefix}${normalizedItem}`;
 }
 
 function isThreadPayload(value: unknown): value is Thread {

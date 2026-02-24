@@ -159,6 +159,7 @@ export class CodexAppServerEngine implements CodexEngineSession {
         ...(args.cwd ? { cwd: args.cwd } : {}),
         ...(args.model ? { model: args.model } : {}),
         approvalPolicy: args.approvalPolicy,
+        ...(args.collaborationMode ? { collaborationMode: args.collaborationMode } : {}),
       });
 
       const turnRaw = (result.turn ?? null) as Record<string, unknown> | null;
@@ -182,6 +183,14 @@ export class CodexAppServerEngine implements CodexEngineSession {
     await this.request("turn/interrupt", {
       threadId: args.threadId,
       turnId: args.turnId,
+    });
+  }
+
+  async steerTurn(args: { threadId: string; turnId: string; text: string }): Promise<Record<string, unknown>> {
+    return await this.request("turn/steer", {
+      threadId: args.threadId,
+      turnId: args.turnId,
+      text: args.text,
     });
   }
 

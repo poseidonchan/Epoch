@@ -36,7 +36,8 @@ import {
   sanitizeFilename,
 } from "./utils/normalize.js";
 import { sleep, toIso } from "./utils/time.js";
-import { attachCodexTransport, extractCodexAuthToken } from "./codex_rpc/transport.js";
+import { attachCodexTransport, closeAllCodexTransports, extractCodexAuthToken } from "./codex_rpc/transport.js";
+import { CodexRepository } from "./codex_rpc/repository.js";
 import {
   buildProjectFileContextStream,
   getProjectFileIndexRecord,
@@ -62,6 +63,7 @@ type OAuthProvider = {
 let streamSimpleLoader: Promise<(model: any, context: any, options?: any) => AsyncIterable<any>> | null = null;
 let oauthProviderLoader: Promise<(id: string) => OAuthProvider | undefined> | null = null;
 let agentRuntimeLoader: Promise<(opts: any) => Promise<void>> | null = null;
+const LEGACY_RUNTIME_ENABLED = (process.env.LABOS_ENABLE_LEGACY_RUNTIME ?? "0") === "1";
 
 function loadStreamSimple() {
   if (!streamSimpleLoader) {
@@ -78,6 +80,9 @@ function loadOAuthProvider() {
 }
 
 function loadRunLabosAgentTurn() {
+  if (!LEGACY_RUNTIME_ENABLED) {
+    return Promise.reject(new Error("Legacy runtime is disabled. Use the /codex endpoint."));
+  }
   if (!agentRuntimeLoader) {
     const runtimeModulePath = "./agent/runtime.js";
     agentRuntimeLoader = import(runtimeModulePath).then((mod) => mod.runLabosAgentTurn as any);
@@ -200,6 +205,23 @@ export async function startHub(opts: HubStartOptions): Promise<HubHandle> {
     });
   }
 
+  if ((process.env.LABOS_CODEX_BACKFILL_ON_START ?? "1") !== "0") {
+    const codexRepository = new CodexRepository({
+      pool: opts.pool,
+      stateDir: opts.stateDir,
+    });
+    await codexRepository
+      .backfillSessionsMissingThreadMappings({
+        staleInProgressThresholdSeconds: 10 * 60,
+      })
+      .then((summary) => {
+        fastify.log.info({ summary }, "codex session/thread backfill completed");
+      })
+      .catch((err) => {
+        fastify.log.error({ err }, "codex session/thread backfill failed");
+      });
+  }
+
   registerHttpRoutes(fastify, state);
 
   const legacyWss = new WebSocketServer({ noServer: true });
@@ -288,6 +310,8 @@ export async function startHub(opts: HubStartOptions): Promise<HubHandle> {
         resolve();
       }
     });
+
+    await closeAllCodexTransports();
 
     await fastify.close();
   };
@@ -1191,7 +1215,7 @@ async function listProjects(state: HubState) {
     name: r.name,
     createdAt: toIso(r.created_at),
     updatedAt: toIso(r.updated_at),
-    backendEngine: normalizeCodexEngine(r.backend_engine) ?? "pi",
+    backendEngine: normalizeCodexEngine(r.backend_engine) ?? "codex-app-server",
     codexModelProvider: normalizeOptionalString(r.codex_model_provider),
     codexModel: normalizeOptionalString(r.codex_model_id),
     codexApprovalPolicy: normalizeOptionalString(r.codex_approval_policy),
@@ -1204,7 +1228,7 @@ async function listProjects(state: HubState) {
 async function createProject(state: HubState, name: string) {
   const id = uuidv4();
   const now = new Date().toISOString();
-  const backendEngine = normalizeCodexEngine(process.env.LABOS_CODEX_DEFAULT_ENGINE) ?? "pi";
+  const backendEngine = normalizeCodexEngine(process.env.LABOS_CODEX_DEFAULT_ENGINE) ?? "codex-app-server";
   const workspacePath = resolveProjectWorkspacePath(state, id);
   await state.pool.query(
     `INSERT INTO projects (
@@ -1267,7 +1291,7 @@ async function deleteProject(state: HubState, projectId: string) {
     name: row.name,
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
-    backendEngine: normalizeCodexEngine(row.backend_engine) ?? "pi",
+    backendEngine: normalizeCodexEngine(row.backend_engine) ?? "codex-app-server",
     codexModelProvider: normalizeOptionalString(row.codex_model_provider),
     codexModel: normalizeOptionalString(row.codex_model_id),
     codexApprovalPolicy: normalizeOptionalString(row.codex_approval_policy),
@@ -1289,7 +1313,7 @@ async function listSessions(state: HubState, projectId: string, opts: { includeA
     lifecycle: r.lifecycle,
     createdAt: toIso(r.created_at),
     updatedAt: toIso(r.updated_at),
-    backendEngine: normalizeCodexEngine(r.backend_engine) ?? "pi",
+    backendEngine: normalizeCodexEngine(r.backend_engine) ?? "codex-app-server",
     codexThreadId: normalizeOptionalString(r.codex_thread_id),
     codexModel: normalizeOptionalString(r.codex_model),
     codexModelProvider: normalizeOptionalString(r.codex_model_provider),
@@ -1328,7 +1352,7 @@ async function createSession(state: HubState, projectId: string, titleRaw: strin
       "active",
       now,
       now,
-      normalizeCodexEngine(projectRow.backend_engine) ?? "pi",
+      normalizeCodexEngine(projectRow.backend_engine) ?? "codex-app-server",
       null,
       normalizeOptionalString(projectRow.codex_model_id),
       normalizeOptionalString(projectRow.codex_model_provider),
@@ -1353,7 +1377,7 @@ async function createSession(state: HubState, projectId: string, titleRaw: strin
     lifecycle: "active",
     createdAt: now,
     updatedAt: now,
-    backendEngine: normalizeCodexEngine(projectRow.backend_engine) ?? "pi",
+    backendEngine: normalizeCodexEngine(projectRow.backend_engine) ?? "codex-app-server",
     codexThreadId: null,
     codexModel: normalizeOptionalString(projectRow.codex_model_id),
     codexModelProvider: normalizeOptionalString(projectRow.codex_model_provider),
@@ -1370,7 +1394,7 @@ async function updateSession(
   patch: {
     title?: string;
     lifecycle?: string;
-    backendEngine?: "pi" | "codex-app-server";
+    backendEngine?: "codex-app-server";
     codexModel?: string | null;
     codexModelProvider?: string | null;
     codexApprovalPolicy?: string | null;
@@ -1388,7 +1412,7 @@ async function updateSession(
     updates.push(`lifecycle=$${idx++}`);
     args.push(patch.lifecycle);
   }
-  if (patch.backendEngine === "pi" || patch.backendEngine === "codex-app-server") {
+  if (patch.backendEngine === "codex-app-server") {
     updates.push(`backend_engine=$${idx++}`);
     args.push(patch.backendEngine);
   }
@@ -1426,7 +1450,7 @@ async function updateSession(
     lifecycle: r.lifecycle,
     createdAt: toIso(r.created_at),
     updatedAt: toIso(r.updated_at),
-    backendEngine: normalizeCodexEngine(r.backend_engine) ?? "pi",
+    backendEngine: normalizeCodexEngine(r.backend_engine) ?? "codex-app-server",
     codexThreadId: normalizeOptionalString(r.codex_thread_id),
     codexModel: normalizeOptionalString(r.codex_model),
     codexModelProvider: normalizeOptionalString(r.codex_model_provider),
@@ -1538,7 +1562,7 @@ async function deleteSession(state: HubState, projectId: string, sessionId: stri
     lifecycle: r.lifecycle,
     createdAt: toIso(r.created_at),
     updatedAt: toIso(r.updated_at),
-    backendEngine: normalizeCodexEngine(r.backend_engine) ?? "pi",
+    backendEngine: normalizeCodexEngine(r.backend_engine) ?? "codex-app-server",
     codexThreadId: normalizeOptionalString(r.codex_thread_id),
     codexModel: normalizeOptionalString(r.codex_model),
     codexModelProvider: normalizeOptionalString(r.codex_model_provider),
@@ -4039,10 +4063,10 @@ function mapSlurmState(stateStr: string) {
   return { status: "queued", logSnippet: s || "Queued", completed: false };
 }
 
-function normalizeCodexEngine(raw: unknown): "pi" | "codex-app-server" | null {
+function normalizeCodexEngine(raw: unknown): "codex-app-server" | null {
   if (typeof raw !== "string") return null;
   const value = raw.trim().toLowerCase();
-  if (value === "pi" || value === "pi-adapter") return "pi";
+  if (value === "pi" || value === "pi-adapter") return "codex-app-server";
   if (value === "codex" || value === "codex-app-server") return "codex-app-server";
   return null;
 }
@@ -4226,6 +4250,11 @@ function oauthProviderToModelProvider(oauthProviderId: string): string | null {
 async function getApiKeyForProvider(state: HubState, provider: string): Promise<string | undefined> {
   const p = String(provider ?? "").trim();
   if (!p) return undefined;
+
+  const configuredProviderKey = state.config.providerApiKeys?.[p];
+  if (typeof configuredProviderKey === "string" && configuredProviderKey.trim().length > 0) {
+    return configuredProviderKey.trim();
+  }
 
   const ai = state.config.ai;
   const auth = ai?.auth;

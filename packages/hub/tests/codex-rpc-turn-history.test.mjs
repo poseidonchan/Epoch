@@ -3,7 +3,349 @@ import assert from "node:assert/strict";
 
 import { handleTurnStart } from "../dist/index.js";
 
-test("handleTurnStart passes prior turns into engine startTurn for pi threads", async () => {
+test("handleTurnStart forwards plan mode as collaborationMode=plan", async () => {
+  const threadId = "123e4567-e89b-12d3-a456-426614174111";
+  const thread = {
+    id: threadId,
+    preview: "",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 1,
+    path: null,
+    cwd: "/tmp/project",
+    cliVersion: "@labos/hub/0.1.0",
+    source: "appServer",
+    gitInfo: null,
+    turns: [],
+  };
+
+  let capturedStartArgs = null;
+
+  const repository = {
+    async query() {
+      return [];
+    },
+    async getThreadRecord(id) {
+      assert.equal(id, threadId);
+      return {
+        id: threadId,
+        projectId: "proj_1",
+        cwd: "/tmp/project",
+        modelProvider: "openai",
+        modelId: "gpt-5.3-codex",
+        preview: "",
+        createdAt: 1,
+        updatedAt: 1,
+        archived: false,
+        statusJson: JSON.stringify({
+          modelProvider: "openai",
+          model: "gpt-5.3-codex",
+          cwd: "/tmp/project",
+          approvalPolicy: "on-request",
+          sandbox: { mode: "workspace-write" },
+          reasoningEffort: null,
+        }),
+        engine: "codex-app-server",
+      };
+    },
+    async readThread(id) {
+      assert.equal(id, threadId);
+      return JSON.parse(JSON.stringify(thread));
+    },
+    async updateThread() {},
+    async createTurn() {},
+    async upsertItem() {},
+  };
+
+  const engines = {
+    async getEngine(name) {
+      assert.equal(name, "codex-app-server");
+      return {
+        async startTurn(args) {
+          capturedStartArgs = args;
+          return {
+            turn: {
+              id: args.turnId,
+              items: [],
+              status: "inProgress",
+              error: null,
+            },
+            events: emptyEvents(),
+          };
+        },
+      };
+    },
+  };
+
+  await handleTurnStart(
+    {
+      repository,
+      engines,
+    },
+    {
+      threadId,
+      input: [{ type: "text", text: "plan this change" }],
+      planMode: true,
+    }
+  );
+
+  assert.ok(capturedStartArgs);
+  assert.equal(capturedStartArgs.collaborationMode.mode, "plan");
+  assert.equal(capturedStartArgs.collaborationMode.settings.model, "gpt-5.3-codex");
+});
+
+test("handleTurnStart injects indexed project snippets into turn input", async () => {
+  const originalApiKey = process.env.OPENAI_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+
+  try {
+    const threadId = "123e4567-e89b-12d3-a456-426614174113";
+    const thread = {
+      id: threadId,
+      preview: "",
+      modelProvider: "openai",
+      createdAt: 1,
+      updatedAt: 1,
+      path: null,
+      cwd: "/tmp/project",
+      cliVersion: "@labos/hub/0.1.0",
+      source: "appServer",
+      gitInfo: null,
+      turns: [],
+    };
+
+    let capturedStartArgs = null;
+
+    const dbPool = {
+      async query(sql) {
+        const normalized = String(sql);
+        if (normalized.includes("FROM artifacts a")) {
+          return {
+            rows: [
+              {
+                path: "uploads/experiment-notes.txt",
+                modified_at: "2026-02-24T00:00:00.000Z",
+                size_bytes: 120,
+                index_status: "indexed",
+                index_summary: "Contains marker RED-PLANT-8842.",
+                indexed_at: "2026-02-24T00:00:05.000Z",
+              },
+            ],
+          };
+        }
+        if (normalized.includes("FROM project_file_chunk")) {
+          return {
+            rows: [
+              {
+                artifact_path: "uploads/experiment-notes.txt",
+                chunk_index: 0,
+                content: "Retrieval marker RED-PLANT-8842. The launch code is 8842.",
+                embedding_json: null,
+              },
+            ],
+          };
+        }
+        return { rows: [] };
+      },
+    };
+
+    const repository = {
+      dbPool() {
+        return dbPool;
+      },
+      async query() {
+        return [];
+      },
+      async getThreadRecord(id) {
+        assert.equal(id, threadId);
+        return {
+          id: threadId,
+          projectId: "proj_ctx_1",
+          cwd: "/tmp/project",
+          modelProvider: "openai",
+          modelId: "gpt-5.3-codex",
+          preview: "",
+          createdAt: 1,
+          updatedAt: 1,
+          archived: false,
+          statusJson: JSON.stringify({
+            modelProvider: "openai",
+            model: "gpt-5.3-codex",
+            cwd: "/tmp/project",
+            approvalPolicy: "on-request",
+            sandbox: { mode: "workspace-write" },
+            reasoningEffort: null,
+          }),
+          engine: "codex-app-server",
+        };
+      },
+      async readThread(id) {
+        assert.equal(id, threadId);
+        return JSON.parse(JSON.stringify(thread));
+      },
+      async updateThread() {},
+      async createTurn() {},
+      async upsertItem() {},
+    };
+
+    const engines = {
+      async getEngine(name) {
+        assert.equal(name, "codex-app-server");
+        return {
+          async startTurn(args) {
+            capturedStartArgs = args;
+            return {
+              turn: {
+                id: args.turnId,
+                items: [],
+                status: "inProgress",
+                error: null,
+              },
+              events: emptyEvents(),
+            };
+          },
+        };
+      },
+    };
+
+    await handleTurnStart(
+      {
+        repository,
+        engines,
+      },
+      {
+        threadId,
+        input: [{ type: "text", text: "What is the launch code in the uploaded experiment notes?" }],
+      }
+    );
+
+    assert.ok(capturedStartArgs);
+    const firstText = capturedStartArgs.input.find((part) => part.type === "text")?.text ?? "";
+    assert.ok(firstText.includes("[LABOS_PROJECT_CONTEXT]"));
+    assert.ok(firstText.includes("uploads/experiment-notes.txt#0"));
+    assert.ok(firstText.includes("RED-PLANT-8842"));
+    assert.ok(firstText.includes("User request:"));
+  } finally {
+    if (originalApiKey == null) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = originalApiKey;
+    }
+  }
+});
+
+test("handleTurnStart still forwards collaborationMode when stored model is missing", async () => {
+  const originalModel = process.env.LABOS_MODEL;
+  const originalPrimary = process.env.LABOS_MODEL_PRIMARY;
+  process.env.LABOS_MODEL = "openai-codex/gpt-5.3-codex";
+  process.env.LABOS_MODEL_PRIMARY = "openai-codex/gpt-5.3-codex";
+
+  try {
+    const threadId = "123e4567-e89b-12d3-a456-426614174112";
+    const thread = {
+      id: threadId,
+      preview: "",
+      modelProvider: "openai",
+      createdAt: 1,
+      updatedAt: 1,
+      path: null,
+      cwd: "/tmp/project",
+      cliVersion: "@labos/hub/0.1.0",
+      source: "appServer",
+      gitInfo: null,
+      turns: [],
+    };
+
+    let capturedStartArgs = null;
+
+    const repository = {
+      async query() {
+        return [];
+      },
+      async getThreadRecord(id) {
+        assert.equal(id, threadId);
+        return {
+          id: threadId,
+          projectId: "proj_1",
+          cwd: "/tmp/project",
+          modelProvider: "openai",
+          modelId: null,
+          preview: "",
+          createdAt: 1,
+          updatedAt: 1,
+          archived: false,
+          statusJson: JSON.stringify({
+            modelProvider: "openai",
+            model: null,
+            cwd: "/tmp/project",
+            approvalPolicy: "on-request",
+            sandbox: { mode: "workspace-write" },
+            reasoningEffort: null,
+          }),
+          engine: "codex-app-server",
+        };
+      },
+      async readThread(id) {
+        assert.equal(id, threadId);
+        return JSON.parse(JSON.stringify(thread));
+      },
+      async updateThread() {},
+      async createTurn() {},
+      async upsertItem() {},
+    };
+
+    const engines = {
+      async getEngine(name) {
+        assert.equal(name, "codex-app-server");
+        return {
+          async startTurn(args) {
+            capturedStartArgs = args;
+            return {
+              turn: {
+                id: args.turnId,
+                items: [],
+                status: "inProgress",
+                error: null,
+              },
+              events: emptyEvents(),
+            };
+          },
+        };
+      },
+    };
+
+    await handleTurnStart(
+      {
+        repository,
+        engines,
+      },
+      {
+        threadId,
+        input: [{ type: "text", text: "plan this change" }],
+        planMode: true,
+      }
+    );
+
+    assert.ok(capturedStartArgs);
+    assert.equal(capturedStartArgs.model, "gpt-5.3-codex");
+    assert.equal(capturedStartArgs.collaborationMode.mode, "plan");
+    assert.equal(capturedStartArgs.collaborationMode.settings.model, "gpt-5.3-codex");
+  } finally {
+    if (originalModel == null) {
+      delete process.env.LABOS_MODEL;
+    } else {
+      process.env.LABOS_MODEL = originalModel;
+    }
+    if (originalPrimary == null) {
+      delete process.env.LABOS_MODEL_PRIMARY;
+    } else {
+      process.env.LABOS_MODEL_PRIMARY = originalPrimary;
+    }
+  }
+});
+
+test("handleTurnStart normalizes legacy pi threads and starts with codex engine", async () => {
+  const legacyThreadId = "123e4567-e89b-12d3-a456-426614174099";
   const priorTurn = {
     id: "turn_prev",
     status: "completed",
@@ -23,7 +365,7 @@ test("handleTurnStart passes prior turns into engine startTurn for pi threads", 
   };
 
   const thread = {
-    id: "thr_pi_1",
+    id: legacyThreadId,
     preview: "previous question",
     modelProvider: "openai",
     createdAt: 1,
@@ -43,9 +385,9 @@ test("handleTurnStart passes prior turns into engine startTurn for pi threads", 
       return [];
     },
     async getThreadRecord(threadId) {
-      assert.equal(threadId, "thr_pi_1");
+      assert.equal(threadId, legacyThreadId);
       return {
-        id: "thr_pi_1",
+        id: legacyThreadId,
         projectId: "proj_1",
         cwd: "/tmp/project",
         modelProvider: "openai",
@@ -66,8 +408,12 @@ test("handleTurnStart passes prior turns into engine startTurn for pi threads", 
       };
     },
     async readThread(threadId) {
-      assert.equal(threadId, "thr_pi_1");
+      assert.equal(threadId, legacyThreadId);
       return JSON.parse(JSON.stringify(thread));
+    },
+    async updateThread(args) {
+      assert.equal(args.id, legacyThreadId);
+      assert.equal(args.engine, "codex-app-server");
     },
     async createTurn() {},
     async upsertItem() {},
@@ -75,7 +421,7 @@ test("handleTurnStart passes prior turns into engine startTurn for pi threads", 
 
   const engines = {
     async getEngine(name) {
-      assert.equal(name, "pi");
+      assert.equal(name, "codex-app-server");
       return {
         async startTurn(args) {
           capturedStartArgs = args;
@@ -99,14 +445,14 @@ test("handleTurnStart passes prior turns into engine startTurn for pi threads", 
       engines,
     },
     {
-      threadId: "thr_pi_1",
+      threadId: legacyThreadId,
       input: [{ type: "text", text: "new question" }],
     }
   );
 
-  assert.equal(prepared.threadId, "thr_pi_1");
+  assert.equal(prepared.threadId, legacyThreadId);
   assert.ok(capturedStartArgs);
-  assert.equal(capturedStartArgs.threadId, "thr_pi_1");
+  assert.equal(capturedStartArgs.threadId, legacyThreadId);
   assert.equal(capturedStartArgs.input.length, 1);
   assert.equal(capturedStartArgs.historyTurns.length, 1);
   assert.equal(capturedStartArgs.historyTurns[0].id, "turn_prev");

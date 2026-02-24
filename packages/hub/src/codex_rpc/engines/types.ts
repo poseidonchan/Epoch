@@ -9,6 +9,14 @@ export type EngineStartTurnArgs = {
   model: string | null;
   modelProvider: string;
   approvalPolicy: string;
+  collaborationMode?: {
+    mode: "plan" | "default";
+    settings: {
+      model: string;
+      reasoning_effort: string | null;
+      developer_instructions: string | null;
+    };
+  } | null;
 };
 
 export type EngineStreamNotification = {
@@ -44,6 +52,7 @@ export interface CodexEngineSession {
 
   startTurn(args: EngineStartTurnArgs): Promise<EngineStartTurnResult>;
   interruptTurn(args: { threadId: string; turnId: string }): Promise<void>;
+  steerTurn?(args: { threadId: string; turnId: string; text: string }): Promise<Record<string, unknown>>;
   handleClientResponse?(payload: { id: string | number; result?: unknown; error?: { code: number; message: string; data?: unknown } }): Promise<boolean>;
   close(): Promise<void>;
 }

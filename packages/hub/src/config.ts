@@ -21,6 +21,7 @@ export type HubConfig = {
   token: string;
   createdAt: string;
   ai?: HubAiConfig;
+  providerApiKeys?: Record<string, string>;
 };
 
 export function getStateDir(): string {

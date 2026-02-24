@@ -27,5 +27,5 @@ export async function initCommand(_argv: string[]) {
   console.log(`DB: ${dbPath}`);
   console.log(`Server ID: ${config.serverId}`);
   console.log(`Shared token (store this): ${config.token}`);
-  console.log("Next: run `labos-hub config` to set up provider + model (or use env vars).");
+  console.log("Next: run `labos-hub config` to set codex defaults and optional OPENAI_API_KEY for file embeddings.");
 }
