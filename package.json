@@ -10,6 +10,8 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "protocol:build": "pnpm -C packages/protocol build",
-    "protocol:gen:swift": "pnpm -C packages/protocol build && pnpm -C tools/codegen-swift gen"
+    "protocol:gen:swift": "pnpm -C packages/protocol build && pnpm -C tools/codegen-swift gen",
+    "codex-spec:refresh": "pnpm -C packages/codex-spec refresh",
+    "codex-spec:check": "pnpm -C packages/codex-spec check"
   }
 }

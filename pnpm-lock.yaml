@@ -8,6 +8,8 @@ importers:
 
   .: {}
 
+  packages/codex-spec: {}
+
   packages/hpc-bridge:
     dependencies:
       '@labos/protocol':
@@ -75,6 +77,9 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+      ajv:
+        specifier: ^8.17.1
+        version: 8.18.0
       tsup:
         specifier: ^8.5.0
         version: 8.5.1(typescript@5.9.3)

@@ -17,3 +17,4 @@ packages/**/dist/
 tools/**/dist/
 .labos/
 .worktrees/
+LabOS.zip
