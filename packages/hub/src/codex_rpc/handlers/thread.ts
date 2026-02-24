@@ -275,15 +275,19 @@ export async function handleThreadRollback(
 
   if (existing.engine === "codex-app-server") {
     const engine = await ctx.engines.getEngine(existing.engine);
-    if (!engine.threadRollback) {
-      throw new Error("Codex app-server engine does not support thread/rollback.");
+    if (engine.threadRollback) {
+      try {
+        const proxied = await engine.threadRollback({
+          threadId,
+          numTurns,
+        });
+        await maybePersistThreadFromResponse(ctx.repository, proxied, existing.engine);
+        return proxied;
+      } catch {
+        // Fall back to local rollback when the child thread cannot be found
+        // or the engine does not currently support rollback in this process.
+      }
     }
-    const proxied = await engine.threadRollback({
-      threadId,
-      numTurns,
-    });
-    await maybePersistThreadFromResponse(ctx.repository, proxied, existing.engine);
-    return proxied;
   }
 
   const current = await ctx.repository.readThread(threadId, true);
@@ -496,6 +500,7 @@ function stripEngineOverride(params: Record<string, unknown>): Record<string, un
 export async function maybePersistThreadFromResponse(repository: CodexRepository, response: Record<string, unknown>, engine: string) {
   const threadRaw = (response.thread ?? null) as Record<string, unknown> | null;
   if (!threadRaw || typeof threadRaw.id !== "string") return;
+  const scopedIds = engine === "codex-app-server";
 
   const existing = await repository.getThreadRecord(threadRaw.id);
   const createdAt = Number(threadRaw.createdAt ?? nowUnixSeconds());
@@ -535,16 +540,24 @@ export async function maybePersistThreadFromResponse(repository: CodexRepository
     .map((turn) => normalizeTurnSnapshot(turn))
     .filter((turn): turn is { id: string; status: Turn["status"]; error: Turn["error"]; items: ThreadItem[] } => turn != null);
 
+  // Some app-server variants reuse simple turn/item IDs (e.g. "1", "2")
+  // across different threads. Scope persisted IDs by thread to avoid global
+  // PK collisions in LabOS storage while keeping wire payloads unchanged.
+  const scopedTurns = normalizedTurns.map((turn) => ({
+    ...turn,
+    id: scopedTurnId(threadRaw.id, turn.id, scopedIds),
+  }));
+
   const existingTurns = await repository.listTurnRecords(threadRaw.id);
   const existingTurnIds = new Set(existingTurns.map((turn) => turn.id));
-  const desiredTurnIds = new Set(normalizedTurns.map((turn) => turn.id));
+  const desiredTurnIds = new Set(scopedTurns.map((turn) => turn.id));
   const staleTurnIds = existingTurns.map((turn) => turn.id).filter((id) => !desiredTurnIds.has(id));
   if (staleTurnIds.length > 0) {
     await repository.removeTurns(threadRaw.id, staleTurnIds);
   }
 
   const createdAtBase = nowUnixSeconds();
-  for (const [index, turn] of normalizedTurns.entries()) {
+  for (const [index, turn] of scopedTurns.entries()) {
     const turnCreatedAt = createdAtBase + index;
     if (!existingTurnIds.has(turn.id)) {
       await repository.createTurn({
@@ -554,6 +567,7 @@ export async function maybePersistThreadFromResponse(repository: CodexRepository
         error: turn.error,
         createdAt: turnCreatedAt,
       });
+      existingTurnIds.add(turn.id);
     } else {
       await repository.updateTurn({
         id: turn.id,
@@ -565,8 +579,9 @@ export async function maybePersistThreadFromResponse(repository: CodexRepository
     }
 
     for (const item of turn.items) {
+      const rawItemId = String(item.id);
       await repository.upsertItem({
-        id: String(item.id),
+        id: scopedItemId(threadRaw.id, rawItemId, scopedIds),
         threadId: threadRaw.id,
         turnId: turn.id,
         type: String(item.type),
@@ -575,6 +590,16 @@ export async function maybePersistThreadFromResponse(repository: CodexRepository
       });
     }
   }
+}
+
+function scopedTurnId(threadId: string, turnId: string, scoped: boolean): string {
+  if (!scoped) return turnId;
+  return `${threadId}::turn::${turnId}`;
+}
+
+function scopedItemId(threadId: string, itemId: string, scoped: boolean): string {
+  if (!scoped) return itemId;
+  return `${threadId}::item::${itemId}`;
 }
 
 function normalizeTurnSnapshot(

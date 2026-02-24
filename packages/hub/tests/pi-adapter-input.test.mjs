@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 
-import { buildPiUserContentFromCodexInput } from "../dist/index.js";
+import { buildPiHistoryMessages, buildPiUserContentFromCodexInput } from "../dist/index.js";
 
 const ONE_PIXEL_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5GZfQAAAAASUVORK5CYII=";
@@ -42,4 +42,31 @@ test("buildPiUserContentFromCodexInput keeps text and does not leak unresolved l
   assert.deepEqual(content, [{ type: "text", text: "What is in this image?" }]);
   const combined = content.map((part) => ("text" in part ? part.text : "")).join("\n");
   assert.equal(combined.includes(missingPath), false);
+});
+
+test("buildPiHistoryMessages emits assistant history as content blocks", async () => {
+  const history = await buildPiHistoryMessages([
+    {
+      id: "turn_prev",
+      status: "completed",
+      error: null,
+      items: [
+        {
+          type: "userMessage",
+          id: "item_user_1",
+          content: [{ type: "text", text: "Who are you?", text_elements: [] }],
+        },
+        {
+          type: "agentMessage",
+          id: "item_agent_1",
+          text: "I am LabOS.",
+        },
+      ],
+    },
+  ]);
+
+  assert.equal(history.length, 2);
+  assert.equal(history[0].role, "user");
+  assert.equal(history[1].role, "assistant");
+  assert.deepEqual(history[1].content, [{ type: "text", text: "I am LabOS." }]);
 });

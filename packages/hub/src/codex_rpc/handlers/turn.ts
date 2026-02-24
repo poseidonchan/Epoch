@@ -61,7 +61,7 @@ export async function handleTurnStart(
 
   // Codex passthrough engine controls its own item lifecycle and notifications.
   if (threadRecord.engine === "codex-app-server") {
-    if (!isValidCodexAppServerThreadId(threadId)) {
+    const repairCodexThreadMapping = async () => {
       if (!engine.threadStart) {
         throw new Error("Codex app-server engine does not support thread/start.");
       }
@@ -169,23 +169,50 @@ export async function handleTurnStart(
 
       threadId = effectiveThreadId;
       threadRecord = (await ctx.repository.getThreadRecord(threadId)) ?? threadRecord;
-      settings = repairedSettings;
+      settings = {
+        ...repairedSettings,
+        cwd: effectiveCwd,
+        modelProvider: effectiveModelProvider,
+      };
       historyTurns = (await ctx.repository.readThread(threadId, true))?.turns ?? historyTurns;
       engineInput = await buildTurnInputWithProjectContext(ctx.repository, threadRecord.projectId, input);
       engine = await ctx.engines.getEngine(threadRecord.engine);
+    };
+
+    if (!isValidCodexAppServerThreadId(threadId)) {
+      await repairCodexThreadMapping();
     }
 
     const provisionalTurnId = `turn_${uuidv4()}`;
-    const started = await engine.startTurn({
-      threadId,
-      turnId: provisionalTurnId,
-      input: engineInput,
-      historyTurns,
-      cwd: settings.cwd,
-      model: modelOverride ?? settings.model,
-      modelProvider: settings.modelProvider,
-      approvalPolicy: approvalPolicyOverride ?? settings.approvalPolicy,
-    });
+    let started: EngineStartTurnResult;
+    try {
+      started = await engine.startTurn({
+        threadId,
+        turnId: provisionalTurnId,
+        input: engineInput,
+        historyTurns,
+        cwd: settings.cwd,
+        model: modelOverride ?? settings.model,
+        modelProvider: settings.modelProvider,
+        approvalPolicy: approvalPolicyOverride ?? settings.approvalPolicy,
+      });
+    } catch (err) {
+      if (!isLikelyCodexMissingThreadError(err)) {
+        throw err;
+      }
+
+      await repairCodexThreadMapping();
+      started = await engine.startTurn({
+        threadId,
+        turnId: provisionalTurnId,
+        input: engineInput,
+        historyTurns,
+        cwd: settings.cwd,
+        model: modelOverride ?? settings.model,
+        modelProvider: settings.modelProvider,
+        approvalPolicy: approvalPolicyOverride ?? settings.approvalPolicy,
+      });
+    }
 
     const turnId = started.turn.id;
 
@@ -277,6 +304,19 @@ const CODEX_APP_SERVER_THREAD_ID_RE = /^(?:urn:uuid:)?[0-9a-fA-F]{8}-[0-9a-fA-F]
 
 function isValidCodexAppServerThreadId(threadId: string): boolean {
   return CODEX_APP_SERVER_THREAD_ID_RE.test(threadId.trim());
+}
+
+function isLikelyCodexMissingThreadError(err: unknown): boolean {
+  const message = String(err instanceof Error ? err.message : err ?? "")
+    .trim()
+    .toLowerCase();
+  if (!message) return false;
+  return (
+    (message.includes("thread") && message.includes("not found")) ||
+    message.includes("unknown thread") ||
+    message.includes("no such thread") ||
+    message.includes("missing thread")
+  );
 }
 
 function toCodexSandboxMode(raw: unknown): "read-only" | "workspace-write" | "danger-full-access" | null {

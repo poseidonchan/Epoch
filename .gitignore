@@ -17,3 +17,7 @@ tools/**/dist/
 .labos/
 .worktrees/
 LabOS.zip
+.derivedData/SourcePackages/repositories/swift-cmark-8e53c1c0/objects/pack/pack-af21ac3e90e44cb1a77a9d3f27a128540968a0c2.rev
+/.derivedData/SourcePackages/repositories/swift-cmark-8e53c1c0
+/.derivedData/SourcePackages/repositories
+/.derivedData
