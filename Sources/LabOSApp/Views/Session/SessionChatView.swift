@@ -1094,6 +1094,7 @@ struct SessionChatView: View {
             projectID: projectID,
             sessionID: sessionID,
             assistantItemID: item.id,
+            assistantText: item.text,
             modelIdOverride: modelIdOverride
         )
     }

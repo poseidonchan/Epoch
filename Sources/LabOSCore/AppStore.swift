@@ -158,6 +158,7 @@ public final class AppStore: ObservableObject {
     private var resourcesPollTask: Task<Void, Never>?
     internal var codexThreadBySession: [UUID: String] = [:]
     internal var codexSessionByThread: [String: UUID] = [:]
+    internal var codexRequestOverrideForTests: ((_ method: String, _ params: JSONValue?) async throws -> CodexRPCResponse)?
 
     internal let gatewayJSONEncoder: JSONEncoder = {
         let encoder = JSONEncoder()
@@ -728,6 +729,11 @@ public final class AppStore: ObservableObject {
     }
 
     internal func requestCodex<Params: Encodable>(method: String, params: Params) async throws -> CodexRPCResponse {
+        if let override = codexRequestOverrideForTests {
+            let data = try gatewayJSONEncoder.encode(params)
+            let paramsValue = try gatewayJSONDecoder.decode(JSONValue.self, from: data)
+            return try await override(method, paramsValue)
+        }
         guard let codexClient, isCodexConnected else {
             throw NSError(domain: "LabOS", code: -1, userInfo: [NSLocalizedDescriptionKey: "Codex client is not connected"])
         }
@@ -1486,12 +1492,14 @@ public final class AppStore: ObservableObject {
         projectID: UUID,
         sessionID: UUID,
         assistantItemID: String,
+        assistantText: String? = nil,
         modelIdOverride: String? = nil
     ) {
         chatService.retryCodexAgentMessage(
             projectID: projectID,
             sessionID: sessionID,
             assistantItemID: assistantItemID,
+            assistantText: assistantText,
             modelIdOverride: modelIdOverride
         )
     }
@@ -1602,6 +1610,13 @@ public final class AppStore: ObservableObject {
         if sessionUsesCodex(sessionID: sessionID) {
             if let threadId = codexThreadBySession[sessionID] {
                 codexSessionByThread[threadId] = sessionID
+            }
+            Task { [weak self] in
+                await self?.chatService.refreshSessionHistoryFromCodex(
+                    projectID: projectID,
+                    sessionID: sessionID,
+                    trigger: .interactive
+                )
             }
         } else if isGatewayConnected {
             Task { [weak self] in

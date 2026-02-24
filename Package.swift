@@ -11,6 +11,9 @@ let package = Package(
         .library(name: "LabOSCore", targets: ["LabOSCore"]),
         .executable(name: "LabOSApp", targets: ["LabOSApp"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/gonzalezreal/MarkdownUI.git", from: "2.4.1")
+    ],
     targets: [
         .target(
             name: "LabOSCore",
@@ -18,7 +21,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "LabOSApp",
-            dependencies: ["LabOSCore"],
+            dependencies: [
+                "LabOSCore",
+                .product(name: "MarkdownUI", package: "MarkdownUI")
+            ],
             path: "Sources/LabOSApp",
             resources: [
                 .copy("Resources")

@@ -488,6 +488,7 @@ internal final class ChatSessionService {
         projectID: UUID,
         sessionID: UUID,
         assistantItemID: String,
+        assistantText: String? = nil,
         modelIdOverride: String? = nil
     ) {
         if let modelIdOverride {
@@ -530,7 +531,11 @@ internal final class ChatSessionService {
                 )
                 let thread: CodexThread = try self.store.decodeCodexResult(threadResponse.result, key: "thread")
 
-                guard let plan = Self.codexRegeneratePlan(thread: thread, assistantItemID: normalizedAssistantItemID) else {
+                guard let plan = Self.codexRegeneratePlan(
+                    thread: thread,
+                    assistantItemID: normalizedAssistantItemID,
+                    assistantText: assistantText
+                ) else {
                     self.store.lastGatewayErrorMessage = "Unable to regenerate from the selected message."
                     self.store.codexStatusTextBySession[sessionID] = "failed"
                     self.store.streamingSessions.remove(sessionID)
@@ -880,6 +885,104 @@ internal final class ChatSessionService {
         }
     }
 
+    func refreshSessionHistoryFromCodex(
+        projectID: UUID,
+        sessionID: UUID,
+        trigger: AppStore.SessionHistoryRefreshTrigger = .interactive
+    ) async {
+        let now = Date()
+        let hasLocalItems = !(store.codexItemsBySession[sessionID]?.isEmpty ?? true)
+        if AppStore.shouldSkipSessionHistoryRefresh(
+            trigger: trigger,
+            hasInFlightRequest: sessionHistoryRequestsInFlight.contains(sessionID),
+            hasLocalMessages: hasLocalItems,
+            lastFetchedAt: sessionHistoryLastFetchedAtBySession[sessionID],
+            now: now,
+            prefetchCooldown: sessionHistoryPrefetchCooldown,
+            interactiveFreshnessWindow: sessionHistoryInteractiveFreshnessWindow
+        ) {
+            return
+        }
+
+        sessionHistoryRequestsInFlight.insert(sessionID)
+        defer { sessionHistoryRequestsInFlight.remove(sessionID) }
+
+        if !store.isCodexConnected {
+            let ready = await store.ensureCodexConnectedForChat()
+            guard ready else { return }
+        }
+
+        do {
+            let response = try await store.requestCodex(
+                method: "labos/session/read",
+                params: CodexSessionReadParams(
+                    projectId: AppStore.gatewayID(projectID),
+                    sessionId: AppStore.gatewayID(sessionID),
+                    includeTurns: true
+                )
+            )
+
+            var session: Session = try store.decodeCodexResult(response.result, key: "session")
+            var thread: CodexThread?
+            if let resultObject = response.result?.objectValue,
+               let threadValue = resultObject["thread"] {
+                let threadData = try store.gatewayJSONEncoder.encode(threadValue)
+                thread = try store.gatewayJSONDecoder.decode(CodexThread.self, from: threadData)
+            }
+
+            if (session.codexThreadId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true),
+               let threadId = thread?.id.trimmingCharacters(in: .whitespacesAndNewlines),
+               !threadId.isEmpty {
+                session.codexThreadId = threadId
+            }
+            store.projectService.upsertSession(session)
+
+            let shouldFallbackToThreadRead: Bool = {
+                if thread == nil { return true }
+                guard session.backendEngine == "codex-app-server" else { return false }
+                guard let thread else { return true }
+                return thread.turns.isEmpty
+            }()
+
+            if shouldFallbackToThreadRead,
+               let threadId = (thread?.id ?? session.codexThreadId)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !threadId.isEmpty {
+                let threadResponse = try await store.requestCodex(
+                    method: "thread/read",
+                    params: CodexThreadReadParams(threadId: threadId, includeTurns: true)
+                )
+                thread = try store.decodeCodexResult(threadResponse.result, key: "thread")
+            }
+
+            if let thread {
+                if let previousThread = store.codexThreadBySession[sessionID], previousThread != thread.id {
+                    store.codexSessionByThread[previousThread] = nil
+                }
+                store.codexThreadBySession[sessionID] = thread.id
+                store.codexSessionByThread[thread.id] = sessionID
+                store.codexItemsBySession[sessionID] = Self.flattenCodexTurns(thread.turns)
+                if let lastStatus = thread.turns.last?.status {
+                    store.codexStatusTextBySession[sessionID] = lastStatus
+                    if lastStatus == "inProgress" {
+                        store.streamingSessions.insert(sessionID)
+                    } else {
+                        store.streamingSessions.remove(sessionID)
+                    }
+                }
+            } else {
+                store.codexItemsBySession[sessionID] = store.codexItemsBySession[sessionID] ?? []
+            }
+
+            store.codexPendingApprovalsBySession[sessionID] = []
+            store.codexPendingPromptBySession[sessionID] = nil
+            sessionHistoryLastFetchedAtBySession[sessionID] = now
+            store.lastGatewayErrorMessage = nil
+        } catch {
+            store.lastGatewayErrorMessage = error.localizedDescription
+            store.codexStatusTextBySession[sessionID] = "failed"
+        }
+    }
+
     func applySessionHistorySnapshot(
         projectID: UUID,
         sessionID: UUID,
@@ -895,19 +998,51 @@ internal final class ChatSessionService {
 
     // MARK: - Private Helpers
 
-    static func codexRegeneratePlan(thread: CodexThread, assistantItemID: String) -> CodexRegeneratePlan? {
+    static func codexRegeneratePlan(
+        thread: CodexThread,
+        assistantItemID: String,
+        assistantText: String? = nil
+    ) -> CodexRegeneratePlan? {
         let normalizedAssistantItemID = assistantItemID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedAssistantItemID.isEmpty else { return nil }
         guard !thread.turns.isEmpty else { return nil }
 
-        guard let targetTurnIndex = thread.turns.firstIndex(where: { turn in
-            turn.items.contains { item in
-                if case let .agentMessage(agent) = item {
-                    return agent.id.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedAssistantItemID
+        let normalizedAssistantText = normalizeAssistantRegenerateText(assistantText)
+
+        let targetTurnIndexByID: Int? = {
+            guard !normalizedAssistantItemID.isEmpty else { return nil }
+            return thread.turns.firstIndex(where: { turn in
+                turn.items.contains { item in
+                    if case let .agentMessage(agent) = item {
+                        return agent.id.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedAssistantItemID
+                    }
+                    return false
                 }
-                return false
-            }
-        }) else {
+            })
+        }()
+
+        let targetTurnIndexByText: Int? = {
+            guard let normalizedAssistantText, !normalizedAssistantText.isEmpty else { return nil }
+            return thread.turns.lastIndex(where: { turn in
+                turn.items.contains { item in
+                    guard case let .agentMessage(agent) = item else { return false }
+                    let candidate = normalizeAssistantRegenerateText(agent.text) ?? ""
+                    guard !candidate.isEmpty else { return false }
+                    return candidate == normalizedAssistantText
+                        || candidate.contains(normalizedAssistantText)
+                        || normalizedAssistantText.contains(candidate)
+                }
+            })
+        }()
+
+        let targetTurnIndex: Int? = targetTurnIndexByID ?? targetTurnIndexByText
+            ?? thread.turns.lastIndex(where: { turn in
+                turn.items.contains { item in
+                    guard case let .agentMessage(agent) = item else { return false }
+                    return !agent.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }
+            })
+
+        guard let targetTurnIndex else {
             return nil
         }
 
@@ -923,6 +1058,14 @@ internal final class ChatSessionService {
             sourceInput: sourceInput,
             numTurnsToRollback: max(0, thread.turns.count - targetTurnIndex)
         )
+    }
+
+    private static func normalizeAssistantRegenerateText(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let collapsed = trimmed.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        return collapsed.lowercased()
     }
 
     private static func resolveRegenerateSourceInput(

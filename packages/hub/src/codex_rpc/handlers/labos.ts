@@ -473,11 +473,85 @@ export async function handleLabosSessionRead(
     throw new Error("Session not found");
   }
 
-  const session = mapSessionRow(rows[0]);
-  let thread: Thread | null = null;
-  if (session.codexThreadId) {
-    thread = await ctx.repository.readThread(session.codexThreadId, includeTurns);
+  let sessionRow = rows[0];
+  let threadId = normalizeNonEmptyString(sessionRow.codex_thread_id);
+  const backendEngine = normalizeBackendEngine(sessionRow.backend_engine) ?? "pi";
+  const modelProvider = normalizeNonEmptyString(sessionRow.codex_model_provider) ?? DEFAULT_MODEL_PROVIDER;
+  const modelId = normalizeNonEmptyString(sessionRow.codex_model);
+  const approvalPolicy = normalizeNonEmptyString(sessionRow.codex_approval_policy) ?? DEFAULT_APPROVAL_POLICY;
+  const sandbox = safeJsonParseObject(sessionRow.codex_sandbox_json) ?? normalizeSandboxPolicy(null) ?? {};
+
+  if (!threadId || backendEngine === "codex-app-server") {
+    const mappedThread = await ensureMappedThreadForSession(ctx, {
+      projectId,
+      sessionId,
+      backendEngine,
+      currentThreadId: threadId,
+      modelProvider,
+      modelId,
+      approvalPolicy,
+      sandbox,
+    });
+    threadId = mappedThread.id;
+    await ctx.repository.assignThreadToSession({ threadId, sessionId });
+
+    const previousThreadId = normalizeNonEmptyString(sessionRow.codex_thread_id);
+    if (previousThreadId && previousThreadId !== threadId) {
+      await ctx.repository.assignThreadToSession({ threadId: previousThreadId, sessionId: null });
+    }
+    if (!previousThreadId || previousThreadId !== threadId) {
+      const nowIso = new Date().toISOString();
+      await ctx.repository.query(`UPDATE sessions SET codex_thread_id=$1, updated_at=$2 WHERE id=$3`, [threadId, nowIso, sessionId]);
+      sessionRow = {
+        ...sessionRow,
+        codex_thread_id: threadId,
+        updated_at: nowIso,
+      };
+    }
   }
+
+  let thread: Thread | null = null;
+  if (threadId) {
+    thread = await ctx.repository.readThread(threadId, includeTurns);
+  }
+
+  if (includeTurns && backendEngine === "codex-app-server" && threadId && (!thread || thread.turns.length === 0)) {
+    const codexEngine = await ctx.engines.getEngine("codex-app-server");
+    if (codexEngine.threadRead) {
+      try {
+        const proxied = await codexEngine.threadRead({
+          threadId,
+          includeTurns: true,
+        });
+        await maybePersistThreadFromResponse(ctx.repository, proxied, "codex-app-server");
+
+        const proxiedThreadRaw = (proxied.thread ?? null) as Record<string, unknown> | null;
+        const proxiedThreadId = normalizeNonEmptyString(proxiedThreadRaw?.id);
+        if (proxiedThreadId && proxiedThreadId !== threadId) {
+          await ctx.repository.assignThreadToSession({ threadId, sessionId: null });
+          await ctx.repository.assignThreadToSession({ threadId: proxiedThreadId, sessionId });
+          const nowIso = new Date().toISOString();
+          await ctx.repository.query(`UPDATE sessions SET codex_thread_id=$1, updated_at=$2 WHERE id=$3`, [
+            proxiedThreadId,
+            nowIso,
+            sessionId,
+          ]);
+          sessionRow = {
+            ...sessionRow,
+            codex_thread_id: proxiedThreadId,
+            updated_at: nowIso,
+          };
+          threadId = proxiedThreadId;
+        }
+
+        thread = await ctx.repository.readThread(threadId, true);
+      } catch {
+        // Best effort. Return whatever local state is available.
+      }
+    }
+  }
+
+  const session = mapSessionRow(sessionRow);
 
   return {
     session,

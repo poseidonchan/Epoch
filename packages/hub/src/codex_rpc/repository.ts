@@ -281,7 +281,7 @@ export class CodexRepository {
       `SELECT id, thread_id, status, error_json, created_at, completed_at
        FROM turns
        WHERE thread_id=$1
-       ORDER BY created_at ASC, id ASC`,
+       ORDER BY created_at ASC, rowid ASC`,
       [threadId]
     );
     return result.rows.map((row: any) => mapTurnRow(row));
@@ -315,7 +315,7 @@ export class CodexRepository {
       `SELECT id, thread_id, turn_id, type, payload_json, created_at, updated_at
        FROM items
        WHERE turn_id=$1
-       ORDER BY created_at ASC, id ASC`,
+       ORDER BY created_at ASC, rowid ASC`,
       [turnId]
     );
     return result.rows.map((row: any) => mapItemRow(row));
@@ -377,7 +377,7 @@ export class CodexRepository {
       `SELECT id, event_json
        FROM thread_events
        WHERE thread_id=$1
-       ORDER BY created_at ASC, id ASC`,
+       ORDER BY created_at ASC, rowid ASC`,
       [threadId]
     );
 
@@ -481,7 +481,7 @@ export class CodexRepository {
       `SELECT event_json
        FROM thread_events
        WHERE thread_id=$1
-       ORDER BY created_at ASC, id ASC`,
+       ORDER BY created_at ASC, rowid ASC`,
       [threadId]
     );
 

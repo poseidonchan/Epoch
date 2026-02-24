@@ -381,6 +381,63 @@ final class AppStoreMessageActionsTests: XCTestCase {
         XCTAssertNil(plan)
     }
 
+    func testCodexRegeneratePlanFallsBackToAssistantTextWhenIDsDoNotMatch() {
+        let thread = CodexThread(
+            id: "thr_1",
+            preview: "latest",
+            modelProvider: "openai",
+            createdAt: 1,
+            updatedAt: 2,
+            path: nil,
+            cwd: "/tmp",
+            cliVersion: "@labos/hub/0.1.0",
+            source: "appServer",
+            gitInfo: nil,
+            turns: [
+                CodexTurn(
+                    id: "turn_1",
+                    items: [
+                        .userMessage(
+                            CodexUserMessageItem(
+                                type: "userMessage",
+                                id: "item_u_1",
+                                content: [CodexUserInput(type: "text", text: "first", url: nil, path: nil)]
+                            )
+                        ),
+                        .agentMessage(CodexAgentMessageItem(type: "agentMessage", id: "item_a_1", text: "first reply")),
+                    ],
+                    status: "completed",
+                    error: nil
+                ),
+                CodexTurn(
+                    id: "turn_2",
+                    items: [
+                        .userMessage(
+                            CodexUserMessageItem(
+                                type: "userMessage",
+                                id: "item_u_2",
+                                content: [CodexUserInput(type: "text", text: "second", url: nil, path: nil)]
+                            )
+                        ),
+                        .agentMessage(CodexAgentMessageItem(type: "agentMessage", id: "item_a_2", text: "who am I reply")),
+                    ],
+                    status: "completed",
+                    error: nil
+                ),
+            ]
+        )
+
+        let plan = ChatSessionService.codexRegeneratePlan(
+            thread: thread,
+            assistantItemID: "msg_live_stream_only",
+            assistantText: "Who am I reply"
+        )
+
+        XCTAssertNotNil(plan)
+        XCTAssertEqual(plan?.numTurnsToRollback, 1)
+        XCTAssertEqual(plan?.sourceInput.first?.text, "second")
+    }
+
     private func waitUntil(
         timeoutSeconds: TimeInterval,
         pollEvery interval: TimeInterval = 0.05,

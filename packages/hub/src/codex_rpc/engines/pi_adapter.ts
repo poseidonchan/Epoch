@@ -27,6 +27,20 @@ type ImageContent = {
   data: string;
 };
 
+type PiHistoryUserMessage = {
+  role: "user";
+  content: string | PiUserContentPart[];
+  timestamp: number;
+};
+
+type PiHistoryAssistantMessage = {
+  role: "assistant";
+  content: TextContent[];
+  timestamp: number;
+};
+
+export type PiHistoryMessage = PiHistoryUserMessage | PiHistoryAssistantMessage;
+
 type OAuthProvider = {
   refreshToken: (credentials: any) => Promise<any>;
   getApiKey: (credentials: any) => string;
@@ -217,8 +231,8 @@ export class PiAgentEngineAdapter implements CodexEngineSession {
   }
 }
 
-async function buildPiHistoryMessages(turns: Turn[]): Promise<Array<{ role: "user" | "assistant"; content: string | PiUserContentPart[]; timestamp: number }>> {
-  const messages: Array<{ role: "user" | "assistant"; content: string | PiUserContentPart[]; timestamp: number }> = [];
+export async function buildPiHistoryMessages(turns: Turn[]): Promise<PiHistoryMessage[]> {
+  const messages: PiHistoryMessage[] = [];
 
   for (const turn of turns) {
     for (const item of turn.items) {
@@ -241,7 +255,7 @@ async function buildPiHistoryMessages(turns: Turn[]): Promise<Array<{ role: "use
         if (!text) continue;
         messages.push({
           role: "assistant",
-          content: text,
+          content: [{ type: "text", text }],
           timestamp: Date.now(),
         });
       }
