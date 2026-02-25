@@ -1,4 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 
 import { buildProjectFileContextStream } from "../../indexing/projectIndexing.js";
 import { resolveHubProvider } from "../../model.js";
@@ -11,8 +13,10 @@ import { maybePersistThreadFromResponse, parseThreadSettings } from "./thread.js
 const PLAN_MODE_DEVELOPER_INSTRUCTIONS = [
   "Plan mode is active for this turn.",
   "Focus on planning and clarifying questions before implementation.",
-  "Use request_user_input when user decisions are needed.",
-  "If asked whether plan mode is active, answer yes.",
+  "Use request_user_input when user decisions are needed (prefer it over plain-text questions).",
+  "When you present the final plan, wrap it in a <proposed_plan>...</proposed_plan> block with the opening and closing tags on their own lines; put the plan content between them in Markdown.",
+  "Do not ask whether to implement the plan in plain text; the app will prompt the user after the plan.",
+  "If asked whether plan mode is active, answer YES.",
   "Do not claim or imply that default mode is active while this mode is active.",
 ].join(" ");
 
@@ -66,7 +70,7 @@ export async function handleTurnStart(
   const modelOverride = normalizeNonEmptyString(params.model);
   const planMode = normalizePlanMode(params.planMode);
   const approvalPolicyOverride = normalizeNonEmptyString(params.approvalPolicy);
-  const input = normalizeUserInputList(params.input);
+  const input = await normalizeUserInputList(ctx.repository, threadRecord.projectId, threadId, params.input);
   let engineInput = await buildTurnInputWithProjectContext(ctx.repository, threadRecord.projectId, input);
   if (threadRecord.engine !== "codex-app-server") {
     await ctx.repository.updateThread({
@@ -541,13 +545,34 @@ export async function handleTurnSteer(
   const threadId = normalizeNonEmptyString(params.threadId);
   const turnId = normalizeNonEmptyString(params.turnId);
   const text = normalizeNonEmptyString(params.text);
-  if (!threadId || !turnId || !text) {
-    throw new Error("Missing threadId, turnId, or text");
+  const rawInput = params.input;
+  if (!threadId || !turnId || (!text && rawInput == null)) {
+    throw new Error("Missing threadId, turnId, or steer input");
   }
 
   const threadRecord = await ctx.repository.getThreadRecord(threadId);
   if (!threadRecord) {
     throw new Error("Thread not found");
+  }
+
+  const input: UserInput[] = rawInput != null
+    ? await normalizeUserInputList(ctx.repository, threadRecord.projectId, threadId, rawInput)
+    : [
+        {
+          type: "text",
+          text: text ?? "",
+          text_elements: [] as Record<string, unknown>[],
+        },
+      ];
+
+  const hasMeaningfulInput = input.some((part) => {
+    if (part.type === "text") {
+      return String(part.text ?? "").trim().length > 0;
+    }
+    return true;
+  });
+  if (!hasMeaningfulInput) {
+    throw new Error("Missing steer input");
   }
 
   const engine = await ctx.engines.getEngine(threadRecord.engine);
@@ -557,11 +582,16 @@ export async function handleTurnSteer(
   return await engine.steerTurn({
     threadId,
     turnId,
-    text,
+    input,
   });
 }
 
-function normalizeUserInputList(raw: unknown): UserInput[] {
+async function normalizeUserInputList(
+  repository: CodexRepository,
+  projectId: string | null,
+  threadId: string,
+  raw: unknown
+): Promise<UserInput[]> {
   if (!Array.isArray(raw)) {
     return [
       {
@@ -572,9 +602,11 @@ function normalizeUserInputList(raw: unknown): UserInput[] {
     ];
   }
 
-  const normalized = raw
-    .map((entry) => normalizeUserInput(entry))
-    .filter((entry): entry is UserInput => entry != null);
+  const normalized = (
+    await Promise.all(
+      raw.map((entry) => normalizeUserInput(repository, projectId, threadId, entry))
+    )
+  ).filter((entry): entry is UserInput => entry != null);
 
   if (normalized.length === 0) {
     return [
@@ -589,10 +621,15 @@ function normalizeUserInputList(raw: unknown): UserInput[] {
   return normalized;
 }
 
-function normalizeUserInput(raw: unknown): UserInput | null {
+async function normalizeUserInput(
+  repository: CodexRepository,
+  projectId: string | null,
+  threadId: string,
+  raw: unknown
+): Promise<UserInput | null> {
   if (!raw || typeof raw !== "object") return null;
   const entry = raw as Record<string, unknown>;
-  const type = normalizeNonEmptyString(entry.type);
+  const type = normalizeNonEmptyString(entry.type)?.toLowerCase();
   if (!type) return null;
 
   if (type === "text") {
@@ -610,10 +647,50 @@ function normalizeUserInput(raw: unknown): UserInput | null {
       url: String(entry.url ?? ""),
     };
   }
-  if (type === "localImage") {
+  if (type === "localimage") {
     return {
       type: "localImage",
       path: String(entry.path ?? ""),
+    };
+  }
+  if (type === "attachment") {
+    const name = String(entry.name ?? entry.filename ?? "attachment").trim() || "attachment";
+    const mimeType = entry.mimeType == null ? null : String(entry.mimeType);
+    const inlineDataBase64 = normalizeNonEmptyString(entry.inlineDataBase64 ?? entry.inline_data_base64) ?? "";
+    if (!inlineDataBase64) return null;
+
+    let data: Buffer;
+    try {
+      data = Buffer.from(inlineDataBase64, "base64");
+    } catch {
+      return null;
+    }
+    if (!data.length) return null;
+
+    const ext = path.extname(name).toLowerCase().replace(/^\./, "");
+    const isImage =
+      (mimeType ?? "").toLowerCase().startsWith("image/")
+      || ["png", "jpg", "jpeg", "gif", "webp", "heic", "heif"].includes(ext);
+    const safeName = sanitizeStagedFileName(name);
+    const stagedPath = await stageCodexInputAttachment({
+      repository,
+      projectId,
+      threadId,
+      fileName: safeName,
+      data,
+    });
+
+    if (isImage) {
+      return {
+        type: "localImage",
+        path: stagedPath,
+      };
+    }
+
+    return {
+      type: "mention",
+      name: safeName,
+      path: stagedPath,
     };
   }
   if (type === "skill") {
@@ -632,6 +709,32 @@ function normalizeUserInput(raw: unknown): UserInput | null {
   }
 
   return null;
+}
+
+function sanitizeStagedFileName(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "attachment";
+  const base = trimmed.replace(/[\\/]/g, "_");
+  return base.length > 180 ? base.slice(base.length - 180) : base;
+}
+
+async function stageCodexInputAttachment(args: {
+  repository: CodexRepository;
+  projectId: string | null;
+  threadId: string;
+  fileName: string;
+  data: Buffer;
+}): Promise<string> {
+  const stateDir = args.repository.stateDirectory();
+  const projectId = normalizeNonEmptyString(args.projectId) ?? null;
+  const baseDir = projectId
+    ? path.join(stateDir, "projects", projectId, "cache", "codex-inputs", args.threadId)
+    : path.join(stateDir, "codex", "inputs", args.threadId);
+  await mkdir(baseDir, { recursive: true });
+  const finalName = `${uuidv4()}-${args.fileName}`;
+  const destination = path.join(baseDir, finalName);
+  await writeFile(destination, args.data);
+  return destination;
 }
 
 function normalizeNonEmptyString(raw: unknown): string | null {

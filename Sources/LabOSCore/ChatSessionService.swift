@@ -47,7 +47,13 @@ internal final class ChatSessionService {
     private struct CodexTurnSteerParams: Codable, Sendable {
         var threadId: String
         var turnId: String
-        var text: String
+        var input: [CodexTurnInputPart]?
+        var text: String?
+    }
+
+    private struct CodexTurnInterruptParams: Codable, Sendable {
+        var threadId: String
+        var turnId: String
     }
 
     private struct CodexThreadReadParams: Codable, Sendable {
@@ -86,6 +92,27 @@ internal final class ChatSessionService {
         var text: String?
         var url: String?
         var path: String?
+        var name: String?
+        var mimeType: String?
+        var inlineDataBase64: String?
+
+        init(
+            type: String,
+            text: String? = nil,
+            url: String? = nil,
+            path: String? = nil,
+            name: String? = nil,
+            mimeType: String? = nil,
+            inlineDataBase64: String? = nil
+        ) {
+            self.type = type
+            self.text = text
+            self.url = url
+            self.path = path
+            self.name = name
+            self.mimeType = mimeType
+            self.inlineDataBase64 = inlineDataBase64
+        }
     }
 
     struct CodexRegeneratePlan: Sendable {
@@ -113,7 +140,9 @@ internal final class ChatSessionService {
         store.streamingSessions.remove(sessionID)
         store.streamingAssistantMessageIDBySession[sessionID] = nil
         store.codexActiveTurnIDBySession[sessionID] = nil
-        store.codexSteerQueueBySession[sessionID] = nil
+        store.codexQueuedInputsBySession[sessionID] = nil
+        store.codexQueuedInputsLoadedSessions.remove(sessionID)
+        store.codexTurnDiffBySession[sessionID] = nil
         store.codexPendingApprovalsBySession[sessionID] = nil
         store.codexPendingPromptBySession[sessionID] = nil
         store.sessionContextBySession[sessionID] = nil
@@ -186,12 +215,8 @@ internal final class ChatSessionService {
         )
 
         if store.sessionUsesCodex(sessionID: sessionID), store.streamingSessions.contains(sessionID) {
-            if hasText {
-                enqueueCodexSteerInput(sessionID: sessionID, text: trimmed)
-                store.clearPendingComposerAttachments(sessionID: sessionID)
-            } else if hasAttachments {
-                store.lastGatewayErrorMessage = "Steer messages can only include text while a turn is running."
-            }
+            enqueueCodexQueuedInput(sessionID: sessionID, text: trimmed, attachments: effectiveAttachments)
+            store.clearPendingComposerAttachments(sessionID: sessionID)
             return
         }
 
@@ -262,32 +287,39 @@ internal final class ChatSessionService {
 
     func steerQueuedCodexInput(sessionID: UUID, queueItemID: UUID) {
         guard store.sessionUsesCodex(sessionID: sessionID) else { return }
-        guard var queue = store.codexSteerQueueBySession[sessionID],
-              let itemIndex = queue.firstIndex(where: { $0.id == queueItemID })
-        else { return }
+        store.ensureCodexQueuedInputsLoaded(sessionID: sessionID)
+        let queue = store.codexQueuedInputsBySession[sessionID] ?? []
+        guard let item = queue.first(where: { $0.id == queueItemID }) else { return }
 
-        var item = queue[itemIndex]
-        let steerText = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !steerText.isEmpty else {
-            queue[itemIndex].status = .failed
-            queue[itemIndex].error = "Steer text cannot be empty."
-            store.codexSteerQueueBySession[sessionID] = queue
+        let trimmedText = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty || !item.attachments.isEmpty else {
+            updateCodexQueuedInput(sessionID: sessionID, itemID: queueItemID) { queued in
+                queued.status = .failed
+                queued.error = "Steer input cannot be empty."
+            }
             return
         }
 
         guard let threadId = store.codexThreadBySession[sessionID],
               let turnId = store.codexActiveTurnIDBySession[sessionID]
         else {
-            queue[itemIndex].status = .failed
-            queue[itemIndex].error = "No active turn is available yet. Retry once the turn starts."
-            store.codexSteerQueueBySession[sessionID] = queue
+            updateCodexQueuedInput(sessionID: sessionID, itemID: queueItemID) { queued in
+                queued.status = .failed
+                queued.error = "No active turn is available yet. Retry once the turn starts."
+            }
             return
         }
 
-        queue[itemIndex].status = .sending
-        queue[itemIndex].error = nil
-        store.codexSteerQueueBySession[sessionID] = queue
+        let payloads = loadQueuedAttachmentPayloads(item.attachments)
+        let localEchoContent = makeLocalEchoContent(text: trimmedText, queuedAttachments: payloads)
+        let optimisticLocalEchoID = appendLocalCodexUserEcho(sessionID: sessionID, content: localEchoContent)
 
+        updateCodexQueuedInput(sessionID: sessionID, itemID: queueItemID) { queued in
+            queued.status = .sending
+            queued.error = nil
+        }
+
+        let steerInput = makeCodexSteerInputParts(text: trimmedText, queuedAttachments: payloads)
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -296,54 +328,415 @@ internal final class ChatSessionService {
                     params: CodexTurnSteerParams(
                         threadId: threadId,
                         turnId: turnId,
-                        text: steerText
+                        input: steerInput,
+                        text: nil
                     )
                 )
                 await MainActor.run {
-                    guard var updatedQueue = self.store.codexSteerQueueBySession[sessionID] else { return }
-                    updatedQueue.removeAll { $0.id == queueItemID }
-                    self.store.codexSteerQueueBySession[sessionID] = updatedQueue.isEmpty ? nil : updatedQueue
+                    self.removeQueuedCodexInput(
+                        sessionID: sessionID,
+                        queueItemID: queueItemID,
+                        deleteAttachmentFiles: true
+                    )
                 }
             } catch {
                 await MainActor.run {
-                    guard var updatedQueue = self.store.codexSteerQueueBySession[sessionID],
-                          let updatedIndex = updatedQueue.firstIndex(where: { $0.id == queueItemID })
-                    else { return }
-                    updatedQueue[updatedIndex].status = .failed
-                    updatedQueue[updatedIndex].error = error.localizedDescription
-                    self.store.codexSteerQueueBySession[sessionID] = updatedQueue
+                    if self.isUnsupportedSteerMethodError(error) {
+                        if let optimisticLocalEchoID {
+                            self.removeLocalCodexUserEcho(sessionID: sessionID, itemID: optimisticLocalEchoID)
+                        }
+                        self.moveQueuedCodexInputToFront(sessionID: sessionID, itemID: queueItemID)
+                        self.updateCodexQueuedInput(sessionID: sessionID, itemID: queueItemID) { queued in
+                            queued.status = .queued
+                            queued.error = nil
+                        }
+                        Task { [weak self] in
+                            guard let self else { return }
+                            do {
+                                _ = try await self.store.requestCodex(
+                                    method: "turn/interrupt",
+                                    params: CodexTurnInterruptParams(threadId: threadId, turnId: turnId)
+                                )
+                            } catch {
+                                await MainActor.run {
+                                    self.updateCodexQueuedInput(sessionID: sessionID, itemID: queueItemID) { queued in
+                                        queued.status = .failed
+                                        queued.error = error.localizedDescription
+                                    }
+                                }
+                            }
+                        }
+                        return
+                    }
+                    if let optimisticLocalEchoID {
+                        self.removeLocalCodexUserEcho(sessionID: sessionID, itemID: optimisticLocalEchoID)
+                    }
+                    self.updateCodexQueuedInput(sessionID: sessionID, itemID: queueItemID) { queued in
+                        queued.status = .failed
+                        queued.error = error.localizedDescription
+                    }
                 }
             }
         }
     }
 
     func removeQueuedCodexInput(sessionID: UUID, queueItemID: UUID) {
-        guard var queue = store.codexSteerQueueBySession[sessionID] else { return }
-        queue.removeAll { $0.id == queueItemID }
-        store.codexSteerQueueBySession[sessionID] = queue.isEmpty ? nil : queue
+        removeQueuedCodexInput(sessionID: sessionID, queueItemID: queueItemID, deleteAttachmentFiles: true)
     }
 
-    private func enqueueCodexSteerInput(sessionID: UUID, text: String) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+    func drainCodexQueueIfPossible(projectID: UUID, sessionID: UUID) {
+        guard store.sessionUsesCodex(sessionID: sessionID) else { return }
+        guard !store.streamingSessions.contains(sessionID) else { return }
+        guard !store.sessionNeedsUserInput(sessionID: sessionID) else { return }
 
-        var queue = store.codexSteerQueueBySession[sessionID] ?? []
-        queue.append(
-            CodexSteerQueueItem(
-                sessionID: sessionID,
-                text: trimmed,
-                status: .queued,
-                error: nil
-            )
+        store.ensureCodexQueuedInputsLoaded(sessionID: sessionID)
+        guard let next = store.codexQueuedInputs(for: sessionID).first else { return }
+        guard next.status == .queued else { return }
+
+        sendCodexQueuedInputAsNextTurn(projectID: projectID, sessionID: sessionID, queuedItemID: next.id)
+    }
+
+    func interruptCodexTurn(sessionID: UUID) {
+        guard store.sessionUsesCodex(sessionID: sessionID) else { return }
+        guard let threadId = store.codexThreadBySession[sessionID],
+              let turnId = store.codexActiveTurnIDBySession[sessionID]
+        else {
+            store.lastGatewayErrorMessage = "No active turn is available yet."
+            return
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.store.requestCodex(
+                    method: "turn/interrupt",
+                    params: CodexTurnInterruptParams(threadId: threadId, turnId: turnId)
+                )
+            } catch {
+                await MainActor.run {
+                    self.store.lastGatewayErrorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func enqueueCodexQueuedInput(sessionID: UUID, text: String, attachments: [ComposerAttachment]) {
+        store.ensureCodexQueuedInputsLoaded(sessionID: sessionID)
+        let queueItemID = UUID()
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stagedAttachments = stageQueuedAttachments(sessionID: sessionID, queuedItemID: queueItemID, attachments: attachments)
+        guard !trimmed.isEmpty || !stagedAttachments.isEmpty else { return }
+
+        let existing = store.codexQueuedInputsBySession[sessionID] ?? []
+        let nextIndex = (existing.map(\.sortIndex).max() ?? (existing.count - 1)) + 1
+
+        let item = CodexQueuedUserInputItem(
+            id: queueItemID,
+            sessionID: sessionID,
+            text: trimmed,
+            attachments: stagedAttachments,
+            createdAt: .now,
+            sortIndex: nextIndex,
+            status: .queued,
+            error: nil
         )
-        store.codexSteerQueueBySession[sessionID] = queue
+
+        store.codexQueuedInputsBySession[sessionID] = existing + [item]
+        store.persistCodexQueuedInputs(sessionID: sessionID)
+    }
+
+    private struct QueuedAttachmentPayload: Sendable {
+        var attachment: CodexQueuedAttachment
+        var data: Data
+        var base64: String
+    }
+
+    private func updateCodexQueuedInput(
+        sessionID: UUID,
+        itemID: UUID,
+        mutate: (inout CodexQueuedUserInputItem) -> Void
+    ) {
+        store.ensureCodexQueuedInputsLoaded(sessionID: sessionID)
+        var queue = store.codexQueuedInputsBySession[sessionID] ?? []
+        guard let index = queue.firstIndex(where: { $0.id == itemID }) else { return }
+        var item = queue[index]
+        mutate(&item)
+        queue[index] = item
+        store.codexQueuedInputsBySession[sessionID] = queue
+        store.persistCodexQueuedInputs(sessionID: sessionID)
+    }
+
+    private func removeQueuedCodexInput(
+        sessionID: UUID,
+        queueItemID: UUID,
+        deleteAttachmentFiles: Bool
+    ) {
+        store.ensureCodexQueuedInputsLoaded(sessionID: sessionID)
+        var queue = store.codexQueuedInputsBySession[sessionID] ?? []
+        guard let index = queue.firstIndex(where: { $0.id == queueItemID }) else { return }
+        let removed = queue.remove(at: index)
+        if deleteAttachmentFiles {
+            deleteQueuedAttachmentFiles(removed.attachments)
+        }
+        store.codexQueuedInputsBySession[sessionID] = queue.isEmpty ? nil : queue
+        store.persistCodexQueuedInputs(sessionID: sessionID)
+    }
+
+    private func moveQueuedCodexInputToFront(sessionID: UUID, itemID: UUID) {
+        store.ensureCodexQueuedInputsLoaded(sessionID: sessionID)
+        var ordered = store.codexQueuedInputs(for: sessionID)
+        guard let index = ordered.firstIndex(where: { $0.id == itemID }) else { return }
+        let selected = ordered.remove(at: index)
+        ordered.insert(selected, at: 0)
+        store.codexQueuedInputsBySession[sessionID] = ordered.enumerated().map { idx, item in
+            var updated = item
+            updated.sortIndex = idx
+            return updated
+        }
+        store.persistCodexQueuedInputs(sessionID: sessionID)
+    }
+
+    private func isUnsupportedSteerMethodError(_ error: Error) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        if message.contains("turn/steer") && message.contains("unknown variant") {
+            return true
+        }
+        if message.contains("turn/steer") && message.contains("method not found") {
+            return true
+        }
+        if message.contains("does not support turn/steer") {
+            return true
+        }
+        return false
+    }
+
+    private func deleteQueuedAttachmentFiles(_ attachments: [CodexQueuedAttachment]) {
+        for attachment in attachments {
+            let stored = attachment.storedPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !stored.isEmpty else { continue }
+            try? FileManager.default.removeItem(atPath: stored)
+        }
+    }
+
+    private func queuedAttachmentCacheDirectory(sessionID: UUID, queuedItemID: UUID) -> URL {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
+        return base
+            .appendingPathComponent("labos-codex-queued-inputs", isDirectory: true)
+            .appendingPathComponent(sessionID.uuidString.lowercased(), isDirectory: true)
+            .appendingPathComponent(queuedItemID.uuidString.lowercased(), isDirectory: true)
+    }
+
+    private func sanitizeQueuedAttachmentFileName(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "attachment" }
+        let cleaned = trimmed
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "\\", with: "_")
+        if cleaned.count > 180 {
+            return String(cleaned.suffix(180))
+        }
+        return cleaned.isEmpty ? "attachment" : cleaned
+    }
+
+    private func stageQueuedAttachments(
+        sessionID: UUID,
+        queuedItemID: UUID,
+        attachments: [ComposerAttachment]
+    ) -> [CodexQueuedAttachment] {
+        guard !attachments.isEmpty else { return [] }
+        let destinationDir = queuedAttachmentCacheDirectory(sessionID: sessionID, queuedItemID: queuedItemID)
+        do {
+            try FileManager.default.createDirectory(at: destinationDir, withIntermediateDirectories: true)
+        } catch {
+            return []
+        }
+
+        var staged: [CodexQueuedAttachment] = []
+        staged.reserveCapacity(attachments.count)
+
+        for attachment in attachments {
+            guard let base64 = attachment.inlineDataBase64,
+                  let data = Data(base64Encoded: base64, options: [.ignoreUnknownCharacters]),
+                  !data.isEmpty
+            else { continue }
+
+            let safeName = sanitizeQueuedAttachmentFileName(attachment.displayName)
+            let destination = destinationDir.appendingPathComponent("\(attachment.id.uuidString.lowercased())-\(safeName)")
+
+            do {
+                try data.write(to: destination, options: [.atomic])
+            } catch {
+                continue
+            }
+
+            staged.append(
+                CodexQueuedAttachment(
+                    id: attachment.id,
+                    displayName: attachment.displayName,
+                    mimeType: attachment.mimeType,
+                    byteCount: attachment.byteCount ?? data.count,
+                    storedPath: destination.path
+                )
+            )
+        }
+
+        return staged
+    }
+
+    private func loadQueuedAttachmentPayloads(_ attachments: [CodexQueuedAttachment]) -> [QueuedAttachmentPayload] {
+        guard !attachments.isEmpty else { return [] }
+        var payloads: [QueuedAttachmentPayload] = []
+        payloads.reserveCapacity(attachments.count)
+
+        for attachment in attachments {
+            let stored = attachment.storedPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !stored.isEmpty else { continue }
+            let url = URL(fileURLWithPath: stored)
+            guard let data = try? Data(contentsOf: url), !data.isEmpty else { continue }
+            payloads.append(
+                QueuedAttachmentPayload(
+                    attachment: attachment,
+                    data: data,
+                    base64: data.base64EncodedString()
+                )
+            )
+        }
+        return payloads
+    }
+
+    private func makeLocalEchoContent(text: String, queuedAttachments: [QueuedAttachmentPayload]) -> [CodexUserInput] {
+        var content: [CodexUserInput] = []
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            content.append(CodexUserInput(type: "text", text: trimmed, url: nil, path: nil))
+        }
+
+        for payload in queuedAttachments {
+            let mimeType = (payload.attachment.mimeType ?? "").lowercased()
+            if mimeType.hasPrefix("image/"),
+               let localPath = stageAttachmentImageLocally(data: payload.data, fileName: payload.attachment.displayName) {
+                content.append(CodexUserInput(type: "localImage", text: nil, url: nil, path: localPath))
+            } else {
+                let name = payload.attachment.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+                let label = name.isEmpty ? "attachment" : name
+                content.append(CodexUserInput(type: "text", text: "[Attachment] \(label)", url: nil, path: nil))
+            }
+        }
+
+        return content
+    }
+
+    private func makeLocalEchoContent(text: String, composerAttachments: [ComposerAttachment]) -> [CodexUserInput] {
+        var content: [CodexUserInput] = []
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            content.append(CodexUserInput(type: "text", text: trimmed, url: nil, path: nil))
+        }
+
+        for attachment in composerAttachments {
+            guard let base64 = attachment.inlineDataBase64,
+                  let data = Data(base64Encoded: base64, options: [.ignoreUnknownCharacters]),
+                  !data.isEmpty
+            else { continue }
+
+            let mimeType = (attachment.mimeType ?? "").lowercased()
+            if mimeType.hasPrefix("image/"),
+               let localPath = stageAttachmentImageLocally(data: data, fileName: attachment.displayName) {
+                content.append(CodexUserInput(type: "localImage", text: nil, url: nil, path: localPath))
+            } else {
+                let name = attachment.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+                let label = name.isEmpty ? "attachment" : name
+                content.append(CodexUserInput(type: "text", text: "[Attachment] \(label)", url: nil, path: nil))
+            }
+        }
+
+        return content
+    }
+
+    private func makeCodexSteerInputParts(text: String, queuedAttachments: [QueuedAttachmentPayload]) -> [CodexTurnInputPart] {
+        var parts: [CodexTurnInputPart] = []
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            parts.append(
+                CodexTurnInputPart(
+                    type: "text",
+                    text: trimmed,
+                    url: nil,
+                    path: nil,
+                    name: nil,
+                    mimeType: nil,
+                    inlineDataBase64: nil
+                )
+            )
+        }
+
+        for payload in queuedAttachments {
+            let name = payload.attachment.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let safeName = name.isEmpty ? "attachment" : name
+            parts.append(
+                CodexTurnInputPart(
+                    type: "attachment",
+                    text: nil,
+                    url: nil,
+                    path: nil,
+                    name: safeName,
+                    mimeType: payload.attachment.mimeType,
+                    inlineDataBase64: payload.base64
+                )
+            )
+        }
+
+        return parts
+    }
+
+    private func sendCodexQueuedInputAsNextTurn(projectID: UUID, sessionID: UUID, queuedItemID: UUID) {
+        store.ensureCodexQueuedInputsLoaded(sessionID: sessionID)
+        let queue = store.codexQueuedInputsBySession[sessionID] ?? []
+        guard let item = queue.first(where: { $0.id == queuedItemID }) else { return }
+
+        let trimmedText = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let payloads = loadQueuedAttachmentPayloads(item.attachments)
+        let composerAttachments = payloads.map { payload in
+            ComposerAttachment(
+                id: payload.attachment.id,
+                displayName: payload.attachment.displayName,
+                mimeType: payload.attachment.mimeType,
+                inlineDataBase64: payload.base64,
+                byteCount: payload.data.count
+            )
+        }
+
+        guard !trimmedText.isEmpty || !composerAttachments.isEmpty else {
+            updateCodexQueuedInput(sessionID: sessionID, itemID: queuedItemID) { queued in
+                queued.status = .failed
+                queued.error = "Queued input is empty."
+            }
+            return
+        }
+
+        updateCodexQueuedInput(sessionID: sessionID, itemID: queuedItemID) { queued in
+            queued.status = .sending
+            queued.error = nil
+        }
+
+        let storedPaths = item.attachments.map(\.storedPath)
+        sendCodexTurnMessage(
+            projectID: projectID,
+            sessionID: sessionID,
+            text: trimmedText,
+            attachments: composerAttachments,
+            drainingQueuedItem: (id: queuedItemID, attachmentPaths: storedPaths)
+        )
     }
 
     private func sendCodexTurnMessage(
         projectID: UUID,
         sessionID: UUID,
         text: String,
-        attachments: [ComposerAttachment]
+        attachments: [ComposerAttachment],
+        drainingQueuedItem: (id: UUID, attachmentPaths: [String])? = nil
     ) {
         store.streamingSessions.insert(sessionID)
         store.codexStatusTextBySession[sessionID] = "connecting"
@@ -356,7 +749,12 @@ internal final class ChatSessionService {
                 self.store.lastGatewayErrorMessage = "Codex backend is selected, but /codex is not connected."
                 self.store.codexStatusTextBySession[sessionID] = "failed"
                 self.store.codexActiveTurnIDBySession[sessionID] = nil
-                self.store.codexSteerQueueBySession[sessionID] = nil
+                if let draining = drainingQueuedItem {
+                    self.updateCodexQueuedInput(sessionID: sessionID, itemID: draining.id) { queued in
+                        queued.status = .failed
+                        queued.error = "Codex backend is not connected."
+                    }
+                }
                 self.store.streamingSessions.remove(sessionID)
                 self.store.codexPendingThreadBindingSessions.remove(sessionID)
                 return
@@ -366,7 +764,12 @@ internal final class ChatSessionService {
                 self.store.lastGatewayErrorMessage = "Session is missing codex thread mapping."
                 self.store.codexStatusTextBySession[sessionID] = "failed"
                 self.store.codexActiveTurnIDBySession[sessionID] = nil
-                self.store.codexSteerQueueBySession[sessionID] = nil
+                if let draining = drainingQueuedItem {
+                    self.updateCodexQueuedInput(sessionID: sessionID, itemID: draining.id) { queued in
+                        queued.status = .failed
+                        queued.error = "Session is missing codex thread mapping."
+                    }
+                }
                 self.store.streamingSessions.remove(sessionID)
                 self.store.codexPendingThreadBindingSessions.remove(sessionID)
                 return
@@ -380,13 +783,19 @@ internal final class ChatSessionService {
                 self.store.lastGatewayErrorMessage = "No Codex-compatible input was provided."
                 self.store.codexStatusTextBySession[sessionID] = "failed"
                 self.store.codexActiveTurnIDBySession[sessionID] = nil
-                self.store.codexSteerQueueBySession[sessionID] = nil
+                if let draining = drainingQueuedItem {
+                    self.updateCodexQueuedInput(sessionID: sessionID, itemID: draining.id) { queued in
+                        queued.status = .failed
+                        queued.error = "No Codex-compatible input was provided."
+                    }
+                }
                 self.store.streamingSessions.remove(sessionID)
                 self.store.codexPendingThreadBindingSessions.remove(sessionID)
                 return
             }
 
-            self.appendLocalCodexUserEcho(sessionID: sessionID, from: input)
+            let localEcho = self.makeLocalEchoContent(text: text, composerAttachments: attachments)
+            self.appendLocalCodexUserEcho(sessionID: sessionID, content: localEcho)
             let model = self.store.selectedModelId(for: sessionID).trimmingCharacters(in: .whitespacesAndNewlines)
             let planMode = self.store.planModeEnabled(for: sessionID)
             do {
@@ -420,11 +829,28 @@ internal final class ChatSessionService {
                     }
                 }
                 self.store.codexPendingThreadBindingSessions.remove(sessionID)
+
+                if let draining = drainingQueuedItem {
+                    await MainActor.run {
+                        self.removeQueuedCodexInput(
+                            sessionID: sessionID,
+                            queueItemID: draining.id,
+                            deleteAttachmentFiles: true
+                        )
+                    }
+                }
             } catch {
                 self.store.lastGatewayErrorMessage = error.localizedDescription
                 self.store.codexStatusTextBySession[sessionID] = "failed"
                 self.store.codexActiveTurnIDBySession[sessionID] = nil
-                self.store.codexSteerQueueBySession[sessionID] = nil
+                if let draining = drainingQueuedItem {
+                    await MainActor.run {
+                        self.updateCodexQueuedInput(sessionID: sessionID, itemID: draining.id) { queued in
+                            queued.status = .failed
+                            queued.error = error.localizedDescription
+                        }
+                    }
+                }
                 self.store.streamingSessions.remove(sessionID)
                 self.store.codexPendingThreadBindingSessions.remove(sessionID)
             }
@@ -473,29 +899,49 @@ internal final class ChatSessionService {
         var parts: [CodexTurnInputPart] = []
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedText.isEmpty {
-            parts.append(CodexTurnInputPart(type: "text", text: trimmedText, url: nil, path: nil))
+            parts.append(
+                CodexTurnInputPart(
+                    type: "text",
+                    text: trimmedText,
+                    url: nil,
+                    path: nil,
+                    name: nil,
+                    mimeType: nil,
+                    inlineDataBase64: nil
+                )
+            )
         }
 
         for attachment in attachments {
-            guard (attachment.mimeType ?? "").lowercased().hasPrefix("image/") else { continue }
-            guard let base64 = attachment.inlineDataBase64,
-                  let data = Data(base64Encoded: base64),
-                  let localPath = stageAttachmentImageLocally(data: data, fileName: attachment.displayName)
-            else { continue }
-            parts.append(CodexTurnInputPart(type: "localImage", text: nil, url: nil, path: localPath))
+            let base64 = attachment.inlineDataBase64?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !base64.isEmpty else { continue }
+            let name = attachment.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let safeName = name.isEmpty ? "attachment" : name
+            parts.append(
+                CodexTurnInputPart(
+                    type: "attachment",
+                    text: nil,
+                    url: nil,
+                    path: nil,
+                    name: safeName,
+                    mimeType: attachment.mimeType,
+                    inlineDataBase64: base64
+                )
+            )
         }
 
         return parts
     }
 
-    private func appendLocalCodexUserEcho(sessionID: UUID, from input: [CodexTurnInputPart]) {
-        let content = Self.codexUserInputs(from: input)
-        guard !content.isEmpty else { return }
+    @discardableResult
+    private func appendLocalCodexUserEcho(sessionID: UUID, content: [CodexUserInput]) -> String? {
+        guard !content.isEmpty else { return nil }
+        let localItemID = "\(AppStore.codexLocalUserItemPrefix)\(UUID().uuidString.lowercased())"
 
         let item = CodexThreadItem.userMessage(
             CodexUserMessageItem(
                 type: "userMessage",
-                id: "\(AppStore.codexLocalUserItemPrefix)\(UUID().uuidString.lowercased())",
+                id: localItemID,
                 content: content
             )
         )
@@ -505,6 +951,17 @@ internal final class ChatSessionService {
             items: existing,
             incoming: item
         )
+        return localItemID
+    }
+
+    private func removeLocalCodexUserEcho(sessionID: UUID, itemID: String) {
+        guard itemID.hasPrefix(AppStore.codexLocalUserItemPrefix) else { return }
+        var items = store.codexItemsBySession[sessionID] ?? []
+        items.removeAll { item in
+            guard case let .userMessage(userMessage) = item else { return false }
+            return userMessage.id == itemID
+        }
+        store.codexItemsBySession[sessionID] = items
     }
 
     private func stageAttachmentImageLocally(data: Data, fileName: String) -> String? {
@@ -1040,13 +1497,11 @@ internal final class ChatSessionService {
                         store.streamingSessions.remove(sessionID)
                         store.streamingAssistantMessageIDBySession[sessionID] = nil
                         store.codexActiveTurnIDBySession[sessionID] = nil
-                        store.codexSteerQueueBySession[sessionID] = nil
                     }
                 } else if !keepLocalInFlightItems {
                     store.streamingSessions.remove(sessionID)
                     store.streamingAssistantMessageIDBySession[sessionID] = nil
                     store.codexActiveTurnIDBySession[sessionID] = nil
-                    store.codexSteerQueueBySession[sessionID] = nil
                 }
             } else {
                 store.codexItemsBySession[sessionID] = store.codexItemsBySession[sessionID] ?? []

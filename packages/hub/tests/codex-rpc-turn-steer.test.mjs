@@ -39,6 +39,7 @@ test("handleTurnSteer validates params and forwards to codex-app-server engine",
     },
   };
 
+  const steerText = "Please focus on the second queued steer message.";
   const result = await handleTurnSteer(
     {
       repository,
@@ -47,7 +48,7 @@ test("handleTurnSteer validates params and forwards to codex-app-server engine",
     {
       threadId: "thr_steer_1",
       turnId: "turn_steer_1",
-      text: "Please focus on the second queued steer message.",
+      text: steerText,
     }
   );
 
@@ -56,7 +57,13 @@ test("handleTurnSteer validates params and forwards to codex-app-server engine",
     {
       threadId: "thr_steer_1",
       turnId: "turn_steer_1",
-      text: "Please focus on the second queued steer message.",
+      input: [
+        {
+          type: "text",
+          text: steerText,
+          text_elements: [],
+        },
+      ],
     },
   ]);
 });

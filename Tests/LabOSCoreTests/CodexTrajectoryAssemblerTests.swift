@@ -213,6 +213,67 @@ final class CodexTrajectoryAssemblerTests: XCTestCase {
         XCTAssertTrue(turn.groups.isEmpty)
     }
 
+    func testWebSearchItemIsGroupedAsSearchFamily() throws {
+        let items: [CodexThreadItem] = [
+            .userMessage(
+                CodexUserMessageItem(
+                    type: "userMessage",
+                    id: "u1",
+                    content: [CodexUserInput(type: "text", text: "search this", url: nil, path: nil)]
+                )
+            ),
+            .webSearch(
+                CodexWebSearchItem(
+                    type: "webSearch",
+                    id: "ws1",
+                    query: "Skogafoss weather",
+                    action: .search(query: "Skogafoss weather", queries: ["Skogafoss weather"])
+                )
+            ),
+            .agentMessage(
+                CodexAgentMessageItem(type: "agentMessage", id: "a1", text: "done")
+            ),
+        ]
+
+        let turns = CodexTrajectoryAssembler.assemble(from: items, isStreaming: false)
+        let turn = try XCTUnwrap(turns.first)
+        XCTAssertEqual(turn.groups.count, 1)
+        XCTAssertEqual(turn.groups.first?.family, .search)
+        XCTAssertEqual(turn.groups.first?.leaves.count, 1)
+        XCTAssertEqual(turn.groups.first?.leaves.first?.id, "ws1")
+    }
+
+    func testProposedPlanParserExtractsPlanBlockAndSurroundingText() throws {
+        let parsed = try XCTUnwrap(
+            CodexProposedPlanParser.parse(
+                from: """
+                Assumptions and defaults:
+                <proposed_plan>
+                1. Scope tasks
+                2. Implement changes
+                </proposed_plan>
+                Ready to proceed.
+                """
+            )
+        )
+
+        XCTAssertEqual(parsed.leadingText, "Assumptions and defaults:")
+        XCTAssertEqual(parsed.planText, "1. Scope tasks\n2. Implement changes")
+        XCTAssertEqual(parsed.trailingText, "Ready to proceed.")
+    }
+
+    func testProposedPlanParserReturnsNilWhenFenceIsIncomplete() {
+        XCTAssertNil(
+            CodexProposedPlanParser.parse(
+                from: """
+                Intro text
+                <proposed_plan>
+                - Missing closing fence
+                """
+            )
+        )
+    }
+
     private func makeUnknownItem(type: String, id: String, payload: [String: JSONValue]) -> CodexUnknownItem {
         var object = payload
         object["type"] = .string(type)

@@ -277,6 +277,15 @@ export class CodexRpcRouter {
         if (event.type === "serverRequest") {
           let persistedPendingRequestId: string | null = null;
           try {
+            const dynamicPlanUpdate = extractPlanUpdateFromDynamicToolCall(event.method, event.params);
+            if (dynamicPlanUpdate) {
+              await this.persistAndSendNotification("turn/plan/updated", {
+                threadId: args.threadId,
+                turnId: dynamicPlanUpdate.turnId,
+                explanation: dynamicPlanUpdate.explanation,
+                plan: dynamicPlanUpdate.plan,
+              });
+            }
             const sessionMapping = await this.repository.findSessionByThread(args.threadId);
             const pendingKind = pendingInputKindForMethod(event.method, event.params);
             const preferredRequestId =
@@ -563,11 +572,20 @@ export class CodexRpcRouter {
     turnId: string;
     sessionId: string;
   }) {
+    // Avoid issuing duplicate implement-confirmation prompts for the same session.
+    const pending = await this.repository.listPendingInputsForSession({
+      sessionId: args.sessionId,
+      token: this.token,
+    });
+    if (pending.some((entry) => entry.kind === "implement_confirmation")) {
+      return;
+    }
+
     const thread = await this.repository.readThread(args.threadId, true);
     if (!thread) return;
     const completedTurn = findTurnByIdVariants(thread, args.threadId, args.turnId);
     if (!completedTurn) return;
-    if (!turnContainsProposedPlanBlock(completedTurn)) return;
+    if (!turnContainsImplementablePlan(completedTurn)) return;
 
     const requestId = `labos_impl_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
     const params = buildPlanImplementationPromptParams({
@@ -765,22 +783,44 @@ export function turnContainsProposedPlanBlock(turn: Turn): boolean {
   return false;
 }
 
+function textContainsPlanSteps(text: string): boolean {
+  const normalized = text.replaceAll("\r\n", "\n");
+  const numbered = normalized.match(/^\s*\d+\.\s+\S+/gm) ?? [];
+  if (numbered.length >= 3) return true;
+  const bullets = normalized.match(/^\s*[-*]\s+\S+/gm) ?? [];
+  return bullets.length >= 3;
+}
+
+export function turnContainsImplementablePlan(turn: Turn): boolean {
+  for (const item of turn.items) {
+    if (item.type !== "agentMessage" && item.type !== "plan") continue;
+    const text = normalizeNonEmptyString((item as Record<string, unknown>).text);
+    if (!text) continue;
+    if (text.includes("<proposed_plan>") && text.includes("</proposed_plan>")) {
+      return true;
+    }
+    if (textContainsPlanSteps(text)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function buildPlanImplementationPromptParams(args: { threadId: string; turnId: string }): Record<string, unknown> {
   return {
     threadId: args.threadId,
     turnId: args.turnId,
     itemId: `labos_plan_implementation_${args.turnId}`,
-    prompt: "Plan is ready. Would you like me to implement it now?",
+    prompt: "Implement this plan?",
     questions: [
       {
         id: "labos_plan_implementation_decision",
-        header: "Implement Plan",
-        question: "Do you want to implement this plan now?",
+        question: "",
         isOther: true,
         isSecret: false,
         options: [
           {
-            label: "Implement now",
+            label: "Yes, implement this plan",
             description: "Start implementing the approved plan immediately.",
           },
           {
@@ -791,6 +831,14 @@ export function buildPlanImplementationPromptParams(args: { threadId: string; tu
       },
     ],
   };
+}
+
+function normalizePlanImplementationDecision(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[.!?]+$/g, "");
 }
 
 export function decidePlanImplementationFollowup(
@@ -807,22 +855,69 @@ export function decidePlanImplementationFollowup(
   const raw = normalizeNonEmptyString(answerList[0]);
   if (!raw) return null;
 
-  const normalized = raw.toLowerCase();
-  if (normalized === "implement now") {
+  const normalized = normalizePlanImplementationDecision(raw);
+  if (
+    normalized === "yes, implement this plan" ||
+    normalized === "yes implement this plan" ||
+    normalized === "implement now" ||
+    normalized === "implement it" ||
+    normalized === "implement plan"
+  ) {
     return {
       planMode: false,
-      text: "Implement the approved plan now and proceed with execution.",
+      text: "Implement it",
     };
   }
   if (normalized === "keep planning") {
     return {
       planMode: true,
-      text: "Continue in plan mode and refine the plan before implementation.",
+      text: "Continue planning and refine the plan before implementation.",
     };
   }
   return {
     planMode: true,
-    text: `Continue in plan mode and revise the plan based on this feedback: ${raw}`,
+    text: `Continue planning and revise the plan based on this feedback: ${raw}`,
+  };
+}
+
+export function extractPlanUpdateFromDynamicToolCall(
+  method: string,
+  params: Record<string, unknown> | null | undefined
+): {
+  turnId: string;
+  explanation: string | null;
+  plan: Array<{ step: string; status: "pending" | "inProgress" | "completed" }>;
+} | null {
+  if (method !== "item/tool/call") return null;
+  if (!params || typeof params !== "object" || Array.isArray(params)) return null;
+
+  const tool = normalizeNonEmptyString(params.tool);
+  if (!tool || tool.toLowerCase() !== "update_plan") return null;
+
+  const turnId = normalizeNonEmptyString(params.turnId);
+  if (!turnId) return null;
+
+  const argumentsRaw = params.arguments;
+  if (!argumentsRaw || typeof argumentsRaw !== "object" || Array.isArray(argumentsRaw)) return null;
+  const argumentsObject = argumentsRaw as Record<string, unknown>;
+  const planRaw = Array.isArray(argumentsObject.plan) ? argumentsObject.plan : [];
+  const plan = planRaw
+    .map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+      const row = entry as Record<string, unknown>;
+      const step = normalizeNonEmptyString(row.step);
+      const status = normalizePlanStatus(row.status);
+      if (!step || !status) return null;
+      return { step, status };
+    })
+    .filter((entry): entry is { step: string; status: "pending" | "inProgress" | "completed" } => entry != null);
+
+  if (plan.length === 0) return null;
+
+  return {
+    turnId,
+    explanation: normalizeNullableString(argumentsObject.explanation),
+    plan,
   };
 }
 

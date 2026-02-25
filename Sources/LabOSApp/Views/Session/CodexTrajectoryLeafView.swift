@@ -51,6 +51,8 @@ struct CodexTrajectoryLeafView: View {
             return item.command.trimmingCharacters(in: .whitespacesAndNewlines)
         case let .mcpToolCall(item):
             return "\(item.server).\(item.tool)"
+        case .webSearch:
+            return "Web search"
         case let .fileChange(item):
             return "File changes (\(item.changes.count))"
         case .plan:
@@ -70,6 +72,8 @@ struct CodexTrajectoryLeafView: View {
             return "\(item.status) · \(item.cwd)"
         case let .mcpToolCall(item):
             return item.status
+        case let .webSearch(item):
+            return webSearchActionLabel(item.action)
         case let .fileChange(item):
             return item.status
         case let .plan(item):
@@ -91,6 +95,8 @@ struct CodexTrajectoryLeafView: View {
             commandDetail(item)
         case let .mcpToolCall(item):
             mcpDetail(item)
+        case let .webSearch(item):
+            webSearchDetail(item)
         case let .fileChange(item):
             fileChangeDetail(item)
         case let .plan(item):
@@ -181,6 +187,38 @@ struct CodexTrajectoryLeafView: View {
         }
     }
 
+    private func webSearchDetail(_ item: CodexWebSearchItem) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            trajectoryField("query", item.query)
+            trajectoryField("action", webSearchActionLabel(item.action))
+
+            if let action = item.action {
+                switch action {
+                case let .search(query, queries):
+                    if let query = nonEmpty(query) {
+                        trajectoryField("action query", query)
+                    }
+                    if let queries, !queries.isEmpty {
+                        trajectoryField("queries", queries.joined(separator: " | "))
+                    }
+                case let .openPage(url):
+                    if let url = nonEmpty(url) {
+                        trajectoryField("url", url, monospaced: true)
+                    }
+                case let .findInPage(url, pattern):
+                    if let url = nonEmpty(url) {
+                        trajectoryField("url", url, monospaced: true)
+                    }
+                    if let pattern = nonEmpty(pattern) {
+                        trajectoryField("pattern", pattern)
+                    }
+                case .other:
+                    EmptyView()
+                }
+            }
+        }
+    }
+
     private func trajectoryField(_ key: String, _ value: String, monospaced: Bool = false) -> some View {
         HStack(alignment: .top, spacing: 6) {
             Text(key)
@@ -236,6 +274,26 @@ struct CodexTrajectoryLeafView: View {
             return flag ? "true" : "false"
         default:
             return nil
+        }
+    }
+
+    private func nonEmpty(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func webSearchActionLabel(_ action: CodexWebSearchAction?) -> String {
+        guard let action else { return "search" }
+        switch action {
+        case .search:
+            return "search"
+        case .openPage:
+            return "open page"
+        case .findInPage:
+            return "find in page"
+        case .other:
+            return "other"
         }
     }
 }

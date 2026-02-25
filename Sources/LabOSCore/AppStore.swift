@@ -13,6 +13,8 @@ public final class AppStore: ObservableObject {
         static let hpcQos = "LabOS.hpc.qos"
         static let runCompletionNotificationsEnabled = "LabOS.notifications.runCompletion.enabled"
         static let codexPromptDraftPrefix = "LabOS.codexPromptDraft"
+        static let codexTrajectoryDurations = "LabOS.codexTrajectoryDurations"
+        static let codexQueuedInputPrefix = "LabOS.codexQueuedInput"
     }
 
     public struct RunCompletionSignal: Identifiable, Hashable, Sendable {
@@ -111,9 +113,10 @@ public final class AppStore: ObservableObject {
     @Published public internal(set) var codexItemsBySession: [UUID: [CodexThreadItem]] = [:]
     @Published public internal(set) var codexPendingApprovalsBySession: [UUID: [CodexPendingApproval]] = [:]
     @Published public internal(set) var codexPendingPromptBySession: [UUID: [CodexPendingPrompt]] = [:]
-    @Published public internal(set) var codexSteerQueueBySession: [UUID: [CodexSteerQueueItem]] = [:]
+    @Published public internal(set) var codexQueuedInputsBySession: [UUID: [CodexQueuedUserInputItem]] = [:]
     @Published public internal(set) var codexActiveTurnIDBySession: [UUID: String] = [:]
     @Published public internal(set) var codexStatusTextBySession: [UUID: String] = [:]
+    @Published public internal(set) var codexTurnDiffBySession: [UUID: CodexTurnDiffState] = [:]
     @Published public internal(set) var codexTokenUsageBySession: [UUID: CodexTokenUsage] = [:]
     @Published public internal(set) var codexFullAccessBySession: [UUID: Bool] = [:]
 
@@ -137,6 +140,9 @@ public final class AppStore: ObservableObject {
     @Published public internal(set) var persistedProcessSummaryByMessageID: [UUID: AssistantProcessSummary] = [:]
 
     @Published public internal(set) var sessionContextBySession: [UUID: SessionContextState] = [:]
+
+    internal var codexTrajectoryDurationsBySession: [UUID: [String: Int]] = [:]
+    internal var codexQueuedInputsLoadedSessions: Set<UUID> = []
 
     @Published public var resourceStatus: ResourceStatus = .placeholder
 
@@ -235,6 +241,7 @@ public final class AppStore: ObservableObject {
         self.backend = backend
         defaults = userDefaults
         loadGatewaySettings()
+        loadCodexTrajectoryDurations()
 
         // Initialize services
         composerService = ComposerService(store: self)
@@ -344,6 +351,45 @@ public final class AppStore: ObservableObject {
         gatewayWSURLString = defaults.string(forKey: DefaultsKey.gatewayWSURL) ?? ""
         gatewayToken = defaults.string(forKey: DefaultsKey.gatewayToken) ?? ""
         preferredBackendEngine = normalizeBackendEngine(defaults.string(forKey: DefaultsKey.backendEngine)) ?? "codex-app-server"
+    }
+
+    private func loadCodexTrajectoryDurations() {
+        guard let data = defaults.data(forKey: DefaultsKey.codexTrajectoryDurations) else {
+            codexTrajectoryDurationsBySession = [:]
+            return
+        }
+
+        guard let decoded = try? gatewayJSONDecoder.decode([String: [String: Int]].self, from: data) else {
+            codexTrajectoryDurationsBySession = [:]
+            return
+        }
+
+        var mapped: [UUID: [String: Int]] = [:]
+        for (sessionIDRaw, turnDurations) in decoded {
+            guard let sessionID = UUID(uuidString: sessionIDRaw) else { continue }
+            let cleaned = turnDurations.filter { !$0.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.value > 0 }
+            if !cleaned.isEmpty {
+                mapped[sessionID] = cleaned
+            }
+        }
+        codexTrajectoryDurationsBySession = mapped
+    }
+
+    private func persistCodexTrajectoryDurations() {
+        let encodedMap = codexTrajectoryDurationsBySession.reduce(into: [String: [String: Int]]()) { result, entry in
+            let durations = entry.value.filter { !$0.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.value > 0 }
+            guard !durations.isEmpty else { return }
+            result[entry.key.uuidString.lowercased()] = durations
+        }
+
+        if encodedMap.isEmpty {
+            defaults.removeObject(forKey: DefaultsKey.codexTrajectoryDurations)
+            return
+        }
+
+        if let data = try? gatewayJSONEncoder.encode(encodedMap) {
+            defaults.set(data, forKey: DefaultsKey.codexTrajectoryDurations)
+        }
     }
 
     public func setRunCompletionNotificationsEnabled(_ enabled: Bool) {
@@ -681,9 +727,11 @@ public final class AppStore: ObservableObject {
         codexItemsBySession.removeAll()
         codexPendingApprovalsBySession.removeAll()
         codexPendingPromptBySession.removeAll()
-        codexSteerQueueBySession.removeAll()
+        codexQueuedInputsBySession.removeAll()
+        codexQueuedInputsLoadedSessions.removeAll()
         codexActiveTurnIDBySession.removeAll()
         codexStatusTextBySession.removeAll()
+        codexTurnDiffBySession.removeAll()
         codexTokenUsageBySession.removeAll()
         codexFullAccessBySession.removeAll()
         codexThreadBySession.removeAll()
@@ -846,6 +894,7 @@ public final class AppStore: ObservableObject {
                     }
                 }
                 livePlanBySession[sessionID] = nil
+                codexTurnDiffBySession[sessionID] = nil
             }
         case "turn/completed":
             if let sessionID {
@@ -854,15 +903,37 @@ public final class AppStore: ObservableObject {
                     codexStatusTextBySession[sessionID] = status
                 }
                 codexActiveTurnIDBySession[sessionID] = nil
-                codexSteerQueueBySession[sessionID] = nil
                 livePlanBySession[sessionID] = nil
+                codexTurnDiffBySession[sessionID] = nil
                 streamingSessions.remove(sessionID)
                 codexPendingThreadBindingSessions.remove(sessionID)
+
+                if let session = sessionRecord(for: sessionID) {
+                    Task { @MainActor [weak self] in
+                        self?.chatService.drainCodexQueueIfPossible(projectID: session.projectID, sessionID: sessionID)
+                    }
+                }
             }
         case "turn/plan/updated":
             applyCodexTurnPlanUpdated(notificationParams: params, sessionID: sessionID)
         case "turn/diff/updated":
-            break
+            guard let sessionID,
+                  let threadId,
+                  let rawTurnId = params["turnId"]?.stringValue,
+                  let turnId = normalizedOptionalString(rawTurnId)
+            else { break }
+            let diff = params["diff"]?.stringValue ?? ""
+            if diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                codexTurnDiffBySession[sessionID] = nil
+                break
+            }
+            codexTurnDiffBySession[sessionID] = CodexTurnDiffState(
+                sessionID: sessionID,
+                threadId: threadId,
+                turnId: turnId,
+                diff: diff,
+                updatedAt: .now
+            )
         case "item/started":
             applyCodexItem(notificationParams: params, sessionID: sessionID)
         case "item/completed":
@@ -1017,16 +1088,113 @@ public final class AppStore: ObservableObject {
     internal static func codexUserContentSignature(_ content: [CodexUserInput]) -> String {
         let signature = content
             .map { input in
-                [
-                    input.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-                    input.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-                    input.url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-                    input.path?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-                ].joined(separator: "|")
+                let type = input.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let text = input.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let url = input.url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let rawPath = input.path?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+                let path: String
+                switch type {
+                case "localimage", "mention":
+                    // Local echoes stage images on-device; Hub stages the same payload under
+                    // a different path/name. Normalize so we can dedupe the optimistic echo.
+                    path = codexNormalizedStagedFileName(rawPath)
+                default:
+                    path = rawPath
+                }
+
+                return [type, text, url, path].joined(separator: "|")
             }
             .joined(separator: "||")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return signature
+    }
+
+    private static func codexNormalizedStagedFileName(_ rawPath: String) -> String {
+        let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let noScheme = trimmed.hasPrefix("file://") ? String(trimmed.dropFirst("file://".count)) : trimmed
+        let fileName = URL(fileURLWithPath: noScheme).lastPathComponent
+        guard !fileName.isEmpty else { return "" }
+
+        let strippedPrefix = codexStripLeadingUUIDPrefix(fileName)
+        let strippedSuffix = codexStripTrailingUUIDSuffix(strippedPrefix)
+        return strippedSuffix.isEmpty ? fileName : strippedSuffix
+    }
+
+    private static func codexStripLeadingUUIDPrefix(_ fileName: String) -> String {
+        let trimmed = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        if let stripped = codexStripLeadingUUIDPrefix(trimmed, uuidLength: 36) {
+            return stripped
+        }
+        if let stripped = codexStripLeadingUUIDPrefix(trimmed, uuidLength: 32) {
+            return stripped
+        }
+
+        return trimmed
+    }
+
+    private static func codexStripLeadingUUIDPrefix(_ fileName: String, uuidLength: Int) -> String? {
+        guard fileName.count > uuidLength + 1 else { return nil }
+        let dashIndex = fileName.index(fileName.startIndex, offsetBy: uuidLength)
+        guard fileName[dashIndex] == "-" else { return nil }
+
+        let uuid = String(fileName[..<dashIndex])
+        guard codexIsUUIDLike(uuid) else { return nil }
+        let afterDash = fileName.index(after: dashIndex)
+        return String(fileName[afterDash...])
+    }
+
+    private static func codexStripTrailingUUIDSuffix(_ fileName: String) -> String {
+        let ext = URL(fileURLWithPath: fileName).pathExtension
+        let stem = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
+        guard !stem.isEmpty else { return fileName }
+
+        if let strippedStem = codexStripTrailingUUIDSuffix(stem, uuidLength: 36) {
+            return ext.isEmpty ? strippedStem : "\(strippedStem).\(ext)"
+        }
+        if let strippedStem = codexStripTrailingUUIDSuffix(stem, uuidLength: 32) {
+            return ext.isEmpty ? strippedStem : "\(strippedStem).\(ext)"
+        }
+
+        return fileName
+    }
+
+    private static func codexStripTrailingUUIDSuffix(_ stem: String, uuidLength: Int) -> String? {
+        guard stem.count > uuidLength + 1 else { return nil }
+        let dashIndex = stem.index(stem.endIndex, offsetBy: -(uuidLength + 1))
+        guard stem[dashIndex] == "-" else { return nil }
+
+        let uuidStart = stem.index(after: dashIndex)
+        let uuid = String(stem[uuidStart...])
+        guard codexIsUUIDLike(uuid) else { return nil }
+        return String(stem[..<dashIndex])
+    }
+
+    private static func codexIsUUIDLike(_ raw: String) -> Bool {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if value.count == 36 {
+            let chars = Array(value)
+            let hyphenOffsets: Set<Int> = [8, 13, 18, 23]
+            for idx in 0..<chars.count {
+                let ch = chars[idx]
+                if hyphenOffsets.contains(idx) {
+                    if ch != "-" { return false }
+                    continue
+                }
+                guard ("0"..."9").contains(ch) || ("a"..."f").contains(ch) else { return false }
+            }
+            return true
+        }
+        if value.count == 32 {
+            for ch in value {
+                guard ("0"..."9").contains(ch) || ("a"..."f").contains(ch) else { return false }
+            }
+            return true
+        }
+        return false
     }
 
     private static func decodeCodexPromptQuestions(from params: [String: JSONValue]) -> [CodexPromptQuestion] {
@@ -1113,6 +1281,96 @@ public final class AppStore: ObservableObject {
             .replacingOccurrences(of: ".", with: "_")
             .replacingOccurrences(of: " ", with: "_")
         return sanitized.isEmpty ? "unknown" : sanitized
+    }
+
+    private func codexQueuedInputsDefaultsKey(sessionID: UUID) -> String {
+        "\(DefaultsKey.codexQueuedInputPrefix).\(sessionID.uuidString.lowercased())"
+    }
+
+    internal func ensureCodexQueuedInputsLoaded(sessionID: UUID) {
+        guard !codexQueuedInputsLoadedSessions.contains(sessionID) else { return }
+        codexQueuedInputsLoadedSessions.insert(sessionID)
+
+        let key = codexQueuedInputsDefaultsKey(sessionID: sessionID)
+        guard let data = defaults.data(forKey: key),
+              let decoded = try? gatewayJSONDecoder.decode([CodexQueuedUserInputItem].self, from: data)
+        else {
+            codexQueuedInputsBySession[sessionID] = codexQueuedInputsBySession[sessionID] ?? []
+            return
+        }
+
+        var filtered: [CodexQueuedUserInputItem] = []
+        filtered.reserveCapacity(decoded.count)
+        for raw in decoded {
+            var item = raw
+            if item.status == .sending {
+                item.status = .queued
+                item.error = nil
+            }
+            item.attachments = item.attachments.filter { attachment in
+                FileManager.default.fileExists(atPath: attachment.storedPath)
+            }
+            filtered.append(item)
+        }
+
+        codexQueuedInputsBySession[sessionID] = normalizeCodexQueuedInputs(filtered)
+    }
+
+    internal func persistCodexQueuedInputs(sessionID: UUID) {
+        let key = codexQueuedInputsDefaultsKey(sessionID: sessionID)
+        let items = codexQueuedInputsBySession[sessionID] ?? []
+        guard !items.isEmpty else {
+            defaults.removeObject(forKey: key)
+            return
+        }
+        if let data = try? gatewayJSONEncoder.encode(items) {
+            defaults.set(data, forKey: key)
+        }
+    }
+
+    internal func clearPersistedCodexQueuedInputs(sessionID: UUID) {
+        let key = codexQueuedInputsDefaultsKey(sessionID: sessionID)
+        defaults.removeObject(forKey: key)
+    }
+
+    private func normalizeCodexQueuedInputs(_ items: [CodexQueuedUserInputItem]) -> [CodexQueuedUserInputItem] {
+        let sorted = items.sorted { lhs, rhs in
+            if lhs.sortIndex != rhs.sortIndex {
+                return lhs.sortIndex < rhs.sortIndex
+            }
+            if lhs.createdAt != rhs.createdAt {
+                return lhs.createdAt < rhs.createdAt
+            }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+        return sorted.enumerated().map { index, item in
+            var updated = item
+            updated.sortIndex = index
+            return updated
+        }
+    }
+
+    private static func moveArray<T>(_ array: inout [T], from offsets: IndexSet, to destination: Int) {
+        let sorted = offsets.sorted()
+        guard !sorted.isEmpty else { return }
+
+        var dest = destination
+        for index in sorted where index < dest {
+            dest -= 1
+        }
+
+        let moving = sorted.compactMap { index -> T? in
+            guard array.indices.contains(index) else { return nil }
+            return array[index]
+        }
+
+        for index in sorted.sorted(by: >) {
+            guard array.indices.contains(index) else { continue }
+            array.remove(at: index)
+        }
+
+        dest = min(max(dest, 0), array.count)
+        array.insert(contentsOf: moving, at: dest)
     }
 
     private func applyCodexAgentMessageDelta(notificationParams params: [String: JSONValue], sessionID: UUID?) {
@@ -1366,7 +1624,7 @@ public final class AppStore: ObservableObject {
         messagesBySession = [sessionID: []]
         codexItemsBySession = [sessionID: []]
         codexPendingApprovalsBySession = [:]
-        codexSteerQueueBySession = [:]
+        codexQueuedInputsBySession = [:]
         codexStatusTextBySession = [:]
         codexTokenUsageBySession = [:]
         codexFullAccessBySession = [sessionID: false]
@@ -1491,11 +1749,114 @@ public final class AppStore: ObservableObject {
                 requestID: request.id,
                 promptText: prompt.prompt
             )
+        case "item/tool/call":
+            let toolName = normalizedOptionalString(params["tool"]?.stringValue ?? "")?.lowercased() ?? ""
+            guard toolName == "update_plan" else {
+                await respondToCodexServerRequest(
+                    requestID: request.id,
+                    result: codexDynamicToolCallResponse(
+                        success: false,
+                        message: "Unsupported dynamic tool call: \(toolName.isEmpty ? request.method : toolName)"
+                    )
+                )
+                return
+            }
+
+            guard let update = decodeDynamicPlanUpdate(arguments: params["arguments"]) else {
+                await respondToCodexServerRequest(
+                    requestID: request.id,
+                    result: codexDynamicToolCallResponse(success: false, message: "Missing or invalid update_plan arguments.")
+                )
+                return
+            }
+            guard let projectID = sessionProjectID(sessionID) else {
+                await respondToCodexServerRequest(
+                    requestID: request.id,
+                    result: codexDynamicToolCallResponse(success: false, message: "Unable to resolve project for plan update.")
+                )
+                return
+            }
+
+            livePlanBySession[sessionID] = AgentPlanUpdatedPayload(
+                agentRunId: UUID(),
+                projectId: projectID,
+                sessionId: sessionID,
+                explanation: update.explanation,
+                plan: update.plan
+            )
+
+            await respondToCodexServerRequest(
+                requestID: request.id,
+                result: codexDynamicToolCallResponse(success: true, message: "Plan updated.")
+            )
         default:
             try? await codexClient?.respond(
                 error: CodexRPCError(code: -32601, message: "Unsupported server request: \(request.method)"),
                 for: request.id
             )
+        }
+    }
+
+    private func respondToCodexServerRequest(
+        requestID: CodexRequestID,
+        result: JSONValue? = nil,
+        error: CodexRPCError? = nil
+    ) async {
+        if let override = codexServerResponseOverrideForTests {
+            override(requestID, result, error)
+            return
+        }
+        guard let codexClient else { return }
+        if let error {
+            try? await codexClient.respond(error: error, for: requestID)
+            return
+        }
+        try? await codexClient.respond(result: result, for: requestID)
+    }
+
+    private func codexDynamicToolCallResponse(success: Bool, message: String) -> JSONValue {
+        .object([
+            "success": .bool(success),
+            "contentItems": .array([
+                .object([
+                    "type": .string("inputText"),
+                    "text": .string(message),
+                ]),
+            ]),
+        ])
+    }
+
+    private func decodeDynamicPlanUpdate(arguments: JSONValue?) -> (explanation: String?, plan: [AgentPlanUpdatedPayload.PlanItem])? {
+        guard let object = arguments?.objectValue else { return nil }
+        guard let planRaw = object["plan"]?.arrayValue else { return nil }
+
+        let plan = planRaw.compactMap { entry -> AgentPlanUpdatedPayload.PlanItem? in
+            guard let row = entry.objectValue else { return nil }
+            guard let rawStep = row["step"]?.stringValue,
+                  let step = normalizedOptionalString(rawStep),
+                  !step.isEmpty
+            else { return nil }
+            let rawStatus = row["status"]?.stringValue ?? "pending"
+            return AgentPlanUpdatedPayload.PlanItem(
+                step: step,
+                status: normalizePlanStatusFromDynamicTool(rawStatus)
+            )
+        }
+
+        guard !plan.isEmpty else { return nil }
+        let explanation = normalizedOptionalString(object["explanation"]?.stringValue ?? "")
+        return (explanation, plan)
+    }
+
+    private func normalizePlanStatusFromDynamicTool(_ raw: String) -> String {
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "completed":
+            return "completed"
+        case "in_progress", "inprogress":
+            return "in_progress"
+        default:
+            return "pending"
         }
     }
 
@@ -1866,13 +2227,53 @@ public final class AppStore: ObservableObject {
         defaults.removeObject(forKey: key)
     }
 
-    public func codexSteerQueue(for sessionID: UUID) -> [CodexSteerQueueItem] {
-        (codexSteerQueueBySession[sessionID] ?? []).sorted { lhs, rhs in
+    public func codexQueuedInputs(for sessionID: UUID) -> [CodexQueuedUserInputItem] {
+        ensureCodexQueuedInputsLoaded(sessionID: sessionID)
+        return (codexQueuedInputsBySession[sessionID] ?? []).sorted { lhs, rhs in
+            if lhs.sortIndex != rhs.sortIndex {
+                return lhs.sortIndex < rhs.sortIndex
+            }
             if lhs.createdAt != rhs.createdAt {
                 return lhs.createdAt < rhs.createdAt
             }
             return lhs.id.uuidString < rhs.id.uuidString
         }
+    }
+
+    public func moveCodexQueuedInputs(sessionID: UUID, from: IndexSet, to: Int) {
+        ensureCodexQueuedInputsLoaded(sessionID: sessionID)
+        var ordered = codexQueuedInputs(for: sessionID)
+        Self.moveArray(&ordered, from: from, to: to)
+        // Keep the moved order; only reindex sortIndex.
+        codexQueuedInputsBySession[sessionID] = ordered.enumerated().map { index, item in
+            var updated = item
+            updated.sortIndex = index
+            return updated
+        }
+        persistCodexQueuedInputs(sessionID: sessionID)
+    }
+
+    public func updateCodexQueuedInput(sessionID: UUID, item: CodexQueuedUserInputItem) {
+        ensureCodexQueuedInputsLoaded(sessionID: sessionID)
+        var items = codexQueuedInputsBySession[sessionID] ?? []
+        guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
+
+        let previous = items[index]
+        let nextStoredPaths = Set(item.attachments.map { $0.storedPath.trimmingCharacters(in: .whitespacesAndNewlines) })
+        for attachment in previous.attachments {
+            let stored = attachment.storedPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !stored.isEmpty else { continue }
+            guard !nextStoredPaths.contains(stored) else { continue }
+            try? FileManager.default.removeItem(atPath: stored)
+        }
+
+        items[index] = item
+        codexQueuedInputsBySession[sessionID] = normalizeCodexQueuedInputs(items)
+        persistCodexQueuedInputs(sessionID: sessionID)
+    }
+
+    public func codexTurnDiff(for sessionID: UUID) -> CodexTurnDiffState? {
+        codexTurnDiffBySession[sessionID]
     }
 
     public func codexActiveTurnID(for sessionID: UUID) -> String? {
@@ -1904,6 +2305,43 @@ public final class AppStore: ObservableObject {
         codexStatusTextBySession[sessionID]
     }
 
+    public func codexTrajectoryDurations(sessionID: UUID) -> [String: Int] {
+        codexTrajectoryDurationsBySession[sessionID] ?? [:]
+    }
+
+    public func codexTrajectoryDuration(sessionID: UUID, turnID: String) -> Int? {
+        let normalizedTurnID = turnID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTurnID.isEmpty else { return nil }
+        return codexTrajectoryDurationsBySession[sessionID]?[normalizedTurnID]
+    }
+
+    public func setCodexTrajectoryDuration(sessionID: UUID, turnID: String, durationMs: Int) {
+        let normalizedTurnID = turnID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTurnID.isEmpty else { return }
+        guard durationMs > 0 else { return }
+
+        var turnDurations = codexTrajectoryDurationsBySession[sessionID] ?? [:]
+        if let existing = turnDurations[normalizedTurnID], existing >= durationMs {
+            return
+        }
+        turnDurations[normalizedTurnID] = durationMs
+        codexTrajectoryDurationsBySession[sessionID] = turnDurations
+        persistCodexTrajectoryDurations()
+    }
+
+    internal func clearCodexTrajectoryDurations(sessionID: UUID) {
+        codexTrajectoryDurationsBySession[sessionID] = nil
+        persistCodexTrajectoryDurations()
+    }
+
+    internal func clearCodexTrajectoryDurations(sessionIDs: Set<UUID>) {
+        guard !sessionIDs.isEmpty else { return }
+        for sessionID in sessionIDs {
+            codexTrajectoryDurationsBySession[sessionID] = nil
+        }
+        persistCodexTrajectoryDurations()
+    }
+
     public func codexFullAccessEnabled(for sessionID: UUID) -> Bool {
         codexFullAccessBySession[sessionID] ?? false
     }
@@ -1931,6 +2369,11 @@ public final class AppStore: ObservableObject {
     ) {
         Task { [weak self] in
             guard let self else { return }
+            self.applyPlanModeAfterCodexPromptResponseIfNeeded(
+                sessionID: sessionID,
+                requestID: requestID,
+                answers: answers
+            )
 
             var nestedAnswers: [String: JSONValue] = [:]
             for (questionID, answer) in answers {
@@ -1958,6 +2401,37 @@ public final class AppStore: ObservableObject {
             self.dequeueCodexPendingPrompt(sessionID: sessionID, requestID: requestID)
             self.applyE2EPlanPromptFlowAfterResponseIfNeeded(sessionID: sessionID)
         }
+    }
+
+    private static let planImplementationDecisionQuestionID = "labos_plan_implementation_decision"
+    private static let planImplementationApprovalAnswers: Set<String> = [
+        "yes, implement this plan",
+        "yes implement this plan",
+        "implement now",
+        "implement plan",
+        "implement it",
+    ]
+
+    private func applyPlanModeAfterCodexPromptResponseIfNeeded(
+        sessionID: UUID,
+        requestID: CodexRequestID,
+        answers: [String: String]
+    ) {
+        let queuedPrompt = codexPendingPromptBySession[sessionID]?.first(where: { $0.requestID == requestID })
+        let isImplementConfirmation = queuedPrompt?.kind == "implement_confirmation"
+            || answers.keys.contains(Self.planImplementationDecisionQuestionID)
+        guard isImplementConfirmation else { return }
+        guard let rawDecision = answers[Self.planImplementationDecisionQuestionID],
+              let decision = normalizedOptionalString(rawDecision)
+        else {
+            return
+        }
+        let normalizedDecision = decision.lowercased()
+        if Self.planImplementationApprovalAnswers.contains(normalizedDecision) {
+            setPlanModeEnabled(for: sessionID, enabled: false)
+            return
+        }
+        setPlanModeEnabled(for: sessionID, enabled: true)
     }
 
     public func pendingComposerAttachments(for sessionID: UUID) -> [ComposerAttachment] {
@@ -2252,6 +2726,10 @@ public final class AppStore: ObservableObject {
         attachments: [ComposerAttachment]? = nil
     ) {
         chatService.sendMessage(projectID: projectID, sessionID: sessionID, text: text, attachments: attachments)
+    }
+
+    public func interruptCodexTurn(sessionID: UUID) {
+        chatService.interruptCodexTurn(sessionID: sessionID)
     }
 
     public func steerQueuedCodexInput(sessionID: UUID, queueItemID: UUID) {

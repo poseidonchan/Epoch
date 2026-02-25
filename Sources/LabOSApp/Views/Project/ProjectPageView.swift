@@ -364,9 +364,9 @@ struct ProjectPageView: View {
             contextRemainingFraction: store.contextRemainingFraction(for: composerDraftSessionID),
             contextWindowTokens: store.contextWindowTokens(for: composerDraftSessionID) ?? 258_000
         ) {
-            let message = seedPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !message.isEmpty else { return }
             let pendingDraftAttachments = store.pendingComposerAttachments(for: composerDraftSessionID)
+            let message = seedPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !message.isEmpty || !pendingDraftAttachments.isEmpty else { return }
             store.clearPendingComposerAttachments(sessionID: composerDraftSessionID)
 
             let planModeEnabled = store.planModeEnabled(for: composerDraftSessionID)

@@ -25,11 +25,6 @@ struct SessionChatView: View {
     @State private var showFileImporter = false
     @State private var importErrorMessage: String?
     @State private var editingMessageID: UUID?
-    @State private var composerHeight: CGFloat = 0
-    @State private var runProgressHeight: CGFloat = 0
-    @State private var isRunProgressExpanded = false
-    @State private var planCardHeight: CGFloat = 0
-    @State private var isPlanCardExpanded = false
     @State private var autoScrollEnabled = true
     @State private var scrollViewHeight: CGFloat = 0
     @State private var bottomDistance: CGFloat = 0
@@ -67,36 +62,12 @@ struct SessionChatView: View {
         store.codexPendingPrompt(for: sessionID)
     }
 
-    private var codexSteerQueue: [CodexSteerQueueItem] {
-        store.codexSteerQueue(for: sessionID)
-    }
-
     private var codexStatusText: String? {
         displayCodexStatus(store.codexStatusText(for: sessionID))
     }
 
-    private var activeRun: RunRecord? {
-        store.runs(for: projectID).first { run in
-            run.sessionID == sessionID && (run.status == .queued || run.status == .running)
-        }
-    }
-
-    private var runProgressAnimation: Animation {
-        .interactiveSpring(response: 0.34, dampingFraction: 0.86, blendDuration: 0.12)
-    }
-
-    private var runProgressContentTransition: AnyTransition {
-        .asymmetric(
-            insertion: .opacity
-                .combined(with: .scale(scale: 0.98, anchor: .top))
-                .combined(with: .offset(y: -6)),
-            removal: .opacity
-                .combined(with: .scale(scale: 0.98, anchor: .top))
-        )
-    }
-
-    private var bottomOverlayPadding: CGFloat {
-        composerHeight + runProgressHeight + planCardHeight + 20
+    private var codexTrajectoryDurationByTurnID: [String: Int] {
+        store.codexTrajectoryDurations(sessionID: sessionID)
     }
 
     var body: some View {
@@ -110,6 +81,7 @@ struct SessionChatView: View {
                             CodexItemTimelineView(
                                 items: codexItems,
                                 statusText: codexStatusText,
+                                persistedDurationByTurnID: codexTrajectoryDurationByTurnID,
                                 isStreaming: store.streamingSessions.contains(sessionID),
                                 showAssistantActionBar: true,
                                 onEditUserMessage: { item in
@@ -117,6 +89,13 @@ struct SessionChatView: View {
                                 },
                                 onBranchAgentMessage: { item in
                                     branchFromCodexAgentMessage(item)
+                                },
+                                onFinalizeTurnDuration: { turnID, durationMs in
+                                    store.setCodexTrajectoryDuration(
+                                        sessionID: sessionID,
+                                        turnID: turnID,
+                                        durationMs: durationMs
+                                    )
                                 }
                             )
                                 .padding(.horizontal, 12)
@@ -164,24 +143,29 @@ struct SessionChatView: View {
                         }
 
                         Color.clear
+                            .allowsHitTesting(false)
                             .frame(height: 1)
                             .id(bottomAnchorID)
                             .background(
                                 GeometryReader { proxy in
-                                    Color.clear.preference(
-                                        key: ChatBottomAnchorMaxYPreferenceKey.self,
-                                        value: proxy.frame(in: .named(scrollCoordinateSpace)).maxY
-                                    )
+                                    Color.clear
+                                        .allowsHitTesting(false)
+                                        .preference(
+                                            key: ChatBottomAnchorMaxYPreferenceKey.self,
+                                            value: proxy.frame(in: .named(scrollCoordinateSpace)).maxY
+                                        )
                                 }
                             )
                     }
                     .padding(.top, 10)
-                    .padding(.bottom, bottomOverlayPadding)
+                    .padding(.bottom, 10)
                 }
                 .coordinateSpace(name: scrollCoordinateSpace)
                 .background(
                     GeometryReader { proxy in
-                        Color.clear.preference(key: ChatScrollViewHeightPreferenceKey.self, value: proxy.size.height)
+                        Color.clear
+                            .allowsHitTesting(false)
+                            .preference(key: ChatScrollViewHeightPreferenceKey.self, value: proxy.size.height)
                     }
                 )
                 .onPreferenceChange(ChatScrollViewHeightPreferenceKey.self) { scrollViewHeight = $0 }
@@ -247,71 +231,12 @@ struct SessionChatView: View {
                 }
             }
         }
-        .overlay(alignment: .bottom) {
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 8) {
-                if let run = activeRun {
-                    runProgressCard(run)
-                        .padding(.horizontal, 12)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                        .background(
-                            GeometryReader { proxy in
-                                Color.clear.preference(key: RunProgressHeightPreferenceKey.self, value: proxy.size.height)
-                            }
-                        )
-                } else if let plan = store.livePlanBySession[sessionID] {
-                    agentPlanCard(plan)
-                        .padding(.horizontal, 12)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                        .background(
-                            GeometryReader { proxy in
-                                Color.clear.preference(key: AgentPlanHeightPreferenceKey.self, value: proxy.size.height)
-                            }
-                        )
-                }
-
-                ForEach(codexApprovals) { approval in
-                    codexApprovalCard(approval)
-                        .padding(.horizontal, 12)
-                }
-
-                ForEach(codexSteerQueue) { row in
-                    codexSteerQueueRow(row)
-                        .padding(.horizontal, 12)
-                }
+                SessionShelfView(projectID: projectID, sessionID: sessionID)
 
                 sessionComposer
                     .shadow(color: Color.black.opacity(0.08), radius: 12, x: 0, y: 2)
-            }
-        }
-        .onPreferenceChange(ComposerHeightPreferenceKey.self) { composerHeight = $0 }
-        .onPreferenceChange(RunProgressHeightPreferenceKey.self) { value in
-            let nextHeight = activeRun == nil ? 0 : value
-            guard abs(runProgressHeight - nextHeight) > 0.5 else { return }
-            withAnimation(runProgressAnimation) {
-                runProgressHeight = nextHeight
-            }
-        }
-        .onPreferenceChange(AgentPlanHeightPreferenceKey.self) { value in
-            let nextHeight = activeRun == nil && store.livePlanBySession[sessionID] != nil ? value : 0
-            guard abs(planCardHeight - nextHeight) > 0.5 else { return }
-            withAnimation(runProgressAnimation) {
-                planCardHeight = nextHeight
-            }
-        }
-        .onChange(of: activeRun?.id) { _, runID in
-            withAnimation(runProgressAnimation) {
-                isRunProgressExpanded = false
-                isPlanCardExpanded = false
-                if runID == nil {
-                    runProgressHeight = 0
-                }
-            }
-        }
-        .onChange(of: activeRun?.status) { _, status in
-            guard status == nil else { return }
-            withAnimation(runProgressAnimation) {
-                isRunProgressExpanded = false
-                runProgressHeight = 0
             }
         }
         .onAppear {
@@ -501,9 +426,16 @@ struct SessionChatView: View {
         switch lower {
         case "completed", "failed":
             return nil
+        case "websearch", "web search":
+            return "Searching web..."
         case "inprogress", "in_progress", "running", "thinking":
             return "Thinking..."
         default:
+            if lower.contains("websearch")
+                || lower.contains("web search")
+                || lower.contains("web.search") {
+                return "Searching web..."
+            }
             if lower.contains("waiting for updates")
                 || lower.contains("waiting for response")
                 || lower == "reasoning" {
@@ -517,12 +449,31 @@ struct SessionChatView: View {
     private var sessionComposer: some View {
         if let prompt = codexPrompt {
             codexPromptComposer(prompt)
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear.preference(key: ComposerHeightPreferenceKey.self, value: proxy.size.height)
-                    }
-                )
         } else {
+            let isStreaming = store.streamingSessions.contains(sessionID)
+            let pendingAttachments = store.pendingComposerAttachments(for: sessionID)
+            let trimmed = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let hasContent = !trimmed.isEmpty || !pendingAttachments.isEmpty
+
+            let primaryAction: InlineComposerView.PrimaryAction = {
+                if editingMessageID != nil { return .update }
+                if isStreaming && !hasContent { return .stop }
+                return .send
+            }()
+
+            let submitLabel: String = {
+                switch primaryAction {
+                case .send:
+                    return "Send"
+                case .stop:
+                    return "Stop"
+                case .update:
+                    return "Update"
+                }
+            }()
+
+            let submitDisabled = primaryAction == .stop && store.codexActiveTurnID(for: sessionID) == nil
+
             InlineComposerView(
                 placeholder: "Ask LabOS",
                 text: $composerText,
@@ -551,8 +502,10 @@ struct SessionChatView: View {
                         }
                     }
                 ),
-                submitLabel: editingMessageID == nil ? "Send" : "Update",
+                submitLabel: submitLabel,
                 style: .chatGPT,
+                primaryAction: primaryAction,
+                submitDisabled: submitDisabled,
                 statusText: editingMessageID == nil ? nil : "Editing",
                 statusIconSystemName: "pencil",
                 statusAction: editingMessageID == nil ? nil : {
@@ -573,27 +526,33 @@ struct SessionChatView: View {
                 contextWindowTokens: store.contextWindowTokens(for: sessionID) ?? 258_000,
                 useEstimatedContextFallback: !isCodexSession
             ) {
-                let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
                 let attachments = store.pendingComposerAttachments(for: sessionID)
-                guard !text.isEmpty || !attachments.isEmpty else { return }
-                    if let editingMessageID {
-                        store.overwriteUserMessage(
-                            projectID: projectID,
-                            sessionID: sessionID,
-                            messageID: editingMessageID,
-                            text: text
-                        )
-                        self.editingMessageID = nil
-                    } else {
-                        store.sendMessage(projectID: projectID, sessionID: sessionID, text: text, attachments: attachments)
-                    }
+                let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+                let hasContent = !text.isEmpty || !attachments.isEmpty
+
+                if editingMessageID == nil,
+                   store.streamingSessions.contains(sessionID),
+                   !hasContent {
+                    store.interruptCodexTurn(sessionID: sessionID)
+                    return
+                }
+
+                guard hasContent else { return }
+
+                if let editingMessageID {
+                    store.overwriteUserMessage(
+                        projectID: projectID,
+                        sessionID: sessionID,
+                        messageID: editingMessageID,
+                        text: text
+                    )
+                    self.editingMessageID = nil
+                } else {
+                    store.sendMessage(projectID: projectID, sessionID: sessionID, text: text, attachments: attachments)
+                }
+
                 composerText = ""
             }
-            .background(
-                GeometryReader { proxy in
-                    Color.clear.preference(key: ComposerHeightPreferenceKey.self, value: proxy.size.height)
-                }
-            )
         }
     }
 
@@ -921,39 +880,6 @@ struct SessionChatView: View {
             }
         }
         return String(chars)
-    }
-
-    private func codexSteerQueueRow(_ row: CodexSteerQueueItem) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(row.text)
-                .font(.subheadline)
-                .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            if let error = row.error, !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-
-            HStack(spacing: 8) {
-                Button("Steer") {
-                    store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: row.id)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(row.status == .sending)
-
-                Button("Remove") {
-                    store.removeQueuedCodexInput(sessionID: sessionID, queueItemID: row.id)
-                }
-                .buttonStyle(.bordered)
-            }
-        }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(.secondarySystemBackground))
-        )
     }
 
     private func codexApprovalCard(_ approval: CodexPendingApproval) -> some View {
@@ -1526,419 +1452,6 @@ struct SessionChatView: View {
         )
     }
 
-    private func agentPlanCard(_ payload: AgentPlanUpdatedPayload) -> some View {
-        let items = payload.plan
-        let total = max(items.count, 1)
-        let completed = items.filter { $0.status.lowercased() == "completed" }.count
-        let fraction = min(max(Double(completed) / Double(total), 0), 1)
-        let currentIndex = items.firstIndex { status in
-            let normalized = status.status.lowercased()
-            return normalized == "in_progress" || normalized == "inprogress"
-        }
-        let currentTitle = currentIndex.flatMap { items.indices.contains($0) ? items[$0].step : nil } ?? "Waiting for execution"
-
-        return VStack(alignment: .leading, spacing: 8) {
-            Button {
-                withAnimation(runProgressAnimation) {
-                    isPlanCardExpanded.toggle()
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "list.bullet.clipboard")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.blue)
-
-                    Text("Plan · \(completed)/\(total) completed")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-
-                    Spacer(minLength: 0)
-
-                    Image(systemName: "chevron.right")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(isPlanCardExpanded ? 90 : 0))
-                        .animation(runProgressAnimation, value: isPlanCardExpanded)
-                }
-            }
-            .buttonStyle(.plain)
-
-            ProgressView(value: fraction)
-                .progressViewStyle(.linear)
-                .tint(.blue)
-
-            if isPlanCardExpanded {
-                VStack(alignment: .leading, spacing: 6) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Current step")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-
-                        Text(currentTitle)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
-
-                        if let explanation = payload.explanation?.trimmingCharacters(in: .whitespacesAndNewlines),
-                           !explanation.isEmpty {
-                            Text(explanation)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Steps")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-
-                        ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                            let status = item.status.lowercased()
-                            HStack(spacing: 8) {
-                                Image(systemName: planStatusIcon(status))
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(planStatusColor(status))
-                                    .frame(width: 14, height: 14)
-
-                                Text("Step \(index + 1) · \(item.step)")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(Color(.secondarySystemBackground))
-                            )
-                        }
-                    }
-                }
-                .padding(.top, 2)
-                .clipped()
-                .transition(runProgressContentTransition)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(.systemBackground))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08))
-        )
-        .accessibilityIdentifier("session.plan.progress.card")
-    }
-
-    private func planStatusIcon(_ status: String) -> String {
-        switch status {
-        case "completed":
-            return "checkmark.circle.fill"
-        case "in_progress", "inprogress":
-            return "clock.fill"
-        case "pending":
-            return "circle"
-        default:
-            return "questionmark.circle"
-        }
-    }
-
-    private func planStatusColor(_ status: String) -> Color {
-        switch status {
-        case "completed":
-            return .green
-        case "in_progress", "inprogress":
-            return .blue
-        case "pending":
-            return .secondary
-        default:
-            return .secondary
-        }
-    }
-
-    private func runProgressCard(_ run: RunRecord) -> some View {
-        let total = max(run.totalSteps, 1)
-        let completed = completedSteps(run)
-        let fraction = min(max(Double(completed) / Double(total), 0), 1)
-        let currentIndex = currentStepIndex(run: run)
-        let stepCount = max(run.stepTitles.count, total)
-        let currentTitle = currentIndex.flatMap { index in
-            run.stepTitles.indices.contains(index) ? run.stepTitles[index] : nil
-        } ?? "Waiting for execution"
-        let currentDetail = currentIndex.flatMap { index in
-            run.stepDetails.indices.contains(index) ? run.stepDetails[index] : nil
-        } ?? "Queued and waiting for available compute."
-        let recentActivity = Array(run.activity.suffix(6).reversed())
-
-        return VStack(alignment: .leading, spacing: 8) {
-            Button {
-                withAnimation(runProgressAnimation) {
-                    isRunProgressExpanded.toggle()
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "sparkles")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.blue)
-
-                    Text("\(completed)/\(total) steps completed")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-
-                    Spacer(minLength: 0)
-
-                    Image(systemName: "chevron.right")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(isRunProgressExpanded ? 90 : 0))
-                        .animation(runProgressAnimation, value: isRunProgressExpanded)
-                }
-            }
-            .buttonStyle(.plain)
-
-            ProgressView(value: fraction)
-                .progressViewStyle(.linear)
-                .tint(.blue)
-
-            if isRunProgressExpanded {
-                VStack(alignment: .leading, spacing: 6) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Current step")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-
-                        Text(currentTitle)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
-
-                        Text(currentDetail)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(.bottom, recentActivity.isEmpty ? 0 : 2)
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Plan · \(stepCount) steps")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-
-                        ForEach(0..<stepCount, id: \.self) { index in
-                            let stepTitle = run.stepTitles.indices.contains(index)
-                                ? run.stepTitles[index]
-                                : "Step \(index + 1)"
-                            let state = planStepState(run: run, stepIndex: index)
-
-                            HStack(spacing: 8) {
-                                Image(systemName: planStepIcon(for: state))
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(planStepColor(for: state))
-                                    .frame(width: 14, height: 14)
-
-                                Text("Step \(index + 1) · \(stepTitle)")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 6)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(Color(.secondarySystemBackground))
-                            )
-                        }
-                    }
-
-                    if !recentActivity.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Live activity")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-
-                            ForEach(recentActivity) { event in
-                                HStack(alignment: .top, spacing: 8) {
-                                    Image(systemName: activityIcon(for: event.type))
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(activityColor(for: event.type))
-                                        .frame(width: 16, height: 16)
-
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(event.summary)
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(.primary)
-                                            .lineLimit(1)
-
-                                        Text(event.detail)
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(2)
-                                    }
-
-                                    Spacer(minLength: 0)
-                                }
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 6)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .fill(Color(.secondarySystemBackground))
-                                )
-                            }
-                        }
-                    }
-                }
-                .padding(.top, 2)
-                .clipped()
-                .transition(runProgressContentTransition)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(.systemBackground))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08))
-        )
-        .accessibilityIdentifier("session.run.progress.card")
-    }
-
-    private func completedSteps(_ run: RunRecord) -> Int {
-        switch run.status {
-        case .queued:
-            return 0
-        case .running:
-            return max(run.currentStep - 1, 0)
-        case .succeeded:
-            return max(run.totalSteps, 1)
-        case .failed, .canceled:
-            return max(run.currentStep - 1, 0)
-        }
-    }
-
-    private func currentStepIndex(run: RunRecord) -> Int? {
-        switch run.status {
-        case .queued:
-            return 0
-        case .running, .failed, .canceled:
-            let step = max(min(run.currentStep, max(run.totalSteps, 1)), 1)
-            return step - 1
-        case .succeeded:
-            return nil
-        }
-    }
-
-    private func planStepState(run: RunRecord, stepIndex: Int) -> PlanStepState {
-        let stepNumber = stepIndex + 1
-        let total = max(run.totalSteps, 1)
-        let current = max(min(run.currentStep, total), 1)
-
-        switch run.status {
-        case .queued:
-            return .pending
-        case .running:
-            if stepNumber < current { return .completed }
-            if stepNumber == current { return .current }
-            return .pending
-        case .succeeded:
-            return .completed
-        case .failed:
-            if stepNumber < current { return .completed }
-            if stepNumber == current { return .failed }
-            return .pending
-        case .canceled:
-            if stepNumber < current { return .completed }
-            if stepNumber == current { return .canceled }
-            return .pending
-        }
-    }
-
-    private func planStepIcon(for state: PlanStepState) -> String {
-        switch state {
-        case .completed:
-            return "checkmark.circle.fill"
-        case .current:
-            return "arrow.trianglehead.2.clockwise.rotate.90.circle.fill"
-        case .pending:
-            return "circle"
-        case .failed:
-            return "xmark.circle.fill"
-        case .canceled:
-            return "minus.circle.fill"
-        }
-    }
-
-    private func planStepColor(for state: PlanStepState) -> Color {
-        switch state {
-        case .completed:
-            return .green
-        case .current:
-            return .blue
-        case .pending:
-            return .secondary
-        case .failed:
-            return .red
-        case .canceled:
-            return .orange
-        }
-    }
-
-    private func activityIcon(for type: RunActionType) -> String {
-        switch type {
-        case .toolCall:
-            return "wrench.and.screwdriver"
-        case .command:
-            return "terminal"
-        case .output:
-            return "doc.badge.plus"
-        case .info:
-            return "info.circle"
-        }
-    }
-
-    private func activityColor(for type: RunActionType) -> Color {
-        switch type {
-        case .toolCall:
-            return .blue
-        case .command:
-            return .orange
-        case .output:
-            return .green
-        case .info:
-            return .secondary
-        }
-    }
-
-    private enum PlanStepState {
-        case completed
-        case current
-        case pending
-        case failed
-        case canceled
-    }
-}
-
-private struct RunProgressHeightPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
-private struct AgentPlanHeightPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
 }
 
 private struct ChatScrollViewHeightPreferenceKey: PreferenceKey {

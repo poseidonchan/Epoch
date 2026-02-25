@@ -115,6 +115,7 @@ public enum CodexThreadItem: Hashable, Sendable {
     case commandExecution(CodexCommandExecutionItem)
     case fileChange(CodexFileChangeItem)
     case mcpToolCall(CodexMCPToolCallItem)
+    case webSearch(CodexWebSearchItem)
     case unknown(CodexUnknownItem)
 
     public var id: String {
@@ -130,6 +131,8 @@ public enum CodexThreadItem: Hashable, Sendable {
         case let .fileChange(item):
             return item.id
         case let .mcpToolCall(item):
+            return item.id
+        case let .webSearch(item):
             return item.id
         case let .unknown(item):
             return item.id
@@ -150,6 +153,8 @@ public enum CodexThreadItem: Hashable, Sendable {
             return "fileChange"
         case .mcpToolCall:
             return "mcpToolCall"
+        case .webSearch:
+            return "webSearch"
         case let .unknown(item):
             return item.type
         }
@@ -178,6 +183,8 @@ extension CodexThreadItem: Codable {
             self = .fileChange(try CodexFileChangeItem(from: decoder))
         case "mcpToolCall":
             self = .mcpToolCall(try CodexMCPToolCallItem(from: decoder))
+        case "webSearch":
+            self = .webSearch(try CodexWebSearchItem(from: decoder))
         default:
             self = .unknown(try CodexUnknownItem(from: decoder))
         }
@@ -196,6 +203,8 @@ extension CodexThreadItem: Codable {
         case let .fileChange(item):
             try item.encode(to: encoder)
         case let .mcpToolCall(item):
+            try item.encode(to: encoder)
+        case let .webSearch(item):
             try item.encode(to: encoder)
         case let .unknown(item):
             try item.encode(to: encoder)
@@ -264,6 +273,83 @@ public struct CodexMCPToolCallItem: Hashable, Codable, Sendable {
     public var result: JSONValue?
     public var error: JSONValue?
     public var durationMs: Int?
+}
+
+public enum CodexWebSearchAction: Hashable, Sendable {
+    case search(query: String?, queries: [String]?)
+    case openPage(url: String?)
+    case findInPage(url: String?, pattern: String?)
+    case other
+}
+
+extension CodexWebSearchAction: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case query
+        case queries
+        case url
+        case pattern
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let rawType = try container.decodeIfPresent(String.self, forKey: .type) ?? ""
+        let type = rawType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        switch type {
+        case "search":
+            let query = try container.decodeIfPresent(String.self, forKey: .query)
+            let queries = try container.decodeIfPresent([String].self, forKey: .queries)
+            self = .search(query: query, queries: queries)
+        case "openpage":
+            let url = try container.decodeIfPresent(String.self, forKey: .url)
+            self = .openPage(url: url)
+        case "findinpage":
+            let url = try container.decodeIfPresent(String.self, forKey: .url)
+            let pattern = try container.decodeIfPresent(String.self, forKey: .pattern)
+            self = .findInPage(url: url, pattern: pattern)
+        default:
+            self = .other
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case let .search(query, queries):
+            try container.encode("search", forKey: .type)
+            try container.encodeIfPresent(query, forKey: .query)
+            try container.encodeIfPresent(queries, forKey: .queries)
+        case let .openPage(url):
+            try container.encode("openPage", forKey: .type)
+            try container.encodeIfPresent(url, forKey: .url)
+        case let .findInPage(url, pattern):
+            try container.encode("findInPage", forKey: .type)
+            try container.encodeIfPresent(url, forKey: .url)
+            try container.encodeIfPresent(pattern, forKey: .pattern)
+        case .other:
+            try container.encode("other", forKey: .type)
+        }
+    }
+}
+
+public struct CodexWebSearchItem: Hashable, Codable, Sendable {
+    public var type: String
+    public var id: String
+    public var query: String
+    public var action: CodexWebSearchAction?
+
+    public init(
+        type: String = "webSearch",
+        id: String,
+        query: String,
+        action: CodexWebSearchAction?
+    ) {
+        self.type = type
+        self.id = id
+        self.query = query
+        self.action = action
+    }
 }
 
 public struct CodexUnknownItem: Hashable, Codable, Sendable {
@@ -493,33 +579,83 @@ public struct CodexPromptOption: Hashable, Sendable {
     }
 }
 
-public enum CodexSteerQueueItemStatus: String, Hashable, Sendable {
+public enum CodexQueuedUserInputItemStatus: String, Hashable, Codable, Sendable {
     case queued
     case sending
     case failed
 }
 
-public struct CodexSteerQueueItem: Identifiable, Hashable, Sendable {
+public struct CodexQueuedAttachment: Identifiable, Hashable, Codable, Sendable {
+    public var id: UUID
+    public var displayName: String
+    public var mimeType: String?
+    public var byteCount: Int?
+    public var storedPath: String
+
+    public init(
+        id: UUID = UUID(),
+        displayName: String,
+        mimeType: String? = nil,
+        byteCount: Int? = nil,
+        storedPath: String
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.mimeType = mimeType
+        self.byteCount = byteCount
+        self.storedPath = storedPath
+    }
+}
+
+public struct CodexQueuedUserInputItem: Identifiable, Hashable, Codable, Sendable {
     public var id: UUID
     public var sessionID: UUID
     public var text: String
+    public var attachments: [CodexQueuedAttachment]
     public var createdAt: Date
-    public var status: CodexSteerQueueItemStatus
+    public var sortIndex: Int
+    public var status: CodexQueuedUserInputItemStatus
     public var error: String?
 
     public init(
         id: UUID = UUID(),
         sessionID: UUID,
         text: String,
+        attachments: [CodexQueuedAttachment] = [],
         createdAt: Date = .now,
-        status: CodexSteerQueueItemStatus = .queued,
+        sortIndex: Int = 0,
+        status: CodexQueuedUserInputItemStatus = .queued,
         error: String? = nil
     ) {
         self.id = id
         self.sessionID = sessionID
         self.text = text
+        self.attachments = attachments
         self.createdAt = createdAt
+        self.sortIndex = sortIndex
         self.status = status
         self.error = error
+    }
+}
+
+public struct CodexTurnDiffState: Hashable, Codable, Sendable {
+    public var sessionID: UUID
+    public var threadId: String
+    public var turnId: String
+    public var diff: String
+    public var updatedAt: Date
+
+    public init(
+        sessionID: UUID,
+        threadId: String,
+        turnId: String,
+        diff: String,
+        updatedAt: Date = .now
+    ) {
+        self.sessionID = sessionID
+        self.threadId = threadId
+        self.turnId = turnId
+        self.diff = diff
+        self.updatedAt = updatedAt
     }
 }

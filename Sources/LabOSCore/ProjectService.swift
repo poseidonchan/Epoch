@@ -168,6 +168,7 @@ internal final class ProjectService {
             store.chatService.sessionHistoryRequestsInFlight.remove(sessionID)
             store.chatService.sessionHistoryLastFetchedAtBySession[sessionID] = nil
         }
+        store.clearCodexTrajectoryDurations(sessionIDs: removedSessionIDs)
         store.persistedProcessSummaryByMessageID = store.persistedProcessSummaryByMessageID.filter { summary in
             !removedSessionIDs.contains(summary.value.sessionID)
         }
@@ -607,9 +608,22 @@ internal final class ProjectService {
         store.codexItemsBySession[sessionID] = nil
         store.codexPendingApprovalsBySession[sessionID] = nil
         store.codexPendingPromptBySession[sessionID] = nil
-        store.codexSteerQueueBySession[sessionID] = nil
+        store.ensureCodexQueuedInputsLoaded(sessionID: sessionID)
+        if let queued = store.codexQueuedInputsBySession[sessionID] {
+            for item in queued {
+                for attachment in item.attachments {
+                    let stored = attachment.storedPath.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !stored.isEmpty else { continue }
+                    try? FileManager.default.removeItem(atPath: stored)
+                }
+            }
+        }
+        store.codexQueuedInputsBySession[sessionID] = nil
+        store.codexQueuedInputsLoadedSessions.remove(sessionID)
+        store.clearPersistedCodexQueuedInputs(sessionID: sessionID)
         store.codexActiveTurnIDBySession[sessionID] = nil
         store.codexStatusTextBySession[sessionID] = nil
+        store.codexTurnDiffBySession[sessionID] = nil
         store.codexTokenUsageBySession[sessionID] = nil
         store.codexFullAccessBySession[sessionID] = nil
         if let threadId = store.codexThreadBySession[sessionID] {
@@ -627,9 +641,22 @@ internal final class ProjectService {
         store.codexItemsBySession[sessionID] = nil
         store.codexPendingApprovalsBySession[sessionID] = nil
         store.codexPendingPromptBySession[sessionID] = nil
-        store.codexSteerQueueBySession[sessionID] = nil
+        store.ensureCodexQueuedInputsLoaded(sessionID: sessionID)
+        if let queued = store.codexQueuedInputsBySession[sessionID] {
+            for item in queued {
+                for attachment in item.attachments {
+                    let stored = attachment.storedPath.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !stored.isEmpty else { continue }
+                    try? FileManager.default.removeItem(atPath: stored)
+                }
+            }
+        }
+        store.codexQueuedInputsBySession[sessionID] = nil
+        store.codexQueuedInputsLoadedSessions.remove(sessionID)
+        store.clearPersistedCodexQueuedInputs(sessionID: sessionID)
         store.codexActiveTurnIDBySession[sessionID] = nil
         store.codexStatusTextBySession[sessionID] = nil
+        store.codexTurnDiffBySession[sessionID] = nil
         store.codexTokenUsageBySession[sessionID] = nil
         store.codexFullAccessBySession[sessionID] = nil
         if let threadId = store.codexThreadBySession[sessionID] {
@@ -652,6 +679,7 @@ internal final class ProjectService {
         store.pendingComposerAttachmentsBySession[sessionID] = nil
         store.chatService.sessionHistoryRequestsInFlight.remove(sessionID)
         store.chatService.sessionHistoryLastFetchedAtBySession[sessionID] = nil
+        store.clearCodexTrajectoryDurations(sessionID: sessionID)
         for (planID, mappedSessionID) in store.planService.planSessionByPlanID where mappedSessionID == sessionID {
             store.planService.planSessionByPlanID[planID] = nil
         }

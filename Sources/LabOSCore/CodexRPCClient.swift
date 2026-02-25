@@ -14,6 +14,28 @@ public enum CodexRPCClientError: Error {
     case serverRejected(String)
 }
 
+extension CodexRPCClientError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .notConnected:
+            return "Codex is not connected."
+        case let .connectionClosed(reason):
+            let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty
+                ? "The Codex connection closed unexpectedly."
+                : "The Codex connection closed: \(trimmed)"
+        case let .protocolViolation(message):
+            let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty
+                ? "Codex returned an invalid response."
+                : "Codex returned an invalid response: \(trimmed)"
+        case let .serverRejected(message):
+            let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "Codex rejected the request." : trimmed
+        }
+    }
+}
+
 @MainActor
 public final class CodexRPCClient: ObservableObject {
     @Published public private(set) var connectionState: CodexConnectionState = .disconnected

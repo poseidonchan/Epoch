@@ -6,21 +6,25 @@ import UIKit
 struct CodexItemTimelineView: View {
     let items: [CodexThreadItem]
     let statusText: String?
+    let persistedDurationByTurnID: [String: Int]
     var isStreaming: Bool = false
     var showAssistantActionBar: Bool = true
     var onEditUserMessage: (CodexUserMessageItem) -> Void = { _ in }
     var onBranchAgentMessage: (CodexAgentMessageItem) -> Void = { _ in }
+    var onFinalizeTurnDuration: (_ turnID: String, _ durationMs: Int) -> Void = { _, _ in }
 
     @State private var expandedTurnIDs: Set<String> = []
     @State private var expandedGroupIDs: Set<String> = []
     @State private var expandedLeafIDs: Set<String> = []
     @State private var turnStartByID: [String: Date] = [:]
+    @State private var turnStartByIdentity: [String: Date] = [:]
     @State private var finalizedDurationByID: [String: Int] = [:]
     @State private var wasStreamingByTurnID: [String: Bool] = [:]
     @State private var pendingAutoCollapseTokenByTurnID: [String: UUID] = [:]
 
     private static let autoCollapseDelayNanoseconds: UInt64 = 420_000_000
     private static let autoCollapseAnimation = Animation.easeInOut(duration: 0.2)
+    private static let searchingWebStatusText = "Searching web..."
 
     private var turns: [CodexTrajectoryTurn] {
         CodexTrajectoryAssembler.assemble(from: items, isStreaming: isStreaming)
@@ -77,20 +81,11 @@ struct CodexItemTimelineView: View {
         .onAppear {
             syncTrajectoryState(with: turns)
         }
-        .onChange(of: trajectoryStateSignature) { _, _ in
-            syncTrajectoryState(with: turns)
+        .onChange(of: turns) { _, updatedTurns in
+            syncTrajectoryState(with: updatedTurns)
         }
-    }
-
-    private var trajectoryStateSignature: [String] {
-        turns.map { turn in
-            [
-                turn.id,
-                turn.finalAnswerItemID ?? "",
-                String(turn.isStreaming),
-                String(turn.trajectoryLeaves.count),
-                String(turn.groups.count),
-            ].joined(separator: "|")
+        .onChange(of: persistedDurationByTurnID) { _, _ in
+            syncTrajectoryState(with: turns)
         }
     }
 
@@ -123,8 +118,8 @@ struct CodexItemTimelineView: View {
                !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 finalAnswerBlock(turn: turn, finalID: finalID, finalText: finalText)
             } else if turn.isStreaming || turn.hasThinkingStatus {
-                Text("Thinking...")
-                    .font(.body)
+                Text(pendingTurnStatus(for: turn))
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("codex.turn.thinking.\(turn.id.lowercased())")
             }
@@ -144,7 +139,7 @@ struct CodexItemTimelineView: View {
             && !targetStreaming
 
         return VStack(alignment: .leading, spacing: 6) {
-            codexMarkdownText(finalText, isStreaming: targetStreaming)
+            finalAnswerContent(finalText, isStreaming: targetStreaming)
                 .accessibilityIdentifier("codex.final.answer.\(finalID.lowercased())")
 
             if canShowActions, let actionItem {
@@ -169,6 +164,42 @@ struct CodexItemTimelineView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func finalAnswerContent(_ text: String, isStreaming: Bool) -> some View {
+        if let proposedPlan = CodexProposedPlanParser.parse(from: text) {
+            VStack(alignment: .leading, spacing: 10) {
+                if !proposedPlan.leadingText.isEmpty {
+                    codexMarkdownText(proposedPlan.leadingText, isStreaming: isStreaming)
+                }
+                proposedPlanCard(proposedPlan.planText)
+                if !proposedPlan.trailingText.isEmpty {
+                    codexMarkdownText(proposedPlan.trailingText, isStreaming: isStreaming)
+                }
+            }
+        } else {
+            codexMarkdownText(text, isStreaming: isStreaming)
+        }
+    }
+
+    private func proposedPlanCard(_ planText: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Proposed plan")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            codexMarkdownText(planText, isStreaming: false)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
     }
 
     private func trajectoryDetails(for turn: CodexTrajectoryTurn) -> some View {
@@ -213,10 +244,12 @@ struct CodexItemTimelineView: View {
             CodexFileChangeCard(item: fileItem)
         case let .mcpToolCall(toolItem):
             bubble(title: "Tool \(toolItem.tool)", text: toolItem.status)
+        case let .webSearch(item):
+            bubble(title: "Web search", text: item.query)
         case let .unknown(unknown):
             if isReasoningItem(unknown) {
                 Text("Thinking...")
-                    .font(.body)
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else {
                 bubble(title: unknown.type, text: unknownText(unknown))
@@ -260,10 +293,30 @@ struct CodexItemTimelineView: View {
     private func syncTrajectoryState(with turns: [CodexTrajectoryTurn]) {
         let now = Date()
         let activeTurnIDs = Set(turns.map(\.id))
+        var activeIdentities: Set<String> = []
 
-        for turn in turns {
-            if turn.hasTrajectorySummary, turnStartByID[turn.id] == nil {
+        for (index, turn) in turns.enumerated() {
+            let turnIdentity = trajectoryIdentity(for: turn, index: index)
+            activeIdentities.insert(turnIdentity)
+
+            if finalizedDurationByID[turn.id] == nil,
+               let persistedDurationMs = persistedDurationByTurnID[turn.id],
+               persistedDurationMs > 0 {
+                finalizedDurationByID[turn.id] = persistedDurationMs
+            }
+
+            if turnStartByID[turn.id] == nil,
+               let preservedStartedAt = turnStartByIdentity[turnIdentity] {
+                turnStartByID[turn.id] = preservedStartedAt
+            }
+
+            if (turn.isStreaming || turn.hasTrajectorySummary),
+               turnStartByID[turn.id] == nil {
                 turnStartByID[turn.id] = now
+            }
+
+            if let startedAt = turnStartByID[turn.id] {
+                turnStartByIdentity[turnIdentity] = startedAt
             }
 
             let wasStreaming = wasStreamingByTurnID[turn.id] ?? false
@@ -272,6 +325,7 @@ struct CodexItemTimelineView: View {
                 expandedTurnIDs.insert(turn.id)
                 pendingAutoCollapseTokenByTurnID.removeValue(forKey: turn.id)
             } else if wasStreaming {
+                finalizeTurnDurationIfNeeded(turnID: turn.id, now: now)
                 if turn.hasTrajectorySummary, turn.finalAnswerItemID != nil {
                     scheduleAutoCollapse(for: turn.id)
                 } else {
@@ -284,6 +338,7 @@ struct CodexItemTimelineView: View {
 
         expandedTurnIDs = expandedTurnIDs.intersection(activeTurnIDs)
         turnStartByID = turnStartByID.filter { activeTurnIDs.contains($0.key) }
+        turnStartByIdentity = turnStartByIdentity.filter { activeIdentities.contains($0.key) }
         finalizedDurationByID = finalizedDurationByID.filter { activeTurnIDs.contains($0.key) }
         wasStreamingByTurnID = wasStreamingByTurnID.filter { activeTurnIDs.contains($0.key) }
         pendingAutoCollapseTokenByTurnID = pendingAutoCollapseTokenByTurnID.filter { activeTurnIDs.contains($0.key) }
@@ -293,6 +348,23 @@ struct CodexItemTimelineView: View {
 
         let activeLeafIDs = Set(turns.flatMap { $0.trajectoryLeaves.map(\.id) })
         expandedLeafIDs = expandedLeafIDs.intersection(activeLeafIDs)
+    }
+
+    private func trajectoryIdentity(for turn: CodexTrajectoryTurn, index: Int) -> String {
+        "\(index):\(userInputSignature(turn.userMessage.content))"
+    }
+
+    private func userInputSignature(_ inputs: [CodexUserInput]) -> String {
+        inputs
+            .map { input in
+                [
+                    input.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                    input.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                    input.url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                    input.path?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                ].joined(separator: "|")
+            }
+            .joined(separator: "||")
     }
 
     private func scheduleAutoCollapse(for turnID: String) {
@@ -313,12 +385,43 @@ struct CodexItemTimelineView: View {
                 expandedTurnIDs.remove(turnID)
             }
             pendingAutoCollapseTokenByTurnID.removeValue(forKey: turnID)
+            finalizeTurnDurationIfNeeded(turnID: turnID, now: Date())
+        }
+    }
 
-            if finalizedDurationByID[turnID] == nil,
-               let startedAt = turnStartByID[turnID] {
-                finalizedDurationByID[turnID] = max(0, Int(Date().timeIntervalSince(startedAt) * 1_000))
+    private func finalizeTurnDurationIfNeeded(turnID: String, now: Date) {
+        guard finalizedDurationByID[turnID] == nil,
+              let startedAt = turnStartByID[turnID]
+        else { return }
+
+        let durationMs = max(0, Int(now.timeIntervalSince(startedAt) * 1_000))
+        guard durationMs > 0 else { return }
+        finalizedDurationByID[turnID] = durationMs
+        onFinalizeTurnDuration(turnID, durationMs)
+    }
+
+    private func pendingTurnStatus(for turn: CodexTrajectoryTurn) -> String {
+        if turn.isStreaming {
+            if displayStatus(statusText) == Self.searchingWebStatusText {
+                return Self.searchingWebStatusText
+            }
+            if case .webSearch? = latestActionableItem(in: turn) {
+                return Self.searchingWebStatusText
             }
         }
+        return "Thinking..."
+    }
+
+    private func latestActionableItem(in turn: CodexTrajectoryTurn) -> CodexThreadItem? {
+        for leaf in turn.trajectoryLeaves.reversed() {
+            switch leaf.item {
+            case let .agentMessage(agent) where agent.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty:
+                continue
+            default:
+                return leaf.item
+            }
+        }
+        return nil
     }
 
     private func displayStatus(_ raw: String?) -> String? {
@@ -328,10 +431,18 @@ struct CodexItemTimelineView: View {
         switch trimmed.lowercased() {
         case "completed", "failed":
             return nil
+        case "websearch", "web search":
+            return Self.searchingWebStatusText
         case "inprogress", "in_progress", "running", "thinking":
             return "Thinking..."
         default:
-            if trimmed.lowercased().contains("waiting for updates") {
+            let lower = trimmed.lowercased()
+            if lower.contains("websearch")
+                || lower.contains("web search")
+                || lower.contains("web.search") {
+                return Self.searchingWebStatusText
+            }
+            if lower.contains("waiting for updates") {
                 return "Thinking..."
             }
             return trimmed

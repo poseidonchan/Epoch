@@ -22,9 +22,18 @@ struct StreamingMarkdownView: View {
         Self.likelyContainsMarkdownSyntax(normalizedRenderedText)
     }
 
+    private var shouldBypassMarkdownRenderer: Bool {
+        // MarkdownUI can become expensive for very large payloads (especially with many links).
+        // Fall back to plain text rendering to keep the chat responsive.
+        if normalizedRenderedText.count > 40_000 {
+            return true
+        }
+        return Self.containsTooManyLinks(normalizedRenderedText, limit: 40)
+    }
+
     var body: some View {
         Group {
-            if shouldRenderMarkdown {
+            if shouldRenderMarkdown, !shouldBypassMarkdownRenderer {
                 Markdown(normalizedRenderedText)
                     .markdownTheme(.labOS)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -112,6 +121,23 @@ struct StreamingMarkdownView: View {
         }
         if text.range(of: #"\|.*\n\s*\|?\s*:?-{3,}"#, options: .regularExpression) != nil {
             return true
+        }
+        return false
+    }
+
+    private static func containsTooManyLinks(_ text: String, limit: Int) -> Bool {
+        guard limit >= 0 else { return true }
+        var count = 0
+        var searchStart = text.startIndex
+        while searchStart < text.endIndex {
+            guard let range = text.range(of: "http", range: searchStart..<text.endIndex) else {
+                return false
+            }
+            count += 1
+            if count > limit {
+                return true
+            }
+            searchStart = range.upperBound
         }
         return false
     }

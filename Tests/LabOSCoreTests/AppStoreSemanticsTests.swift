@@ -244,7 +244,7 @@ final class AppStoreSemanticsTests: XCTestCase {
         }
 
         let inputParts = capturedParams?.objectValue?["input"]?.arrayValue ?? []
-        XCTAssertTrue(inputParts.contains(where: { $0.objectValue?["type"]?.stringValue == "localImage" }))
+        XCTAssertTrue(inputParts.contains(where: { $0.objectValue?["type"]?.stringValue == "attachment" }))
         XCTAssertTrue(store.uploadedArtifacts(for: project.id).isEmpty, "Session composer attachments must not become project uploads")
         XCTAssertTrue(store.pendingComposerAttachments(for: session.id).isEmpty, "Pending attachments should clear after send")
     }
@@ -295,7 +295,7 @@ final class AppStoreSemanticsTests: XCTestCase {
         }
 
         let inputParts = capturedParams?.objectValue?["input"]?.arrayValue ?? []
-        XCTAssertTrue(inputParts.contains(where: { $0.objectValue?["type"]?.stringValue == "localImage" }))
+        XCTAssertTrue(inputParts.contains(where: { $0.objectValue?["type"]?.stringValue == "attachment" }))
 
         let latestUser = store.codexItems(for: session.id).compactMap { item -> CodexUserMessageItem? in
             if case let .userMessage(user) = item {

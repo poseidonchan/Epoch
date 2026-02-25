@@ -357,7 +357,183 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         XCTAssertFalse(store.sessionNeedsUserInput(sessionID: sessionID))
     }
 
-    func testSendMessageWhileStreamingQueuesCodexSteerInput() {
+    func testRespondToImplementConfirmationPromptDisablesPlanModeOnApproval() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        store.projects = [Project(id: projectID, name: "Implement Confirmation Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Implement Confirmation Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_impl_confirm"
+            ),
+        ]
+        store.setPlanModeEnabled(for: sessionID, enabled: true)
+        store.codexPendingPromptBySession[sessionID] = [
+            CodexPendingPrompt(
+                requestID: .string("req_impl_confirm"),
+                sessionID: sessionID,
+                threadId: "thread_impl_confirm",
+                turnId: "turn_impl_confirm",
+                kind: "implement_confirmation",
+                prompt: "Implement this plan?",
+                questions: [],
+                rawParams: nil
+            ),
+        ]
+
+        var captured: JSONValue?
+        store.codexServerResponseOverrideForTests = { _, result, _ in
+            captured = result
+        }
+
+        store.respondToCodexPrompt(
+            sessionID: sessionID,
+            requestID: .string("req_impl_confirm"),
+            answers: ["labos_plan_implementation_decision": "Yes, implement this plan"]
+        )
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            captured != nil
+        }
+
+        XCTAssertEqual(store.planModeEnabled(for: sessionID), false)
+        XCTAssertNil(store.codexPendingPrompt(for: sessionID))
+    }
+
+    func testRespondToImplementConfirmationPromptKeepsPlanModeEnabledForFeedback() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        store.projects = [Project(id: projectID, name: "Implement Feedback Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Implement Feedback Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_impl_feedback"
+            ),
+        ]
+        store.setPlanModeEnabled(for: sessionID, enabled: false)
+        store.codexPendingPromptBySession[sessionID] = [
+            CodexPendingPrompt(
+                requestID: .string("req_impl_feedback"),
+                sessionID: sessionID,
+                threadId: "thread_impl_feedback",
+                turnId: "turn_impl_feedback",
+                kind: "implement_confirmation",
+                prompt: "Implement this plan?",
+                questions: [],
+                rawParams: nil
+            ),
+        ]
+
+        var captured: JSONValue?
+        store.codexServerResponseOverrideForTests = { _, result, _ in
+            captured = result
+        }
+
+        store.respondToCodexPrompt(
+            sessionID: sessionID,
+            requestID: .string("req_impl_feedback"),
+            answers: ["labos_plan_implementation_decision": "Use stricter constraints first"]
+        )
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            captured != nil
+        }
+
+        XCTAssertEqual(store.planModeEnabled(for: sessionID), true)
+        XCTAssertNil(store.codexPendingPrompt(for: sessionID))
+    }
+
+    func testDynamicUpdatePlanToolCallUpdatesLivePlanAndRespondsSuccess() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        store.projects = [Project(id: projectID, name: "Dynamic Plan Tool Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Dynamic Plan Tool Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_dynamic_plan"
+            ),
+        ]
+        store.codexSessionByThread["thread_dynamic_plan"] = sessionID
+
+        var capturedRequestID: CodexRequestID?
+        var capturedResult: JSONValue?
+        var capturedError: CodexRPCError?
+        store.codexServerResponseOverrideForTests = { id, result, error in
+            capturedRequestID = id
+            capturedResult = result
+            capturedError = error
+        }
+
+        await store._receiveCodexServerRequestForTesting(
+            CodexRPCRequest(
+                id: .string("req_dynamic_plan"),
+                method: "item/tool/call",
+                params: .object([
+                    "threadId": .string("thread_dynamic_plan"),
+                    "turnId": .string("turn_dynamic_plan"),
+                    "callId": .string("call_dynamic_plan"),
+                    "tool": .string("update_plan"),
+                    "arguments": .object([
+                        "explanation": .string("Executing checklist"),
+                        "plan": .array([
+                            .object([
+                                "step": .string("Investigate context"),
+                                "status": .string("completed"),
+                            ]),
+                            .object([
+                                "step": .string("Implement patch"),
+                                "status": .string("in_progress"),
+                            ]),
+                            .object([
+                                "step": .string("Run regression tests"),
+                                "status": .string("pending"),
+                            ]),
+                        ]),
+                    ]),
+                ])
+            )
+        )
+
+        XCTAssertEqual(capturedRequestID, .string("req_dynamic_plan"))
+        XCTAssertNil(capturedError)
+        XCTAssertEqual(
+            capturedResult,
+            .object([
+                "success": .bool(true),
+                "contentItems": .array([
+                    .object([
+                        "type": .string("inputText"),
+                        "text": .string("Plan updated."),
+                    ]),
+                ]),
+            ])
+        )
+
+        let livePlan = try XCTUnwrap(store.livePlanBySession[sessionID])
+        XCTAssertEqual(livePlan.explanation, "Executing checklist")
+        XCTAssertEqual(
+            livePlan.plan,
+            [
+                .init(step: "Investigate context", status: "completed"),
+                .init(step: "Implement patch", status: "in_progress"),
+                .init(step: "Run regression tests", status: "pending"),
+            ]
+        )
+    }
+
+    func testSendMessageWhileStreamingQueuesCodexInputWithAttachmentsMetadata() throws {
         let store = AppStore(bootstrapDemo: false)
         let projectID = UUID()
         let sessionID = UUID()
@@ -376,12 +552,65 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         store.codexActiveTurnIDBySession[sessionID] = "turn_active"
         store.streamingSessions.insert(sessionID)
 
-        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "Steer this trajectory")
+        let attachmentData = Data("hello".utf8)
+        let attachment = ComposerAttachment(
+            displayName: "note.txt",
+            mimeType: "text/plain",
+            inlineDataBase64: attachmentData.base64EncodedString(),
+            byteCount: attachmentData.count
+        )
 
-        let queued = store.codexSteerQueue(for: sessionID)
+        store.sendMessage(
+            projectID: projectID,
+            sessionID: sessionID,
+            text: "Steer this trajectory",
+            attachments: [attachment]
+        )
+
+        let queued = store.codexQueuedInputs(for: sessionID)
         XCTAssertEqual(queued.count, 1)
-        XCTAssertEqual(queued.first?.text, "Steer this trajectory")
-        XCTAssertEqual(queued.first?.status, .queued)
+
+        let first = try XCTUnwrap(queued.first)
+        XCTAssertEqual(first.text, "Steer this trajectory")
+        XCTAssertEqual(first.status, .queued)
+        XCTAssertEqual(first.attachments.count, 1)
+
+        let stored = try XCTUnwrap(first.attachments.first?.storedPath)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stored))
+    }
+
+    func testCodexQueuedInputsReorderPersistsAcrossStoreRecreate() {
+        let suiteName = "LabOSCoreTests.CodexQueuedInput.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            return XCTFail("Failed to create suite-backed defaults.")
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = AppStore(bootstrapDemo: false, userDefaults: defaults)
+        let projectID = UUID()
+        let sessionID = UUID()
+        store.projects = [Project(id: projectID, name: "Queue Persist Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_queue_persist"
+            ),
+        ]
+        store.streamingSessions.insert(sessionID)
+
+        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "first")
+        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "second")
+        XCTAssertEqual(store.codexQueuedInputs(for: sessionID).map(\.text), ["first", "second"])
+
+        store.moveCodexQueuedInputs(sessionID: sessionID, from: IndexSet(integer: 0), to: 2)
+        XCTAssertEqual(store.codexQueuedInputs(for: sessionID).map(\.text), ["second", "first"])
+
+        let reloaded = AppStore(bootstrapDemo: false, userDefaults: defaults)
+        XCTAssertEqual(reloaded.codexQueuedInputs(for: sessionID).map(\.text), ["second", "first"])
     }
 
     func testTurnStartedAndCompletedTrackActiveTurnID() {
@@ -437,8 +666,22 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         store.streamingSessions.insert(sessionID)
 
         store.sendMessage(projectID: projectID, sessionID: sessionID, text: "first queued steer")
-        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "second queued steer")
-        let queuedBefore = store.codexSteerQueue(for: sessionID)
+        let attachmentData = Data("hello".utf8)
+        let attachmentBase64 = attachmentData.base64EncodedString()
+        store.sendMessage(
+            projectID: projectID,
+            sessionID: sessionID,
+            text: "second queued steer",
+            attachments: [
+                ComposerAttachment(
+                    displayName: "note.txt",
+                    mimeType: "text/plain",
+                    inlineDataBase64: attachmentBase64,
+                    byteCount: attachmentData.count
+                ),
+            ]
+        )
+        let queuedBefore = store.codexQueuedInputs(for: sessionID)
         XCTAssertEqual(queuedBefore.count, 2)
 
         var capturedMethod: String?
@@ -453,7 +696,7 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: target.id)
 
         try await waitUntil(timeoutSeconds: 1.0) {
-            store.codexSteerQueue(for: sessionID).count == 1
+            store.codexQueuedInputs(for: sessionID).count == 1
         }
 
         XCTAssertEqual(capturedMethod, "turn/steer")
@@ -462,10 +705,21 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
             .object([
                 "threadId": .string("thread_queued"),
                 "turnId": .string("turn_active"),
-                "text": .string("second queued steer"),
+                "input": .array([
+                    .object([
+                        "type": .string("text"),
+                        "text": .string("second queued steer"),
+                    ]),
+                    .object([
+                        "type": .string("attachment"),
+                        "name": .string("note.txt"),
+                        "mimeType": .string("text/plain"),
+                        "inlineDataBase64": .string(attachmentBase64),
+                    ]),
+                ]),
             ])
         )
-        XCTAssertEqual(store.codexSteerQueue(for: sessionID).first?.text, "first queued steer")
+        XCTAssertEqual(store.codexQueuedInputs(for: sessionID).first?.text, "first queued steer")
     }
 
     func testSteerQueuedCodexInputFailureMarksRowRetryable() async throws {
@@ -492,17 +746,182 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
             throw TestError()
         }
 
-        let target = try XCTUnwrap(store.codexSteerQueue(for: sessionID).first)
+        let target = try XCTUnwrap(store.codexQueuedInputs(for: sessionID).first)
         store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: target.id)
 
         try await waitUntil(timeoutSeconds: 1.0) {
-            store.codexSteerQueue(for: sessionID).first?.status == .failed
+            store.codexQueuedInputs(for: sessionID).first?.status == .failed
         }
 
-        let queuedAfter = try XCTUnwrap(store.codexSteerQueue(for: sessionID).first)
+        let queuedAfter = try XCTUnwrap(store.codexQueuedInputs(for: sessionID).first)
         XCTAssertEqual(queuedAfter.text, "retry steer")
         XCTAssertEqual(queuedAfter.status, .failed)
         XCTAssertNotNil(queuedAfter.error)
+    }
+
+    func testTurnCompletedDrainsQueuedInputsWhenNoPendingUserInput() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+
+        store.projects = [Project(id: projectID, name: "Drain Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_drain"
+            ),
+        ]
+        store.codexThreadBySession[sessionID] = "thread_drain"
+        store.codexSessionByThread["thread_drain"] = sessionID
+        store.codexConnectionState = .connected
+
+        store.streamingSessions.insert(sessionID)
+        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "queued after completion")
+        XCTAssertEqual(store.codexQueuedInputs(for: sessionID).count, 1)
+
+        var capturedMethod: String?
+        var capturedParams: JSONValue?
+        store.codexRequestOverrideForTests = { method, params in
+            capturedMethod = method
+            capturedParams = params
+            return CodexRPCResponse(
+                id: .string("turn_start_ok"),
+                result: .object([
+                    "threadId": .string("thread_drain"),
+                    "turn": .object([
+                        "id": .string("turn_after_drain"),
+                        "status": .string("inProgress"),
+                    ]),
+                ]),
+                error: nil
+            )
+        }
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "turn/completed",
+                params: .object([
+                    "threadId": .string("thread_drain"),
+                    "turn": .object([
+                        "id": .string("turn_initial"),
+                        "status": .string("completed"),
+                    ]),
+                ])
+            )
+        )
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            capturedMethod == "turn/start"
+        }
+
+        XCTAssertEqual(
+            capturedParams,
+            .object([
+                "threadId": .string("thread_drain"),
+                "input": .array([
+                    .object([
+                        "type": .string("text"),
+                        "text": .string("queued after completion"),
+                    ]),
+                ]),
+                "planMode": .bool(false),
+            ])
+        )
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            store.codexQueuedInputs(for: sessionID).isEmpty
+        }
+    }
+
+    func testTurnCompletedDoesNotDrainQueuedInputsWhenPromptPending() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+
+        store.projects = [Project(id: projectID, name: "Drain Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_drain"
+            ),
+        ]
+        store.codexThreadBySession[sessionID] = "thread_drain"
+        store.codexSessionByThread["thread_drain"] = sessionID
+        store.codexConnectionState = .connected
+
+        store.streamingSessions.insert(sessionID)
+        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "queued after completion")
+        XCTAssertEqual(store.codexQueuedInputs(for: sessionID).count, 1)
+
+        store.codexPendingPromptBySession[sessionID] = [
+            CodexPendingPrompt(
+                requestID: .string("req_prompt_block"),
+                sessionID: sessionID,
+                threadId: "thread_drain",
+                turnId: "turn_prompt_block",
+                prompt: "Need input",
+                rawParams: nil
+            ),
+        ]
+        XCTAssertTrue(store.sessionNeedsUserInput(sessionID: sessionID))
+
+        var capturedMethod: String?
+        store.codexRequestOverrideForTests = { method, _ in
+            capturedMethod = method
+            return CodexRPCResponse(id: .string("ok"), result: .object([:]), error: nil)
+        }
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "turn/completed",
+                params: .object([
+                    "threadId": .string("thread_drain"),
+                    "turn": .object([
+                        "id": .string("turn_initial"),
+                        "status": .string("completed"),
+                    ]),
+                ])
+            )
+        )
+
+        try? await Task.sleep(nanoseconds: 120_000_000)
+        XCTAssertNil(capturedMethod)
+        XCTAssertEqual(store.codexQueuedInputs(for: sessionID).count, 1)
+    }
+
+    func testInterruptCodexTurnSendsTurnInterruptRequest() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let sessionID = UUID()
+        store.codexThreadBySession[sessionID] = "thr_interrupt"
+        store.codexActiveTurnIDBySession[sessionID] = "turn_interrupt"
+
+        var capturedMethod: String?
+        var capturedParams: JSONValue?
+        store.codexRequestOverrideForTests = { method, params in
+            capturedMethod = method
+            capturedParams = params
+            return CodexRPCResponse(id: .string("ok"), result: .object([:]), error: nil)
+        }
+
+        store.interruptCodexTurn(sessionID: sessionID)
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            capturedMethod == "turn/interrupt"
+        }
+
+        XCTAssertEqual(
+            capturedParams,
+            .object([
+                "threadId": .string("thr_interrupt"),
+                "turnId": .string("turn_interrupt"),
+            ])
+        )
     }
 
     func testCodexTurnStartIncludesPlanModeFlag() async throws {

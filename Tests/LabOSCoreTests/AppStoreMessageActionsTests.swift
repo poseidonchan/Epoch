@@ -474,6 +474,46 @@ final class AppStoreMessageActionsTests: XCTestCase {
         XCTAssertEqual(merged.map(\.id), ["item_user_1", "item_agent_1", "\(AppStore.codexLocalUserItemPrefix)echo-1", "item_agent_inflight"])
     }
 
+    func testCodexHistoryMergeDedupesLocalUserEchoWhenStagedImagePathsDiffer() {
+        let localEcho = CodexThreadItem.userMessage(
+            CodexUserMessageItem(
+                type: "userMessage",
+                id: "\(AppStore.codexLocalUserItemPrefix)echo-1",
+                content: [
+                    CodexUserInput(type: "text", text: "hello", url: nil, path: nil),
+                    CodexUserInput(
+                        type: "localImage",
+                        text: nil,
+                        url: nil,
+                        path: "/var/mobile/tmp/labos-codex-inputs/photo-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.png"
+                    ),
+                ]
+            )
+        )
+        let fetchedUser = CodexThreadItem.userMessage(
+            CodexUserMessageItem(
+                type: "userMessage",
+                id: "item_user_server",
+                content: [
+                    CodexUserInput(type: "text", text: "hello", url: nil, path: nil),
+                    CodexUserInput(
+                        type: "localImage",
+                        text: nil,
+                        url: nil,
+                        path: "/Users/chan/.labos/projects/proj/cache/codex-inputs/thr/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb-photo.png"
+                    ),
+                ]
+            )
+        )
+
+        let merged = ChatSessionService.mergeHistoryItemsPreservingInFlightLocals(
+            local: [localEcho],
+            fetched: [fetchedUser]
+        )
+
+        XCTAssertEqual(merged.map(\.id), ["item_user_server"])
+    }
+
     func testCodexItemUpsertReplacesMatchingLocalUserEcho() {
         let localEcho = CodexThreadItem.userMessage(
             CodexUserMessageItem(
@@ -487,6 +527,47 @@ final class AppStoreMessageActionsTests: XCTestCase {
                 type: "userMessage",
                 id: "item_user_server",
                 content: [CodexUserInput(type: "text", text: "hello", url: nil, path: nil)]
+            )
+        )
+
+        let merged = AppStore.upsertCodexItemPreservingLocalEchoes(
+            items: [localEcho],
+            incoming: remoteUser
+        )
+
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(merged.first?.id, "item_user_server")
+    }
+
+    func testCodexItemUpsertReplacesMatchingLocalUserEchoWhenStagedImagePathsDiffer() {
+        let localEcho = CodexThreadItem.userMessage(
+            CodexUserMessageItem(
+                type: "userMessage",
+                id: "\(AppStore.codexLocalUserItemPrefix)echo-1",
+                content: [
+                    CodexUserInput(type: "text", text: "hello", url: nil, path: nil),
+                    CodexUserInput(
+                        type: "localImage",
+                        text: nil,
+                        url: nil,
+                        path: "/var/mobile/tmp/labos-codex-inputs/photo-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.png"
+                    ),
+                ]
+            )
+        )
+        let remoteUser = CodexThreadItem.userMessage(
+            CodexUserMessageItem(
+                type: "userMessage",
+                id: "item_user_server",
+                content: [
+                    CodexUserInput(type: "text", text: "hello", url: nil, path: nil),
+                    CodexUserInput(
+                        type: "localImage",
+                        text: nil,
+                        url: nil,
+                        path: "/Users/chan/.labos/projects/proj/cache/codex-inputs/thr/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb-photo.png"
+                    ),
+                ]
             )
         )
 

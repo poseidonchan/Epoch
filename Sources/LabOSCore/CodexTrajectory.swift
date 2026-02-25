@@ -71,6 +71,39 @@ public struct CodexTrajectoryTurn: Identifiable, Hashable, Sendable {
     }
 }
 
+public struct CodexProposedPlanBlock: Hashable, Sendable {
+    public var leadingText: String
+    public var planText: String
+    public var trailingText: String
+
+    public init(leadingText: String, planText: String, trailingText: String) {
+        self.leadingText = leadingText
+        self.planText = planText
+        self.trailingText = trailingText
+    }
+}
+
+public enum CodexProposedPlanParser {
+    public static func parse(from text: String) -> CodexProposedPlanBlock? {
+        let openingTag = "<proposed_plan>"
+        let closingTag = "</proposed_plan>"
+        guard let openingRange = text.range(of: openingTag) else { return nil }
+        guard let closingRange = text.range(of: closingTag, range: openingRange.upperBound..<text.endIndex) else {
+            return nil
+        }
+
+        let leading = String(text[..<openingRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let plan = String(text[openingRange.upperBound..<closingRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !plan.isEmpty else { return nil }
+        let trailing = String(text[closingRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return CodexProposedPlanBlock(
+            leadingText: leading,
+            planText: plan,
+            trailingText: trailing
+        )
+    }
+}
+
 public enum CodexTrajectoryAssembler {
     public static func assemble(from items: [CodexThreadItem], isStreaming: Bool) -> [CodexTrajectoryTurn] {
         let chunks = splitTurns(items)
@@ -258,6 +291,9 @@ public enum CodexTrajectoryAssembler {
 
         case .fileChange:
             return .write
+
+        case .webSearch:
+            return .search
 
         case .plan:
             return .other

@@ -10,6 +10,12 @@ struct InlineComposerView: View {
         case chatGPT
     }
 
+    enum PrimaryAction: Hashable {
+        case send
+        case stop
+        case update
+    }
+
     let placeholder: String
     @Binding var text: String
     @Binding var isPlanModeEnabled: Bool
@@ -18,6 +24,8 @@ struct InlineComposerView: View {
     @Binding var selectedPermissionLevel: SessionPermissionLevel
     let submitLabel: String
     var style: Style = .standard
+    var primaryAction: PrimaryAction = .send
+    var submitDisabled: Bool = false
     var statusText: String? = nil
     var statusIconSystemName: String = "sparkles"
     var statusAction: (() -> Void)? = nil
@@ -53,7 +61,43 @@ struct InlineComposerView: View {
     }
 
     private var canSubmit: Bool {
-        !trimmedText.isEmpty
+        if primaryAction == .stop { return true }
+        return !trimmedText.isEmpty || !pendingAttachments.isEmpty
+    }
+
+    private var isSubmitEnabled: Bool {
+        canSubmit && !submitDisabled
+    }
+
+    private var primaryActionIconSystemName: String {
+        switch primaryAction {
+        case .send:
+            return "arrow.up"
+        case .stop:
+            return "square.fill"
+        case .update:
+            return "checkmark"
+        }
+    }
+
+    private var primaryActionBackgroundFill: Color {
+        guard isSubmitEnabled else { return Color(.tertiarySystemFill) }
+        switch primaryAction {
+        case .stop:
+            return .red
+        default:
+            return .white
+        }
+    }
+
+    private var primaryActionForeground: Color {
+        guard isSubmitEnabled else { return Color(.tertiaryLabel) }
+        switch primaryAction {
+        case .stop:
+            return .white
+        default:
+            return .black
+        }
     }
 
     private var selectedModelLabel: String {
@@ -121,7 +165,7 @@ struct InlineComposerView: View {
                     onSubmit()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!canSubmit)
+                .disabled(!canSubmit || submitDisabled)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
@@ -192,20 +236,20 @@ struct InlineComposerView: View {
                         }
 
                         Button {
-                            guard canSubmit else { return }
+                            guard isSubmitEnabled else { return }
                             onSubmit()
                         } label: {
-                            Image(systemName: "arrow.up")
+                            Image(systemName: primaryActionIconSystemName)
                                 .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(canSubmit ? Color.black : Color(.tertiaryLabel))
+                                .foregroundStyle(primaryActionForeground)
                                 .frame(width: 34, height: 34)
                                 .background(
                                     Circle()
-                                        .fill(canSubmit ? Color.white : Color(.tertiarySystemFill))
+                                        .fill(primaryActionBackgroundFill)
                                 )
                         }
                         .buttonStyle(.plain)
-                        .disabled(!canSubmit)
+                        .disabled(!canSubmit || submitDisabled)
                         .accessibilityLabel(submitLabel)
                         .accessibilityIdentifier("composer.send")
                     }
