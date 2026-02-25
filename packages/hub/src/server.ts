@@ -869,7 +869,8 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
         }
         const title = params.title == null ? undefined : String(params.title).trim();
         const lifecycle = params.lifecycle == null ? undefined : String(params.lifecycle);
-        const backendEngine = params.backendEngine == null ? undefined : normalizeCodexEngine(params.backendEngine);
+        const backendEngine =
+          params.backendEngine == null ? undefined : (normalizeCodexEngine(params.backendEngine) ?? undefined);
         const codexModel = Object.prototype.hasOwnProperty.call(params, "codexModel")
           ? normalizeOptionalString(params.codexModel)
           : undefined;
@@ -2373,20 +2374,20 @@ async function executeAgentRun(
 
     const runTurn = async () => {
       await runLabosAgentTurn({
-        host: {
-          nowIso: () => new Date().toISOString(),
-          broadcastEvent: (event, payload) => broadcastEvent(state, event, payload),
-          getApiKey: (provider) => getApiKeyForProvider(state, provider),
-          persistAssistantMessage: (msg) => persistAssistantMessage(state, msg),
-          persistToolMessage: (msg) => persistToolMessage(state, msg.projectId, msg.sessionId, msg.text, msg.runId),
-          insertPlan: (plan, agentRunId) => insertPlan(state, plan, agentRunId),
-          waitForApproval: (planId) => waitForApproval(state, planId),
-          createRunRecord: (opts) => createRunRecord(state, opts),
-          executePlan: ({ projectId, sessionId, agentRunId, plan, runId }) =>
-            executePlan(state, { projectId, sessionId, agentRunId, plan, runId }),
-          updateRunCurrentStep: ({ projectId, runId, currentStep, logSnippet }) =>
-            updateRunCurrentStep(state, { projectId, runId, currentStep, logSnippet }),
-        },
+	        host: {
+	          nowIso: () => new Date().toISOString(),
+	          broadcastEvent: (event: string, payload: unknown) => broadcastEvent(state, event, payload),
+	          getApiKey: (provider: string) => getApiKeyForProvider(state, provider),
+	          persistAssistantMessage: (msg: any) => persistAssistantMessage(state, msg),
+	          persistToolMessage: (msg: any) => persistToolMessage(state, msg.projectId, msg.sessionId, msg.text, msg.runId),
+	          insertPlan: (plan: any, agentRunId: string) => insertPlan(state, plan, agentRunId),
+	          waitForApproval: (planId: string) => waitForApproval(state, planId),
+	          createRunRecord: (opts: any) => createRunRecord(state, opts),
+	          executePlan: ({ projectId, sessionId, agentRunId, plan, runId }: { projectId: string; sessionId: string; agentRunId: string; plan: any; runId: string }) =>
+	            executePlan(state, { projectId, sessionId, agentRunId, plan, runId }),
+	          updateRunCurrentStep: ({ projectId, runId, currentStep, logSnippet }: { projectId: string; runId: string; currentStep: number; logSnippet: string }) =>
+	            updateRunCurrentStep(state, { projectId, runId, currentStep, logSnippet }),
+	        },
         agentRunId: run.agentRunId,
         projectId: run.projectId,
         sessionId: run.sessionId,
@@ -2568,7 +2569,7 @@ async function streamAssistant(
   }
 }
 
-function toPiContextMessages(transcript: Array<{ ts: string; role: string; content: string }>, model: PiModel<any>) {
+function toPiContextMessages(transcript: Array<{ ts: string; role: string; content: string }>, model: PiModel) {
   const out: any[] = [];
   for (const m of transcript) {
     const tsMs = Date.parse(m.ts);
@@ -2782,7 +2783,7 @@ function getOptionalReasoningEnv(name: string): SimpleStreamOptions["reasoning"]
 async function streamAssistantFromModel(
   state: HubState,
   opts: {
-    model: PiModel<any>;
+    model: PiModel;
     context: PiContext;
     thinkingLevel: string | null;
     agentRunId: string;
@@ -3794,7 +3795,7 @@ function chunkEntriesByTokenBudget(entries: any[], budgetTokens: number): any[][
 }
 
 async function summarizeForCompaction(state: HubState, opts: {
-  model: PiModel<any>;
+  model: PiModel;
   apiKey: string;
   existingSummary: string;
   entries: any[];
@@ -3847,7 +3848,7 @@ async function summarizeForCompaction(state: HubState, opts: {
 async function compactSessionTranscript(state: HubState, opts: {
   projectId: string;
   sessionId: string;
-  model: PiModel<any>;
+  model: PiModel;
   apiKey: string;
   contextWindowTokens: number;
   currentUserText: string;

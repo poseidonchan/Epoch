@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
-import type { Turn } from "../types.js";
+import type { Turn, UserInput } from "../types.js";
 import { AsyncPushQueue, type CodexEngineSession, type EngineStartTurnArgs, type EngineStartTurnResult, type EngineStreamEvent } from "./types.js";
 
 type PendingRequest = {
@@ -186,12 +186,27 @@ export class CodexAppServerEngine implements CodexEngineSession {
     });
   }
 
-  async steerTurn(args: { threadId: string; turnId: string; text: string }): Promise<Record<string, unknown>> {
-    return await this.request("turn/steer", {
-      threadId: args.threadId,
-      turnId: args.turnId,
-      text: args.text,
-    });
+  async steerTurn(args: { threadId: string; turnId: string; input: UserInput[] }): Promise<Record<string, unknown>> {
+    try {
+      return await this.request("turn/steer", {
+        threadId: args.threadId,
+        turnId: args.turnId,
+        input: args.input,
+      });
+    } catch (err) {
+      // Backward-compat: older codex app-server builds may only accept `{text}`.
+      const fallbackText = args.input
+        .map((part) => (part.type === "text" ? part.text : ""))
+        .filter(Boolean)
+        .join("\n")
+        .trim();
+      if (!fallbackText) throw err;
+      return await this.request("turn/steer", {
+        threadId: args.threadId,
+        turnId: args.turnId,
+        text: fallbackText,
+      });
+    }
   }
 
   async close(): Promise<void> {

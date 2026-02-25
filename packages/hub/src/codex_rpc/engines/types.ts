@@ -52,7 +52,7 @@ export interface CodexEngineSession {
 
   startTurn(args: EngineStartTurnArgs): Promise<EngineStartTurnResult>;
   interruptTurn(args: { threadId: string; turnId: string }): Promise<void>;
-  steerTurn?(args: { threadId: string; turnId: string; text: string }): Promise<Record<string, unknown>>;
+  steerTurn?(args: { threadId: string; turnId: string; input: UserInput[] }): Promise<Record<string, unknown>>;
   handleClientResponse?(payload: { id: string | number; result?: unknown; error?: { code: number; message: string; data?: unknown } }): Promise<boolean>;
   close(): Promise<void>;
 }
@@ -105,6 +105,7 @@ export function flattenUserInputToText(input: UserInput[]): string {
       if (part.type === "text") return part.text;
       if (part.type === "image") return `[image:${part.url}]`;
       if (part.type === "localImage") return `[localImage:${part.path}]`;
+      if (part.type === "attachment") return `[attachment:${part.name}]`;
       if (part.type === "skill") return `[skill:${part.name}]`;
       if (part.type === "mention") return `[mention:${part.name}]`;
       return "";
