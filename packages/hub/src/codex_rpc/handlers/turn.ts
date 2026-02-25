@@ -8,6 +8,14 @@ import type { CodexRepository } from "../repository.js";
 import { nowUnixSeconds, type ThreadItem, type Turn, type UserInput } from "../types.js";
 import { maybePersistThreadFromResponse, parseThreadSettings } from "./thread.js";
 
+const PLAN_MODE_DEVELOPER_INSTRUCTIONS = [
+  "Plan mode is active for this turn.",
+  "Focus on planning and clarifying questions before implementation.",
+  "Use request_user_input when user decisions are needed.",
+  "If asked whether plan mode is active, answer yes.",
+  "Do not claim or imply that default mode is active while this mode is active.",
+].join(" ");
+
 export type TurnHandlerContext = {
   repository: CodexRepository;
   engines: CodexEngineRegistry;
@@ -17,6 +25,7 @@ export type PreparedTurnStart = {
   threadId: string;
   turnId: string;
   turn: Turn;
+  planMode: boolean;
   events: AsyncIterable<EngineStreamEvent>;
   preludeNotifications: Array<{ method: string; params: Record<string, unknown> }>;
 };
@@ -270,6 +279,7 @@ export async function handleTurnStart(
     threadId,
     turnId,
     turn: started.turn,
+    planMode,
     events: started.events,
     preludeNotifications: [],
   };
@@ -653,12 +663,13 @@ function buildCollaborationMode(
 } | null {
   const normalizedModel = normalizeNonEmptyString(model);
   if (!normalizedModel) return null;
+  const developerInstructions = planMode ? PLAN_MODE_DEVELOPER_INSTRUCTIONS : null;
   return {
     mode: planMode ? "plan" : "default",
     settings: {
       model: normalizedModel,
       reasoning_effort: null,
-      developer_instructions: null,
+      developer_instructions: developerInstructions,
     },
   };
 }

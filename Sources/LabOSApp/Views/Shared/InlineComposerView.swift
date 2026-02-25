@@ -33,6 +33,7 @@ struct InlineComposerView: View {
     let onSubmit: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showsPlusMenu = false
 
     private var trimmedText: String {
@@ -237,12 +238,21 @@ struct InlineComposerView: View {
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
-            .padding(.bottom, 10)
-                .background(
-                    Color(.systemBackground)
-                        .opacity(colorScheme == .dark ? 0.98 : 0.92)
-                        .ignoresSafeArea(.container, edges: .bottom)
-                )
+        .padding(.bottom, 10)
+        .background(
+            Color(.systemBackground)
+                .opacity(colorScheme == .dark ? 0.98 : 0.92)
+                .ignoresSafeArea(.container, edges: .bottom)
+                .allowsHitTesting(false)
+        )
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active {
+                showsPlusMenu = false
+            }
+        }
+        .onDisappear {
+            showsPlusMenu = false
+        }
     }
 
     private var imageAttachments: [ComposerAttachment] {
@@ -418,7 +428,13 @@ struct InlineComposerView: View {
                 .accessibilityIdentifier("composer.plus.attachments")
             }
 
-            Toggle(isOn: $isPlanModeEnabled) {
+            Toggle(isOn: Binding(
+                get: { isPlanModeEnabled },
+                set: { newValue in
+                    isPlanModeEnabled = newValue
+                    showsPlusMenu = false
+                }
+            )) {
                 Label("Plan mode", systemImage: "list.bullet.clipboard")
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(.primary)
@@ -661,6 +677,7 @@ struct InlineComposerView: View {
 	    let progress: Double
 	    let totalContextTokens: Int
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showsTooltip = false
     @State private var hideTooltipTask: DispatchWorkItem?
 
@@ -711,6 +728,11 @@ struct InlineComposerView: View {
             tooltipView
                 .presentationCompactAdaptation(.popover)
         }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active {
+                dismissTooltip()
+            }
+        }
 	        .frame(width: 22, height: 22)
 	        .help(
 	            "Context window: \(remainingTokens.formatted()) tokens left (\(remainingPercent)%). \(usedTokens.formatted()) / \(totalContextTokens.formatted()) used"
@@ -718,9 +740,9 @@ struct InlineComposerView: View {
 	        .accessibilityElement(children: .ignore)
 	        .accessibilityLabel("Remaining context")
 	        .accessibilityValue("\(remainingPercent) percent remaining, \(remainingTokens.formatted()) tokens left")
-            .accessibilityIdentifier("composer.context.ring")
+	            .accessibilityIdentifier("composer.context.ring")
 	        .onDisappear {
-	            hideTooltipTask?.cancel()
+	            dismissTooltip()
 	        }
 	    }
 
@@ -769,6 +791,14 @@ struct InlineComposerView: View {
         }
         hideTooltipTask = task
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.2, execute: task)
+    }
+
+    private func dismissTooltip() {
+        hideTooltipTask?.cancel()
+        hideTooltipTask = nil
+        if showsTooltip {
+            showsTooltip = false
+        }
     }
 }
 

@@ -173,8 +173,9 @@ public final class CodexRPCClient: ObservableObject {
                     let request = CodexRPCRequest(id: id, method: method, params: params)
                     try await sendRawMessage(request, task: task)
                 } catch {
-                    pending[id] = nil
-                    continuation.resume(throwing: error)
+                    // Connection teardown can fail pending requests concurrently with send.
+                    // Resume only if this request is still pending to avoid double-resume traps.
+                    resolvePendingRequest(id: id, result: .failure(error))
                 }
             }
         }
@@ -208,11 +209,13 @@ public final class CodexRPCClient: ObservableObject {
     private func handleInbound(_ inbound: CodexRPCInbound) {
         switch inbound {
         case let .response(response):
-            guard let continuation = pending.removeValue(forKey: response.id) else { return }
             if let error = response.error {
-                continuation.resume(throwing: CodexRPCClientError.serverRejected(error.message))
+                resolvePendingRequest(
+                    id: response.id,
+                    result: .failure(CodexRPCClientError.serverRejected(error.message))
+                )
             } else {
-                continuation.resume(returning: response)
+                resolvePendingRequest(id: response.id, result: .success(response))
             }
         case let .request(request):
             serverRequestsContinuation?.yield(request)
@@ -252,6 +255,16 @@ public final class CodexRPCClient: ObservableObject {
         let active = pending
         pending.removeAll()
         for (_, continuation) in active {
+            continuation.resume(throwing: error)
+        }
+    }
+
+    private func resolvePendingRequest(id: CodexRequestID, result: Result<CodexRPCResponse, Error>) {
+        guard let continuation = pending.removeValue(forKey: id) else { return }
+        switch result {
+        case let .success(response):
+            continuation.resume(returning: response)
+        case let .failure(error):
             continuation.resume(throwing: error)
         }
     }
@@ -311,5 +324,23 @@ extension CodexRPCClient {
             throw CodexRPCClientError.protocolViolation("Failed to encode response payload")
         }
         return text
+    }
+
+    var pendingRequestCountForTesting: Int {
+        pending.count
+    }
+
+    func registerPendingRequestForTesting(id: CodexRequestID) async throws -> CodexRPCResponse {
+        try await withCheckedThrowingContinuation { continuation in
+            pending[id] = continuation
+        }
+    }
+
+    func failPendingRequestsForTesting(_ error: Error) {
+        failPending(error)
+    }
+
+    func finishPendingSendFailureForTesting(id: CodexRequestID, error: Error) {
+        resolvePendingRequest(id: id, result: .failure(error))
     }
 }

@@ -788,17 +788,17 @@ struct ProjectPageView: View {
                     if needsResponse {
                         Text("Awaiting response")
                             .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.blue)
+                            .foregroundStyle(Color.green.opacity(0.92))
                             .lineLimit(1)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
                             .background(
                                 Capsule()
-                                    .fill(Color.blue.opacity(0.14))
+                                    .fill(Color.green.opacity(0.18))
                             )
                             .overlay(
                                 Capsule()
-                                    .strokeBorder(Color.blue.opacity(0.3))
+                                    .strokeBorder(Color.green.opacity(0.45))
                             )
                             .accessibilityIdentifier("project.session.awaiting.\(session.id.uuidString.lowercased())")
                     }

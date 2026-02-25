@@ -431,6 +431,7 @@ public struct CodexPendingPrompt: Identifiable, Hashable, Sendable {
     public var sessionID: UUID
     public var threadId: String
     public var turnId: String?
+    public var kind: String
     public var prompt: String?
     public var questions: [CodexPromptQuestion]
     public var rawParams: JSONValue?
@@ -440,6 +441,7 @@ public struct CodexPendingPrompt: Identifiable, Hashable, Sendable {
         sessionID: UUID,
         threadId: String,
         turnId: String?,
+        kind: String = "prompt",
         prompt: String?,
         questions: [CodexPromptQuestion] = [],
         rawParams: JSONValue?
@@ -448,6 +450,7 @@ public struct CodexPendingPrompt: Identifiable, Hashable, Sendable {
         self.sessionID = sessionID
         self.threadId = threadId
         self.turnId = turnId
+        self.kind = kind
         self.prompt = prompt
         self.questions = questions
         self.rawParams = rawParams
@@ -456,12 +459,22 @@ public struct CodexPendingPrompt: Identifiable, Hashable, Sendable {
 
 public struct CodexPromptQuestion: Hashable, Sendable {
     public var id: String
+    public var header: String?
     public var prompt: String
+    public var isOther: Bool
     public var options: [CodexPromptOption]
 
-    public init(id: String, prompt: String, options: [CodexPromptOption]) {
+    public init(
+        id: String,
+        header: String? = nil,
+        prompt: String,
+        isOther: Bool = false,
+        options: [CodexPromptOption]
+    ) {
         self.id = id
+        self.header = header
         self.prompt = prompt
+        self.isOther = isOther
         self.options = options
     }
 }

@@ -61,6 +61,26 @@ internal final class ChatSessionService {
         var includeTurns: Bool
     }
 
+    private struct CodexSessionReadPendingInputPayload: Decodable, Sendable {
+        var requestId: CodexRequestID
+        var method: String
+        var kind: String?
+        var params: JSONValue?
+        var createdAt: Int?
+    }
+
+    private struct CodexSessionReadActivePlanPayload: Decodable, Sendable {
+        struct Step: Decodable, Sendable {
+            var step: String
+            var status: String
+        }
+
+        var turnId: String
+        var explanation: String?
+        var plan: [Step]
+        var updatedAt: Int?
+    }
+
     private struct CodexTurnInputPart: Codable, Sendable {
         var type: String
         var text: String?
@@ -960,9 +980,9 @@ internal final class ChatSessionService {
             )
 
             var session: Session = try store.decodeCodexResult(response.result, key: "session")
+            let resultObject = response.result?.objectValue ?? [:]
             var thread: CodexThread?
-            if let resultObject = response.result?.objectValue,
-               let threadValue = resultObject["thread"] {
+            if let threadValue = resultObject["thread"] {
                 let threadData = try store.gatewayJSONEncoder.encode(threadValue)
                 thread = try store.gatewayJSONDecoder.decode(CodexThread.self, from: threadData)
             }
@@ -1032,8 +1052,87 @@ internal final class ChatSessionService {
                 store.codexItemsBySession[sessionID] = store.codexItemsBySession[sessionID] ?? []
             }
 
-            store.codexPendingApprovalsBySession[sessionID] = []
-            store.codexPendingPromptBySession[sessionID] = nil
+            let pendingInputs: [CodexSessionReadPendingInputPayload] = {
+                guard let payload = resultObject["pendingUserInputs"] else { return [] }
+                guard let data = try? store.gatewayJSONEncoder.encode(payload) else { return [] }
+                return (try? store.gatewayJSONDecoder.decode([CodexSessionReadPendingInputPayload].self, from: data)) ?? []
+            }()
+            var hydratedPrompts: [CodexPendingPrompt] = []
+            var hydratedApprovals: [CodexPendingApproval] = []
+            for pending in pendingInputs {
+                let kind = pending.kind?.trimmingCharacters(in: .whitespacesAndNewlines)
+                switch pending.method {
+                case "item/tool/requestUserInput":
+                    let paramsObject = pending.params?.objectValue ?? [:]
+                    let promptThreadID =
+                        paramsObject["threadId"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+                        ?? thread?.id
+                        ?? session.codexThreadId
+                        ?? store.codexThreadBySession[sessionID]
+                        ?? ""
+                    let questions = Self.decodeCodexPromptQuestions(from: paramsObject)
+                    hydratedPrompts.append(
+                        CodexPendingPrompt(
+                            requestID: pending.requestId,
+                            sessionID: sessionID,
+                            threadId: promptThreadID,
+                            turnId: paramsObject["turnId"]?.stringValue,
+                            kind: (kind?.isEmpty ?? true) ? "prompt" : kind!,
+                            prompt: paramsObject["prompt"]?.stringValue ?? paramsObject["message"]?.stringValue,
+                            questions: questions,
+                            rawParams: pending.params
+                        )
+                    )
+                case CodexApprovalKind.commandExecution.rawValue, CodexApprovalKind.fileChange.rawValue:
+                    let paramsObject = pending.params?.objectValue ?? [:]
+                    let approvalKind: CodexApprovalKind = pending.method == CodexApprovalKind.commandExecution.rawValue
+                        ? .commandExecution
+                        : .fileChange
+                    hydratedApprovals.append(
+                        CodexPendingApproval(
+                            requestID: pending.requestId,
+                            kind: approvalKind,
+                            sessionID: sessionID,
+                            threadId: paramsObject["threadId"]?.stringValue ?? (thread?.id ?? session.codexThreadId ?? ""),
+                            turnId: paramsObject["turnId"]?.stringValue,
+                            itemId: paramsObject["itemId"]?.stringValue,
+                            reason: paramsObject["reason"]?.stringValue,
+                            command: paramsObject["command"]?.stringValue,
+                            cwd: paramsObject["cwd"]?.stringValue,
+                            grantRoot: paramsObject["grantRoot"]?.stringValue,
+                            rawParams: pending.params
+                        )
+                    )
+                default:
+                    continue
+                }
+            }
+            store.codexPendingPromptBySession[sessionID] = hydratedPrompts.isEmpty ? nil : hydratedPrompts
+            store.codexPendingApprovalsBySession[sessionID] = hydratedApprovals
+            store.refreshSessionPendingUserInputMetadata(sessionID: sessionID)
+
+            let activePlanPayload: CodexSessionReadActivePlanPayload? = {
+                guard let payload = resultObject["activePlan"] else { return nil }
+                guard let data = try? store.gatewayJSONEncoder.encode(payload) else { return nil }
+                return try? store.gatewayJSONDecoder.decode(CodexSessionReadActivePlanPayload.self, from: data)
+            }()
+            if let activePlanPayload, !activePlanPayload.plan.isEmpty {
+                let normalizedSteps = activePlanPayload.plan.map { step in
+                    AgentPlanUpdatedPayload.PlanItem(
+                        step: step.step,
+                        status: Self.normalizeCodexPlanStatus(step.status)
+                    )
+                }
+                store.livePlanBySession[sessionID] = AgentPlanUpdatedPayload(
+                    agentRunId: UUID(),
+                    projectId: projectID,
+                    sessionId: sessionID,
+                    explanation: activePlanPayload.explanation?.trimmingCharacters(in: .whitespacesAndNewlines),
+                    plan: normalizedSteps
+                )
+            } else if store.activeInlineProcessBySession[sessionID] == nil {
+                store.livePlanBySession[sessionID] = nil
+            }
             sessionHistoryLastFetchedAtBySession[sessionID] = now
             store.lastGatewayErrorMessage = nil
         } catch {
@@ -1056,6 +1155,73 @@ internal final class ChatSessionService {
     }
 
     // MARK: - Private Helpers
+
+    private static func decodeCodexPromptQuestions(from params: [String: JSONValue]) -> [CodexPromptQuestion] {
+        guard let questions = params["questions"]?.arrayValue else { return [] }
+        return questions.compactMap { value -> CodexPromptQuestion? in
+            guard let questionObject = value.objectValue else { return nil }
+            let questionID = codexPromptString(questionObject["id"]) ?? "response"
+            let questionHeader = codexPromptString(questionObject["header"])
+            let questionPrompt = codexPromptString(questionObject["question"])
+                ?? codexPromptString(questionObject["prompt"])
+                ?? ""
+            let questionIsOther = questionObject["isOther"]?.boolValue ?? false
+
+            let options: [CodexPromptOption] = {
+                guard let rawOptions = questionObject["options"]?.arrayValue else { return [] }
+                return rawOptions.compactMap { optionValue -> CodexPromptOption? in
+                    guard let optionObject = optionValue.objectValue else { return nil }
+                    guard let label = codexPromptString(optionObject["label"]), !label.isEmpty else { return nil }
+                    let optionID = codexPromptString(optionObject["id"]) ?? label
+                    let description = codexPromptString(optionObject["description"])
+                    let isOther = optionObject["isOther"]?.boolValue ?? false
+                    return CodexPromptOption(
+                        id: optionID,
+                        label: label,
+                        description: description,
+                        isOther: isOther
+                    )
+                }
+            }()
+
+            return CodexPromptQuestion(
+                id: questionID,
+                header: questionHeader,
+                prompt: questionPrompt,
+                isOther: questionIsOther,
+                options: options
+            )
+        }
+    }
+
+    private static func codexPromptString(_ value: JSONValue?) -> String? {
+        guard let value else { return nil }
+        let raw: String
+        switch value {
+        case let .string(text):
+            raw = text
+        case let .number(number):
+            raw = String(number)
+        case let .bool(flag):
+            raw = flag ? "true" : "false"
+        default:
+            return nil
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func normalizeCodexPlanStatus(_ raw: String) -> String {
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "inprogress", "in_progress":
+            return "in_progress"
+        case "completed":
+            return "completed"
+        default:
+            return "pending"
+        }
+    }
 
     static func codexRegeneratePlan(
         thread: CodexThread,

@@ -2,6 +2,48 @@ import XCTest
 @testable import LabOSCore
 
 final class CodexRPCClientTests: XCTestCase {
+    @MainActor
+    func testPendingRequestRaceDoesNotDoubleResumeContinuation() async {
+        enum TestFailure: LocalizedError {
+            case disconnected
+            case sendFailure
+
+            var errorDescription: String? {
+                switch self {
+                case .disconnected:
+                    return "socket disconnected"
+                case .sendFailure:
+                    return "send failed"
+                }
+            }
+        }
+
+        let client = CodexRPCClient(
+            wsURL: URL(string: "ws://127.0.0.1:8787/codex")!,
+            token: "test-token"
+        )
+
+        let requestID = CodexRequestID.string("req-race")
+        let waiter = Task {
+            try await client.registerPendingRequestForTesting(id: requestID)
+        }
+
+        await Task.yield()
+        XCTAssertEqual(client.pendingRequestCountForTesting, 1)
+
+        client.failPendingRequestsForTesting(TestFailure.disconnected)
+        client.finishPendingSendFailureForTesting(id: requestID, error: TestFailure.sendFailure)
+
+        do {
+            _ = try await waiter.value
+            XCTFail("Expected continuation to fail once after disconnection")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, "socket disconnected")
+        }
+
+        XCTAssertEqual(client.pendingRequestCountForTesting, 0)
+    }
+
     func testDecodeInboundRequestResponseAndNotification() throws {
         let requestJSON = #"{"id":91,"method":"item/fileChange/requestApproval","params":{"threadId":"thr_1"}}"#
         let notificationJSON = #"{"method":"turn/started","params":{"threadId":"thr_1"}}"#

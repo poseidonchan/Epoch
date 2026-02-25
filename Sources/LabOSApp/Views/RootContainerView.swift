@@ -1,10 +1,12 @@
 #if os(iOS)
+import Combine
 import LabOSCore
 import SwiftUI
 import UserNotifications
 
 struct RootContainerView: View {
     @EnvironmentObject private var store: AppStore
+    @EnvironmentObject private var notificationRouter: AppNotificationRouter
 
     var body: some View {
         GeometryReader { proxy in
@@ -56,6 +58,10 @@ struct RootContainerView: View {
                 Task {
                     await LocalNotifications.schedulePendingUserInputIfAuthorized(signal)
                 }
+            }
+            .onReceive(notificationRouter.$pendingURL.compactMap { $0 }) { url in
+                store.handleDeepLink(url)
+                notificationRouter.consumePendingURL(url)
             }
             .fullScreenCover(
                 isPresented: Binding(
@@ -201,6 +207,10 @@ enum LocalNotifications {
         content.title = "Response needed"
         content.body = pendingUserInputBody(for: signal)
         content.sound = .default
+        content.userInfo["deepLink"] = DeepLinkCodec.sessionURL(
+            projectID: signal.projectID,
+            sessionID: signal.sessionID
+        ).absoluteString
 
         let request = UNNotificationRequest(
             identifier: "labos.pending.input.\(signal.sessionID.uuidString).\(requestIDKey(signal.requestID))",

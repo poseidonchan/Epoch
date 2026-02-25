@@ -39,6 +39,31 @@ type CodexItemRecord = {
   updatedAt: number;
 };
 
+export type CodexPendingInputRecord = {
+  id: number;
+  token: string;
+  requestId: string;
+  sessionId: string;
+  threadId: string | null;
+  method: string;
+  kind: string;
+  params: Record<string, unknown>;
+  status: "pending" | "resolved" | "expired";
+  createdAt: number;
+  updatedAt: number;
+  resolvedAt: number | null;
+};
+
+export type CodexPlanSnapshotRecord = {
+  sessionId: string;
+  token: string;
+  threadId: string;
+  turnId: string;
+  explanation: string | null;
+  plan: Array<{ step: string; status: "pending" | "inProgress" | "completed" }>;
+  updatedAt: number;
+};
+
 export class CodexRepository {
   private readonly pool: DbPool;
   private readonly stateDir: string;
@@ -455,6 +480,169 @@ export class CodexRepository {
       projectId: String(row.project_id),
       sessionId: String(row.session_id),
     };
+  }
+
+  async upsertPendingInput(args: {
+    token: string;
+    requestId: string;
+    sessionId: string;
+    threadId: string | null;
+    method: string;
+    kind: string;
+    params: Record<string, unknown>;
+    createdAt?: number;
+  }) {
+    const createdAt = args.createdAt ?? nowUnixSeconds();
+    const updatedAt = createdAt;
+    await this.pool.query(
+      `INSERT INTO codex_pending_inputs (
+         token, request_id, session_id, thread_id, method, kind, params_json,
+         status, created_at, updated_at, resolved_at
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8,$9,NULL)
+       ON CONFLICT(token, request_id) DO UPDATE SET
+         session_id=EXCLUDED.session_id,
+         thread_id=EXCLUDED.thread_id,
+         method=EXCLUDED.method,
+         kind=EXCLUDED.kind,
+         params_json=EXCLUDED.params_json,
+         status='pending',
+         updated_at=EXCLUDED.updated_at,
+         resolved_at=NULL`,
+      [
+        args.token,
+        args.requestId,
+        args.sessionId,
+        args.threadId,
+        args.method,
+        args.kind,
+        JSON.stringify(args.params ?? {}),
+        createdAt,
+        updatedAt,
+      ]
+    );
+  }
+
+  async resolvePendingInput(args: {
+    token: string;
+    requestId: string;
+    status?: "resolved" | "expired";
+    resolvedAt?: number;
+  }): Promise<boolean> {
+    const status = args.status ?? "resolved";
+    const resolvedAt = args.resolvedAt ?? nowUnixSeconds();
+    const result = await this.pool.query<any>(
+      `UPDATE codex_pending_inputs
+       SET status=$1, updated_at=$2, resolved_at=$2
+       WHERE token=$3 AND request_id=$4 AND status='pending'`,
+      [status, resolvedAt, args.token, args.requestId]
+    );
+    return Number(result.rowCount ?? 0) > 0;
+  }
+
+  async expirePendingInputsForToken(token: string, updatedAt?: number): Promise<number> {
+    const now = updatedAt ?? nowUnixSeconds();
+    const result = await this.pool.query<any>(
+      `UPDATE codex_pending_inputs
+       SET status='expired', updated_at=$1, resolved_at=$1
+       WHERE token=$2 AND status='pending'`,
+      [now, token]
+    );
+    return Number(result.rowCount ?? 0);
+  }
+
+  async listPendingInputsForSession(args: { sessionId: string; token?: string | null }): Promise<CodexPendingInputRecord[]> {
+    const params: unknown[] = [args.sessionId];
+    const where: string[] = ["session_id=$1", "status='pending'"];
+    if (args.token && args.token.trim()) {
+      params.push(args.token.trim());
+      where.push(`token=$${params.length}`);
+    }
+
+    const rows = await this.pool.query<any>(
+      `SELECT id, token, request_id, session_id, thread_id, method, kind,
+              params_json, status, created_at, updated_at, resolved_at
+       FROM codex_pending_inputs
+       WHERE ${where.join(" AND ")}
+       ORDER BY created_at ASC, id ASC`,
+      params as any[]
+    );
+
+    return rows.rows
+      .map((row: any) => mapPendingInputRow(row))
+      .filter((row: CodexPendingInputRecord | null): row is CodexPendingInputRecord => row != null);
+  }
+
+  async upsertPlanSnapshot(args: {
+    sessionId: string;
+    token: string;
+    threadId: string;
+    turnId: string;
+    explanation: string | null;
+    plan: Array<{ step: string; status: "pending" | "inProgress" | "completed" }>;
+    updatedAt?: number;
+  }) {
+    const updatedAt = args.updatedAt ?? nowUnixSeconds();
+    await this.pool.query(
+      `INSERT INTO codex_plan_snapshots (
+         session_id, token, thread_id, turn_id, explanation, plan_json, updated_at
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT(session_id) DO UPDATE SET
+         token=EXCLUDED.token,
+         thread_id=EXCLUDED.thread_id,
+         turn_id=EXCLUDED.turn_id,
+         explanation=EXCLUDED.explanation,
+         plan_json=EXCLUDED.plan_json,
+         updated_at=EXCLUDED.updated_at`,
+      [
+        args.sessionId,
+        args.token,
+        args.threadId,
+        args.turnId,
+        args.explanation,
+        JSON.stringify(args.plan ?? []),
+        updatedAt,
+      ]
+    );
+  }
+
+  async readPlanSnapshotForSession(args: { sessionId: string; token?: string | null }): Promise<CodexPlanSnapshotRecord | null> {
+    const params: unknown[] = [args.sessionId];
+    let tokenFilter = "";
+    if (args.token && args.token.trim()) {
+      params.push(args.token.trim());
+      tokenFilter = ` AND token=$${params.length}`;
+    }
+
+    const rows = await this.pool.query<any>(
+      `SELECT session_id, token, thread_id, turn_id, explanation, plan_json, updated_at
+       FROM codex_plan_snapshots
+       WHERE session_id=$1${tokenFilter}
+       LIMIT 1`,
+      params as any[]
+    );
+    if (rows.rows.length === 0) return null;
+    return mapPlanSnapshotRow(rows.rows[0]);
+  }
+
+  async clearPlanSnapshotForSession(args: { sessionId: string; token?: string | null }): Promise<number> {
+    const params: unknown[] = [args.sessionId];
+    let tokenFilter = "";
+    if (args.token && args.token.trim()) {
+      params.push(args.token.trim());
+      tokenFilter = ` AND token=$${params.length}`;
+    }
+    const result = await this.pool.query<any>(
+      `DELETE FROM codex_plan_snapshots
+       WHERE session_id=$1${tokenFilter}`,
+      params as any[]
+    );
+    return Number(result.rowCount ?? 0);
+  }
+
+  async clearActiveCodexStateForToken(token: string): Promise<void> {
+    const now = nowUnixSeconds();
+    await this.expirePendingInputsForToken(token, now);
+    await this.pool.query(`DELETE FROM codex_plan_snapshots WHERE token=$1`, [token]);
   }
 
   async removeThread(threadId: string) {
@@ -1048,6 +1236,12 @@ function normalizeNonEmptyString(raw: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function normalizeNullableString(raw: unknown): string | null {
+  if (raw == null) return null;
+  if (typeof raw !== "string") return null;
+  return raw;
+}
+
 function toUnixSeconds(value: unknown): number {
   if (typeof value === "number" && Number.isFinite(value)) {
     return Math.floor(value);
@@ -1215,6 +1409,93 @@ function mapItemRow(row: any): CodexItemRecord {
     createdAt: Number(row.created_at ?? 0),
     updatedAt: Number(row.updated_at ?? 0),
   };
+}
+
+function mapPendingInputRow(row: any): CodexPendingInputRecord | null {
+  const requestId = normalizeNonEmptyString(row.request_id);
+  const token = normalizeNonEmptyString(row.token);
+  const sessionId = normalizeNonEmptyString(row.session_id);
+  const method = normalizeNonEmptyString(row.method);
+  const kind = normalizeNonEmptyString(row.kind);
+  const rawStatus = normalizeNonEmptyString(row.status);
+  if (!requestId || !token || !sessionId || !method || !kind || !rawStatus) return null;
+
+  let status: "pending" | "resolved" | "expired";
+  switch (rawStatus) {
+    case "pending":
+    case "resolved":
+    case "expired":
+      status = rawStatus;
+      break;
+    default:
+      return null;
+  }
+
+  const params = parseJsonObject(row.params_json) ?? {};
+  return {
+    id: Number(row.id ?? 0),
+    token,
+    requestId,
+    sessionId,
+    threadId: normalizeNonEmptyString(row.thread_id),
+    method,
+    kind,
+    params,
+    status,
+    createdAt: Number(row.created_at ?? 0),
+    updatedAt: Number(row.updated_at ?? 0),
+    resolvedAt: row.resolved_at == null ? null : Number(row.resolved_at),
+  };
+}
+
+function mapPlanSnapshotRow(row: any): CodexPlanSnapshotRecord | null {
+  const sessionId = normalizeNonEmptyString(row.session_id);
+  const token = normalizeNonEmptyString(row.token);
+  const threadId = normalizeNonEmptyString(row.thread_id);
+  const turnId = normalizeNonEmptyString(row.turn_id);
+  if (!sessionId || !token || !threadId || !turnId) return null;
+
+  const plan = parsePlanSnapshot(row.plan_json);
+  return {
+    sessionId,
+    token,
+    threadId,
+    turnId,
+    explanation: normalizeNullableString(row.explanation),
+    plan,
+    updatedAt: Number(row.updated_at ?? 0),
+  };
+}
+
+function parsePlanSnapshot(raw: unknown): Array<{ step: string; status: "pending" | "inProgress" | "completed" }> {
+  if (typeof raw !== "string" || !raw.trim()) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+        const row = entry as Record<string, unknown>;
+        const step = normalizeNonEmptyString(row.step);
+        const status = normalizePlanStatus(row.status);
+        if (!step || !status) return null;
+        return { step, status };
+      })
+      .filter((entry): entry is { step: string; status: "pending" | "inProgress" | "completed" } => entry != null);
+  } catch {
+    return [];
+  }
+}
+
+function normalizePlanStatus(raw: unknown): "pending" | "inProgress" | "completed" | null {
+  const value = normalizeNonEmptyString(raw);
+  if (value === "pending" || value === "inProgress" || value === "completed") {
+    return value;
+  }
+  if (value === "in_progress") {
+    return "inProgress";
+  }
+  return null;
 }
 
 export function toThread(record: CodexThreadRecord, turns: Turn[]): Thread {

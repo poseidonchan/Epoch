@@ -12,6 +12,7 @@ public final class AppStore: ObservableObject {
         static let hpcAccount = "LabOS.hpc.account"
         static let hpcQos = "LabOS.hpc.qos"
         static let runCompletionNotificationsEnabled = "LabOS.notifications.runCompletion.enabled"
+        static let codexPromptDraftPrefix = "LabOS.codexPromptDraft"
     }
 
     public struct RunCompletionSignal: Identifiable, Hashable, Sendable {
@@ -73,6 +74,22 @@ public final class AppStore: ObservableObject {
         }
     }
 
+    public struct CodexPromptDraftState: Codable, Hashable, Sendable {
+        public var questionIndex: Int
+        public var selectedOptionByQuestionID: [String: String]
+        public var freeformByQuestionID: [String: String]
+
+        public init(
+            questionIndex: Int = 0,
+            selectedOptionByQuestionID: [String: String] = [:],
+            freeformByQuestionID: [String: String] = [:]
+        ) {
+            self.questionIndex = questionIndex
+            self.selectedOptionByQuestionID = selectedOptionByQuestionID
+            self.freeformByQuestionID = freeformByQuestionID
+        }
+    }
+
     public struct ArtifactStorageBucket: Identifiable, Hashable, Sendable {
         public var id: ArtifactKind { kind }
         public let kind: ArtifactKind
@@ -93,7 +110,7 @@ public final class AppStore: ObservableObject {
     @Published public internal(set) var messagesBySession: [UUID: [ChatMessage]] = [:]
     @Published public internal(set) var codexItemsBySession: [UUID: [CodexThreadItem]] = [:]
     @Published public internal(set) var codexPendingApprovalsBySession: [UUID: [CodexPendingApproval]] = [:]
-    @Published public internal(set) var codexPendingPromptBySession: [UUID: CodexPendingPrompt] = [:]
+    @Published public internal(set) var codexPendingPromptBySession: [UUID: [CodexPendingPrompt]] = [:]
     @Published public internal(set) var codexSteerQueueBySession: [UUID: [CodexSteerQueueItem]] = [:]
     @Published public internal(set) var codexActiveTurnIDBySession: [UUID: String] = [:]
     @Published public internal(set) var codexStatusTextBySession: [UUID: String] = [:]
@@ -1017,9 +1034,11 @@ public final class AppStore: ObservableObject {
         return questions.compactMap { value -> CodexPromptQuestion? in
             guard let questionObject = value.objectValue else { return nil }
             let questionID = codexPromptString(questionObject["id"]) ?? "response"
+            let questionHeader = codexPromptString(questionObject["header"])
             let questionPrompt = codexPromptString(questionObject["question"])
                 ?? codexPromptString(questionObject["prompt"])
                 ?? ""
+            let questionIsOther = questionObject["isOther"]?.boolValue ?? false
 
             let options: [CodexPromptOption] = {
                 guard let rawOptions = questionObject["options"]?.arrayValue else { return [] }
@@ -1040,10 +1059,24 @@ public final class AppStore: ObservableObject {
 
             return CodexPromptQuestion(
                 id: questionID,
+                header: questionHeader,
                 prompt: questionPrompt,
+                isOther: questionIsOther,
                 options: options
             )
         }
+    }
+
+    private static func codexPromptKind(from params: [String: JSONValue]) -> String {
+        guard let firstQuestion = params["questions"]?.arrayValue?.first?.objectValue,
+              let questionID = codexPromptString(firstQuestion["id"])?.lowercased()
+        else {
+            return "prompt"
+        }
+        if questionID == "labos_plan_implementation_decision" {
+            return "implement_confirmation"
+        }
+        return "prompt"
     }
 
     private static func codexPromptString(_ value: JSONValue?) -> String? {
@@ -1061,6 +1094,25 @@ public final class AppStore: ObservableObject {
         }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func codexPromptDraftDefaultsKey(sessionID: UUID, requestID: CodexRequestID) -> String {
+        "\(DefaultsKey.codexPromptDraftPrefix).\(sessionID.uuidString.lowercased()).\(codexRequestIDStorageKey(requestID))"
+    }
+
+    private func codexRequestIDStorageKey(_ requestID: CodexRequestID) -> String {
+        let raw: String
+        switch requestID {
+        case let .string(value):
+            raw = value
+        case let .int(value):
+            raw = String(value)
+        }
+        let sanitized = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ".", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        return sanitized.isEmpty ? "unknown" : sanitized
     }
 
     private func applyCodexAgentMessageDelta(notificationParams params: [String: JSONValue], sessionID: UUID?) {
@@ -1234,6 +1286,53 @@ public final class AppStore: ObservableObject {
         }
     }
 
+    private func enqueueCodexPendingPrompt(_ prompt: CodexPendingPrompt) {
+        var queue = codexPendingPromptBySession[prompt.sessionID] ?? []
+        queue.removeAll { $0.requestID == prompt.requestID }
+        queue.append(prompt)
+        codexPendingPromptBySession[prompt.sessionID] = queue
+        refreshSessionPendingUserInputMetadata(sessionID: prompt.sessionID)
+    }
+
+    private func dequeueCodexPendingPrompt(sessionID: UUID, requestID: CodexRequestID) {
+        guard var queue = codexPendingPromptBySession[sessionID] else { return }
+        queue.removeAll { $0.requestID == requestID }
+        codexPendingPromptBySession[sessionID] = queue.isEmpty ? nil : queue
+        clearCodexPromptDraft(sessionID: sessionID, requestID: requestID)
+        refreshSessionPendingUserInputMetadata(sessionID: sessionID)
+    }
+
+    private func clearCodexPendingPrompts(sessionID: UUID) {
+        codexPendingPromptBySession[sessionID] = nil
+        refreshSessionPendingUserInputMetadata(sessionID: sessionID)
+    }
+
+    func refreshSessionPendingUserInputMetadata(sessionID: UUID) {
+        let promptQueue = codexPendingPromptBySession[sessionID] ?? []
+        let promptCount = promptQueue.count
+        let approvalCount = codexPendingApprovalsBySession[sessionID]?.count ?? 0
+        let planApprovalCount = planService.pendingApproval(for: sessionID) == nil ? 0 : 1
+        let total = promptCount + approvalCount + planApprovalCount
+        let kind: String? = {
+            if let prompt = promptQueue.first {
+                return prompt.kind
+            }
+            if approvalCount > 0 {
+                return "approval"
+            }
+            if planApprovalCount > 0 {
+                return "plan"
+            }
+            return nil
+        }()
+        updateSessionPendingUserInputMetadata(
+            sessionID: sessionID,
+            hasPending: total > 0,
+            count: total,
+            kind: kind
+        )
+    }
+
     private func applyE2EFixturesIfNeeded() {
         let env = ProcessInfo.processInfo.environment
         guard env["LABOS_E2E_FIXTURE_PLAN_PROMPT_FLOW"] == "1" else { return }
@@ -1282,34 +1381,36 @@ public final class AppStore: ObservableObject {
         planModeEnabledBySession[sessionID] = true
         selectedModelIdBySession[sessionID] = ""
 
-        codexPendingPromptBySession[sessionID] = CodexPendingPrompt(
-            requestID: .string("req_e2e_plan_prompt"),
-            sessionID: sessionID,
-            threadId: "thread_e2e_plan_prompt",
-            turnId: "turn_e2e_plan_prompt",
-            prompt: "Choose how to execute this plan",
-            questions: [
-                CodexPromptQuestion(
-                    id: "execution_mode",
-                    prompt: "Pick execution mode",
-                    options: [
-                        CodexPromptOption(
-                            id: "proceed_now",
-                            label: "Proceed now",
-                            description: "Run immediately with full plan updates.",
-                            isOther: false
-                        ),
-                        CodexPromptOption(
-                            id: "review_first",
-                            label: "Review first",
-                            description: "Pause after showing initial progress.",
-                            isOther: false
-                        ),
-                    ]
-                ),
-            ],
-            rawParams: nil
-        )
+        codexPendingPromptBySession[sessionID] = [
+            CodexPendingPrompt(
+                requestID: .string("req_e2e_plan_prompt"),
+                sessionID: sessionID,
+                threadId: "thread_e2e_plan_prompt",
+                turnId: "turn_e2e_plan_prompt",
+                prompt: "Choose how to execute this plan",
+                questions: [
+                    CodexPromptQuestion(
+                        id: "execution_mode",
+                        prompt: "Pick execution mode",
+                        options: [
+                            CodexPromptOption(
+                                id: "proceed_now",
+                                label: "Proceed now",
+                                description: "Run immediately with full plan updates.",
+                                isOther: false
+                            ),
+                            CodexPromptOption(
+                                id: "review_first",
+                                label: "Review first",
+                                description: "Pause after showing initial progress.",
+                                isOther: false
+                            ),
+                        ]
+                    ),
+                ],
+                rawParams: nil
+            ),
+        ]
     }
 
     private func applyE2EPlanPromptFlowAfterResponseIfNeeded(sessionID: UUID) {
@@ -1371,6 +1472,7 @@ public final class AppStore: ObservableObject {
             approvals.removeAll { $0.requestID == request.id }
             approvals.append(approval)
             codexPendingApprovalsBySession[sessionID] = approvals
+            refreshSessionPendingUserInputMetadata(sessionID: sessionID)
         case "item/tool/requestUserInput":
             let questions = Self.decodeCodexPromptQuestions(from: params)
             let prompt = CodexPendingPrompt(
@@ -1378,17 +1480,12 @@ public final class AppStore: ObservableObject {
                 sessionID: sessionID,
                 threadId: threadId,
                 turnId: params["turnId"]?.stringValue,
+                kind: Self.codexPromptKind(from: params),
                 prompt: params["prompt"]?.stringValue ?? params["message"]?.stringValue,
                 questions: questions,
                 rawParams: request.params
             )
-            codexPendingPromptBySession[sessionID] = prompt
-            updateSessionPendingUserInputMetadata(
-                sessionID: sessionID,
-                hasPending: true,
-                count: 1,
-                kind: "prompt"
-            )
+            enqueueCodexPendingPrompt(prompt)
             publishPendingUserInputSignal(
                 sessionID: sessionID,
                 requestID: request.id,
@@ -1514,9 +1611,14 @@ public final class AppStore: ObservableObject {
 
 	        case let .approvalRequested(payload):
             planService.handleApprovalRequested(payload)
+            refreshSessionPendingUserInputMetadata(sessionID: payload.sessionId)
 
         case let .approvalResolved(planID, decision):
+            let mappedSessionID = planService.planSessionByPlanID[planID]
             planService.handleApprovalResolved(planID: planID, decision: decision)
+            if let mappedSessionID {
+                refreshSessionPendingUserInputMetadata(sessionID: mappedSessionID)
+            }
 
         case let .runsUpdated(projectID, run, change: _):
             upsertRun(projectID: projectID, run: run)
@@ -1732,7 +1834,36 @@ public final class AppStore: ObservableObject {
     }
 
     public func codexPendingPrompt(for sessionID: UUID) -> CodexPendingPrompt? {
-        codexPendingPromptBySession[sessionID]
+        codexPendingPromptBySession[sessionID]?.first
+    }
+
+    public func codexPendingPromptQueue(for sessionID: UUID) -> [CodexPendingPrompt] {
+        codexPendingPromptBySession[sessionID] ?? []
+    }
+
+    public func codexPromptDraft(
+        sessionID: UUID,
+        requestID: CodexRequestID
+    ) -> CodexPromptDraftState? {
+        let key = codexPromptDraftDefaultsKey(sessionID: sessionID, requestID: requestID)
+        guard let data = defaults.data(forKey: key) else { return nil }
+        return try? gatewayJSONDecoder.decode(CodexPromptDraftState.self, from: data)
+    }
+
+    public func saveCodexPromptDraft(
+        sessionID: UUID,
+        requestID: CodexRequestID,
+        draft: CodexPromptDraftState
+    ) {
+        let key = codexPromptDraftDefaultsKey(sessionID: sessionID, requestID: requestID)
+        if let data = try? gatewayJSONEncoder.encode(draft) {
+            defaults.set(data, forKey: key)
+        }
+    }
+
+    public func clearCodexPromptDraft(sessionID: UUID, requestID: CodexRequestID) {
+        let key = codexPromptDraftDefaultsKey(sessionID: sessionID, requestID: requestID)
+        defaults.removeObject(forKey: key)
     }
 
     public func codexSteerQueue(for sessionID: UUID) -> [CodexSteerQueueItem] {
@@ -1789,6 +1920,7 @@ public final class AppStore: ObservableObject {
             var approvals = self.codexPendingApprovalsBySession[sessionID] ?? []
             approvals.removeAll { $0.requestID == requestID }
             self.codexPendingApprovalsBySession[sessionID] = approvals
+            self.refreshSessionPendingUserInputMetadata(sessionID: sessionID)
         }
     }
 
@@ -1815,13 +1947,7 @@ public final class AppStore: ObservableObject {
 
             if let override = self.codexServerResponseOverrideForTests {
                 override(requestID, payload, nil)
-                self.codexPendingPromptBySession[sessionID] = nil
-                self.updateSessionPendingUserInputMetadata(
-                    sessionID: sessionID,
-                    hasPending: false,
-                    count: 0,
-                    kind: nil
-                )
+                self.dequeueCodexPendingPrompt(sessionID: sessionID, requestID: requestID)
                 self.applyE2EPlanPromptFlowAfterResponseIfNeeded(sessionID: sessionID)
                 return
             }
@@ -1829,13 +1955,7 @@ public final class AppStore: ObservableObject {
             if let codexClient = self.codexClient {
                 try? await codexClient.respond(result: payload, for: requestID)
             }
-            self.codexPendingPromptBySession[sessionID] = nil
-            self.updateSessionPendingUserInputMetadata(
-                sessionID: sessionID,
-                hasPending: false,
-                count: 0,
-                kind: nil
-            )
+            self.dequeueCodexPendingPrompt(sessionID: sessionID, requestID: requestID)
             self.applyE2EPlanPromptFlowAfterResponseIfNeeded(sessionID: sessionID)
         }
     }
@@ -2325,7 +2445,24 @@ public final class AppStore: ObservableObject {
         case let .run(projectID, runID):
             openRun(projectID: projectID, runID: runID)
         case let .session(projectID, sessionID):
-            openSession(projectID: projectID, sessionID: sessionID)
+            if sessions(for: projectID).contains(where: { $0.id == sessionID }) {
+                openSession(projectID: projectID, sessionID: sessionID)
+                return
+            }
+            activeProjectID = projectID
+            Task { [weak self] in
+                guard let self else { return }
+                if self.shouldUseCodexRPC {
+                    await self.refreshProjectFromCodex(projectID: projectID)
+                } else if self.isGatewayConnected {
+                    await self.refreshProjectFromGateway(projectID: projectID)
+                }
+                if self.sessions(for: projectID).contains(where: { $0.id == sessionID }) {
+                    self.openSession(projectID: projectID, sessionID: sessionID)
+                } else {
+                    self.openProject(projectID: projectID)
+                }
+            }
         }
     }
 

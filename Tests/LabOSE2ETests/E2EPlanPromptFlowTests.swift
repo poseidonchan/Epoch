@@ -27,7 +27,7 @@ final class E2EPlanPromptFlowTests: XCTestCase {
         }
 
         try runner.step("select-option-and-submit") {
-            let option = app.buttons["session.codexPrompt.option.proceed_now"]
+            let option = app.buttons["session.codexPrompt.option.execution_mode_proceed_now"]
             XCTAssertTrue(option.waitForExistence(timeout: 5))
             option.tap()
 

@@ -13,8 +13,9 @@ struct SessionChatView: View {
     @EnvironmentObject private var store: AppStore
 
     @State private var composerText = ""
-    @State private var codexPromptSelectedOptionID: String?
-    @State private var codexPromptFreeformText = ""
+    @State private var codexPromptCurrentQuestionIndex = 0
+    @State private var codexPromptSelectedOptionByQuestionID: [String: String] = [:]
+    @State private var codexPromptFreeformByQuestionID: [String: String] = [:]
     @State private var renameSessionPresented = false
     @State private var deleteSessionPresented = false
     @State private var showFileSheet = false
@@ -313,9 +314,11 @@ struct SessionChatView: View {
                 runProgressHeight = 0
             }
         }
+        .onAppear {
+            loadCodexPromptDraftIfNeeded(prompt: codexPrompt)
+        }
         .onChange(of: codexPrompt?.id) { _, _ in
-            codexPromptSelectedOptionID = nil
-            codexPromptFreeformText = ""
+            loadCodexPromptDraftIfNeeded(prompt: codexPrompt)
         }
         .sheet(isPresented: $renameSessionPresented) {
             NamePromptSheet(
@@ -595,14 +598,21 @@ struct SessionChatView: View {
     }
 
     private func codexPromptComposer(_ prompt: CodexPendingPrompt) -> some View {
-        let question = codexPromptPrimaryQuestion(prompt)
-        let header = prompt.prompt
-            ?? question?.prompt
-            ?? "Codex is waiting for input"
-        let options = question?.options ?? []
-        let selectedOption = options.first(where: { $0.id == codexPromptSelectedOptionID })
-        let allowsFreeform = options.isEmpty || selectedOption?.isOther == true
-        let canSubmit = codexPromptAnswerMap(question: question, selectedOption: selectedOption) != nil
+        let questions = codexPromptQuestions(prompt)
+        let header = prompt.prompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? prompt.prompt!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : "Codex is waiting for input"
+        let safeIndex = min(max(codexPromptCurrentQuestionIndex, 0), max(questions.count - 1, 0))
+        let question = questions[safeIndex]
+        let displayOptions = codexPromptDisplayOptions(for: question)
+        let selectedOptionID = codexPromptSelectedOptionByQuestionID[question.id]
+        let selectedOption = displayOptions.first(where: { $0.id == selectedOptionID })
+        let allowsFreeform = displayOptions.isEmpty || selectedOption?.isOther == true
+        let currentQuestionAnswered = codexPromptAnswer(for: question, options: displayOptions) != nil
+        let allAnswers = codexPromptAnswerMap(prompt: prompt)
+        let canSubmit = allAnswers != nil
+        let isLastQuestion = safeIndex >= max(questions.count - 1, 0)
+        let actionTitle = isLastQuestion ? "Submit" : "Next"
 
         return VStack(alignment: .leading, spacing: 12) {
             Text(header)
@@ -610,26 +620,38 @@ struct SessionChatView: View {
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            if let question {
-                if !question.prompt.isEmpty, question.prompt != header {
-                    Text(question.prompt)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+            if questions.count > 1 {
+                Text("Question \(safeIndex + 1) of \(questions.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
-            if !options.isEmpty {
+            if let header = question.header?.trimmingCharacters(in: .whitespacesAndNewlines), !header.isEmpty {
+                Text(header)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if !question.prompt.isEmpty {
+                Text(question.prompt)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if !displayOptions.isEmpty {
                 VStack(spacing: 8) {
-                    ForEach(options, id: \.id) { option in
+                    ForEach(Array(displayOptions.enumerated()), id: \.element.id) { index, option in
                         Button {
-                            codexPromptSelectedOptionID = option.id
+                            codexPromptSelectedOptionByQuestionID[question.id] = option.id
+                            saveCodexPromptDraft(prompt: prompt)
                         } label: {
                             HStack(spacing: 10) {
-                                Image(systemName: codexPromptSelectedOptionID == option.id ? "largecircle.fill.circle" : "circle")
-                                    .foregroundStyle(codexPromptSelectedOptionID == option.id ? Color.accentColor : Color.secondary)
+                                Image(systemName: selectedOptionID == option.id ? "largecircle.fill.circle" : "circle")
+                                    .foregroundStyle(selectedOptionID == option.id ? Color.accentColor : Color.secondary)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(option.label)
+                                    Text("\(index + 1). \(option.label)")
                                         .foregroundStyle(.primary)
                                     if let description = option.description,
                                        !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -644,43 +666,74 @@ struct SessionChatView: View {
                             .padding(.vertical, 10)
                             .background(
                                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(codexPromptSelectedOptionID == option.id ? Color.accentColor.opacity(0.1) : Color(.tertiarySystemFill))
+                                    .fill(selectedOptionID == option.id ? Color.accentColor.opacity(0.1) : Color(.tertiarySystemFill))
                             )
                         }
                         .buttonStyle(.plain)
-                        .accessibilityIdentifier("session.codexPrompt.option.\(codexPromptOptionIdentifier(option.id))")
+                        .accessibilityIdentifier(
+                            "session.codexPrompt.option.\(codexPromptOptionIdentifier(question.id))_\(codexPromptOptionIdentifier(option.id))"
+                        )
                     }
                 }
             }
 
             if allowsFreeform {
-                TextField("Type your response", text: $codexPromptFreeformText, axis: .vertical)
-                    .lineLimit(1...4)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityIdentifier("session.codexPrompt.freeform")
+                TextField(
+                    "Type your response",
+                    text: Binding(
+                        get: { codexPromptFreeformByQuestionID[question.id] ?? "" },
+                        set: { newValue in
+                            codexPromptFreeformByQuestionID[question.id] = newValue
+                            saveCodexPromptDraft(prompt: prompt)
+                        }
+                    ),
+                    axis: .vertical
+                )
+                .lineLimit(1...4)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("session.codexPrompt.freeform")
             }
 
             HStack(spacing: 8) {
                 Button("Dismiss") {
                     store.respondToCodexPrompt(sessionID: sessionID, requestID: prompt.requestID, answers: [:])
-                    codexPromptSelectedOptionID = nil
-                    codexPromptFreeformText = ""
+                    store.clearCodexPromptDraft(sessionID: sessionID, requestID: prompt.requestID)
+                    codexPromptCurrentQuestionIndex = 0
+                    codexPromptSelectedOptionByQuestionID = [:]
+                    codexPromptFreeformByQuestionID = [:]
                 }
                 .buttonStyle(.bordered)
                 .accessibilityIdentifier("session.codexPrompt.dismiss")
 
-                Button("Submit") {
-                    guard let answers = codexPromptAnswerMap(question: question, selectedOption: selectedOption) else { return }
+                if questions.count > 1, safeIndex > 0 {
+                    Button("Back") {
+                        codexPromptCurrentQuestionIndex = max(0, safeIndex - 1)
+                        saveCodexPromptDraft(prompt: prompt)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("session.codexPrompt.back")
+                }
+
+                Button(actionTitle) {
+                    if !isLastQuestion {
+                        guard currentQuestionAnswered else { return }
+                        codexPromptCurrentQuestionIndex = min(questions.count - 1, safeIndex + 1)
+                        saveCodexPromptDraft(prompt: prompt)
+                        return
+                    }
+                    guard let answers = allAnswers else { return }
                     store.respondToCodexPrompt(
                         sessionID: sessionID,
                         requestID: prompt.requestID,
                         answers: answers
                     )
-                    codexPromptSelectedOptionID = nil
-                    codexPromptFreeformText = ""
+                    store.clearCodexPromptDraft(sessionID: sessionID, requestID: prompt.requestID)
+                    codexPromptCurrentQuestionIndex = 0
+                    codexPromptSelectedOptionByQuestionID = [:]
+                    codexPromptFreeformByQuestionID = [:]
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!canSubmit)
+                .disabled(isLastQuestion ? !canSubmit : !currentQuestionAnswered)
                 .accessibilityIdentifier("session.codexPrompt.submit")
             }
         }
@@ -694,44 +747,64 @@ struct SessionChatView: View {
         .accessibilityIdentifier("session.codexPrompt.card")
     }
 
-    private func codexPromptPrimaryQuestion(_ prompt: CodexPendingPrompt) -> CodexPromptQuestion? {
-        if let first = prompt.questions.first {
-            return first
+    private func codexPromptQuestions(_ prompt: CodexPendingPrompt) -> [CodexPromptQuestion] {
+        let source = prompt.questions.isEmpty ? codexPromptQuestionsFromRaw(prompt.rawParams) : prompt.questions
+        if !source.isEmpty {
+            return source
         }
-        guard case let .object(params)? = prompt.rawParams else { return nil }
-        guard case let .array(rawQuestions)? = params["questions"],
-              let firstRawQuestion = rawQuestions.first,
-              case let .object(questionObject) = firstRawQuestion
-        else { return nil }
+        let fallbackPrompt = prompt.prompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Provide your response."
+        return [
+            CodexPromptQuestion(
+                id: "response",
+                prompt: fallbackPrompt,
+                isOther: true,
+                options: []
+            ),
+        ]
+    }
 
-        let questionID = codexPromptString(questionObject["id"]) ?? "response"
-        let questionPrompt = codexPromptString(questionObject["question"])
-            ?? codexPromptString(questionObject["prompt"])
-            ?? ""
-        let options: [CodexPromptOption] = {
-            guard case let .array(rawOptions)? = questionObject["options"] else { return [] }
-            return rawOptions.compactMap { optionValue in
-                guard case let .object(optionObject) = optionValue else { return nil }
-                guard let label = codexPromptString(optionObject["label"]), !label.isEmpty else { return nil }
-                return CodexPromptOption(
-                    id: codexPromptString(optionObject["id"]) ?? label,
-                    label: label,
-                    description: codexPromptString(optionObject["description"]),
-                    isOther: {
-                        if case let .bool(flag)? = optionObject["isOther"] {
-                            return flag
-                        }
-                        return false
-                    }()
-                )
-            }
-        }()
-
-        return CodexPromptQuestion(
-            id: questionID,
-            prompt: questionPrompt,
-            options: options
-        )
+    private func codexPromptQuestionsFromRaw(_ rawParams: JSONValue?) -> [CodexPromptQuestion] {
+        guard case let .object(params)? = rawParams else { return [] }
+        guard case let .array(rawQuestions)? = params["questions"] else { return [] }
+        return rawQuestions.compactMap { questionValue in
+            guard case let .object(questionObject) = questionValue else { return nil }
+            let questionID = codexPromptString(questionObject["id"]) ?? "response"
+            let header = codexPromptString(questionObject["header"])
+            let questionPrompt = codexPromptString(questionObject["question"])
+                ?? codexPromptString(questionObject["prompt"])
+                ?? ""
+            let questionIsOther: Bool = {
+                if case let .bool(flag)? = questionObject["isOther"] {
+                    return flag
+                }
+                return false
+            }()
+            let options: [CodexPromptOption] = {
+                guard case let .array(rawOptions)? = questionObject["options"] else { return [] }
+                return rawOptions.compactMap { optionValue in
+                    guard case let .object(optionObject) = optionValue else { return nil }
+                    guard let label = codexPromptString(optionObject["label"]), !label.isEmpty else { return nil }
+                    return CodexPromptOption(
+                        id: codexPromptString(optionObject["id"]) ?? label,
+                        label: label,
+                        description: codexPromptString(optionObject["description"]),
+                        isOther: {
+                            if case let .bool(flag)? = optionObject["isOther"] {
+                                return flag
+                            }
+                            return false
+                        }()
+                    )
+                }
+            }()
+            return CodexPromptQuestion(
+                id: questionID,
+                header: header,
+                prompt: questionPrompt,
+                isOther: questionIsOther,
+                options: options
+            )
+        }
     }
 
     private func codexPromptString(_ value: JSONValue?) -> String? {
@@ -751,26 +824,90 @@ struct SessionChatView: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private func codexPromptAnswerMap(question: CodexPromptQuestion?, selectedOption: CodexPromptOption?) -> [String: String]? {
-        let questionID = question?.id ?? "response"
-        guard !questionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    private func codexPromptDisplayOptions(for question: CodexPromptQuestion) -> [CodexPromptOption] {
+        var options = question.options
+        if options.contains(where: { $0.isOther }) {
+            return options
+        }
+        if options.isEmpty {
+            return options
+        }
+        options.append(
+            CodexPromptOption(
+                id: "__codex_other__",
+                label: "No, and tell Codex what to do differently",
+                description: nil,
+                isOther: true
+            )
+        )
+        return options
+    }
 
+    private func codexPromptAnswerMap(prompt: CodexPendingPrompt) -> [String: String]? {
+        let questions = codexPromptQuestions(prompt)
+        var answers: [String: String] = [:]
+        for question in questions {
+            let options = codexPromptDisplayOptions(for: question)
+            guard let answer = codexPromptAnswer(for: question, options: options) else {
+                return nil
+            }
+            answers[question.id] = answer
+        }
+        return answers.isEmpty ? nil : answers
+    }
+
+    private func codexPromptAnswer(
+        for question: CodexPromptQuestion,
+        options: [CodexPromptOption]
+    ) -> String? {
+        let selectedOption = options.first { $0.id == codexPromptSelectedOptionByQuestionID[question.id] }
         if let selectedOption {
             if selectedOption.isOther {
-                let typed = codexPromptFreeformText.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !typed.isEmpty else { return nil }
-                return [questionID: typed]
+                let typed = (codexPromptFreeformByQuestionID[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                return typed.isEmpty ? nil : typed
             }
-            return [questionID: selectedOption.label]
+            return selectedOption.label
         }
 
-        if let question, !question.options.isEmpty {
+        if !options.isEmpty {
             return nil
         }
 
-        let typed = codexPromptFreeformText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !typed.isEmpty else { return nil }
-        return [questionID: typed]
+        let typed = (codexPromptFreeformByQuestionID[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return typed.isEmpty ? nil : typed
+    }
+
+    private func loadCodexPromptDraftIfNeeded(prompt: CodexPendingPrompt?) {
+        guard let prompt else {
+            codexPromptCurrentQuestionIndex = 0
+            codexPromptSelectedOptionByQuestionID = [:]
+            codexPromptFreeformByQuestionID = [:]
+            return
+        }
+
+        let questions = codexPromptQuestions(prompt)
+        if let draft = store.codexPromptDraft(sessionID: sessionID, requestID: prompt.requestID) {
+            codexPromptCurrentQuestionIndex = min(max(draft.questionIndex, 0), max(questions.count - 1, 0))
+            codexPromptSelectedOptionByQuestionID = draft.selectedOptionByQuestionID
+            codexPromptFreeformByQuestionID = draft.freeformByQuestionID
+            return
+        }
+
+        codexPromptCurrentQuestionIndex = 0
+        codexPromptSelectedOptionByQuestionID = [:]
+        codexPromptFreeformByQuestionID = [:]
+    }
+
+    private func saveCodexPromptDraft(prompt: CodexPendingPrompt) {
+        store.saveCodexPromptDraft(
+            sessionID: sessionID,
+            requestID: prompt.requestID,
+            draft: AppStore.CodexPromptDraftState(
+                questionIndex: codexPromptCurrentQuestionIndex,
+                selectedOptionByQuestionID: codexPromptSelectedOptionByQuestionID,
+                freeformByQuestionID: codexPromptFreeformByQuestionID
+            )
+        )
     }
 
     private func codexPromptOptionIdentifier(_ raw: String) -> String {

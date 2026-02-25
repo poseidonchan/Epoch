@@ -55,6 +55,134 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         XCTAssertEqual(signal.sessionTitle, "Pending Signal Session")
     }
 
+    func testRequestUserInputQueuesPromptsAndDequeuesByRequestID() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        store.projects = [Project(id: projectID, name: "Prompt Queue Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Prompt Queue Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_prompt_queue"
+            ),
+        ]
+        store.codexSessionByThread["thread_prompt_queue"] = sessionID
+
+        await store._receiveCodexServerRequestForTesting(
+            CodexRPCRequest(
+                id: .string("req_prompt_first"),
+                method: "item/tool/requestUserInput",
+                params: .object([
+                    "threadId": .string("thread_prompt_queue"),
+                    "turnId": .string("turn_prompt_queue_1"),
+                    "prompt": .string("First prompt"),
+                    "questions": .array([
+                        .object([
+                            "id": .string("response"),
+                            "question": .string("Pick"),
+                            "options": .array([
+                                .object([
+                                    "label": .string("One"),
+                                    "description": .string("First"),
+                                ]),
+                            ]),
+                        ]),
+                    ]),
+                ])
+            )
+        )
+        await store._receiveCodexServerRequestForTesting(
+            CodexRPCRequest(
+                id: .string("req_prompt_second"),
+                method: "item/tool/requestUserInput",
+                params: .object([
+                    "threadId": .string("thread_prompt_queue"),
+                    "turnId": .string("turn_prompt_queue_2"),
+                    "prompt": .string("Second prompt"),
+                    "questions": .array([
+                        .object([
+                            "id": .string("response"),
+                            "question": .string("Pick"),
+                            "options": .array([
+                                .object([
+                                    "label": .string("Two"),
+                                    "description": .string("Second"),
+                                ]),
+                            ]),
+                        ]),
+                    ]),
+                ])
+            )
+        )
+
+        XCTAssertEqual(store.codexPendingPromptQueue(for: sessionID).count, 2)
+        XCTAssertEqual(store.codexPendingPrompt(for: sessionID)?.prompt, "First prompt")
+
+        store.codexServerResponseOverrideForTests = { _, _, _ in }
+        store.respondToCodexPrompt(
+            sessionID: sessionID,
+            requestID: .string("req_prompt_first"),
+            answers: ["response": "One"]
+        )
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            store.codexPendingPromptQueue(for: sessionID).count == 1
+        }
+        XCTAssertEqual(store.codexPendingPrompt(for: sessionID)?.prompt, "Second prompt")
+    }
+
+    func testRequestUserInputParsesQuestionHeaderAndQuestionLevelIsOther() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        store.projects = [Project(id: projectID, name: "Prompt Parse Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Prompt Parse Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_prompt_parse"
+            ),
+        ]
+        store.codexSessionByThread["thread_prompt_parse"] = sessionID
+
+        await store._receiveCodexServerRequestForTesting(
+            CodexRPCRequest(
+                id: .string("req_prompt_parse"),
+                method: "item/tool/requestUserInput",
+                params: .object([
+                    "threadId": .string("thread_prompt_parse"),
+                    "turnId": .string("turn_prompt_parse"),
+                    "prompt": .string("Need preference"),
+                    "questions": .array([
+                        .object([
+                            "id": .string("label_mode"),
+                            "header": .string("Labeling"),
+                            "question": .string("How should labels render?"),
+                            "isOther": .bool(true),
+                            "options": .array([
+                                .object([
+                                    "label": .string("Verbatim"),
+                                    "description": .string("Recommended"),
+                                ]),
+                            ]),
+                        ]),
+                    ]),
+                ])
+            )
+        )
+
+        let prompt = try XCTUnwrap(store.codexPendingPrompt(for: sessionID))
+        let question = try XCTUnwrap(prompt.questions.first)
+        XCTAssertEqual(question.header, "Labeling")
+        XCTAssertEqual(question.isOther, true)
+        XCTAssertEqual(question.options.first?.label, "Verbatim")
+    }
+
     func testSessionNeedsUserInputIncludesPlanPromptApprovalsAndSessionMetadata() {
         let store = AppStore(bootstrapDemo: false)
         let projectID = UUID()
@@ -96,14 +224,16 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         XCTAssertTrue(store.sessionNeedsUserInput(sessionID: sessionID))
 
         store.planService.pendingApprovalsBySession[sessionID] = nil
-        store.codexPendingPromptBySession[sessionID] = CodexPendingPrompt(
-            requestID: .int(11),
-            sessionID: sessionID,
-            threadId: "thr_pending",
-            turnId: "turn_1",
-            prompt: "Need your input",
-            rawParams: nil
-        )
+        store.codexPendingPromptBySession[sessionID] = [
+            CodexPendingPrompt(
+                requestID: .int(11),
+                sessionID: sessionID,
+                threadId: "thr_pending",
+                turnId: "turn_1",
+                prompt: "Need your input",
+                rawParams: nil
+            ),
+        ]
         XCTAssertTrue(store.sessionNeedsUserInput(sessionID: sessionID))
 
         store.codexPendingPromptBySession[sessionID] = nil
@@ -196,14 +326,16 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
             ),
         ]
 
-        store.codexPendingPromptBySession[sessionID] = CodexPendingPrompt(
-            requestID: .int(12),
-            sessionID: sessionID,
-            threadId: "thread_prompt_metadata",
-            turnId: "turn_1",
-            prompt: "Need your input",
-            rawParams: nil
-        )
+        store.codexPendingPromptBySession[sessionID] = [
+            CodexPendingPrompt(
+                requestID: .int(12),
+                sessionID: sessionID,
+                threadId: "thread_prompt_metadata",
+                turnId: "turn_1",
+                prompt: "Need your input",
+                rawParams: nil
+            ),
+        ]
         XCTAssertTrue(store.sessionNeedsUserInput(sessionID: sessionID))
 
         var captured: JSONValue?
