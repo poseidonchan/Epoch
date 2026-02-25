@@ -524,9 +524,26 @@ export class CodexRpcRouter {
     if (method === "thread/tokenUsage/updated") {
       const tokenUsage = params.tokenUsage as Record<string, unknown> | undefined;
       if (tokenUsage) {
-        const contextWindowTokens = normalizeNumericTokenCount(tokenUsage.contextWindow ?? tokenUsage.contextWindowTokens);
-        const usedInputTokens = normalizeNumericTokenCount(tokenUsage.inputTokens ?? tokenUsage.totalInputTokens);
-        const usedTokens = normalizeNumericTokenCount(tokenUsage.totalTokens ?? tokenUsage.totalInputTokens ?? tokenUsage.inputTokens);
+        // v2 camelCase nested breakdown (codex app-server)
+        const totalBreakdown = (tokenUsage.total != null && typeof tokenUsage.total === "object") ? tokenUsage.total as Record<string, unknown> : undefined;
+        const lastBreakdown = (tokenUsage.last != null && typeof tokenUsage.last === "object") ? tokenUsage.last as Record<string, unknown> : undefined;
+        // v1 snake_case nested breakdown
+        const totalBreakdownV1 = (tokenUsage.total_token_usage != null && typeof tokenUsage.total_token_usage === "object") ? tokenUsage.total_token_usage as Record<string, unknown> : undefined;
+        const lastBreakdownV1 = (tokenUsage.last_token_usage != null && typeof tokenUsage.last_token_usage === "object") ? tokenUsage.last_token_usage as Record<string, unknown> : undefined;
+
+        const contextWindowTokens = normalizeNumericTokenCount(
+          tokenUsage.modelContextWindow ?? tokenUsage.model_context_window ??
+          tokenUsage.contextWindow ?? tokenUsage.contextWindowTokens
+        );
+        const usedInputTokens = normalizeNumericTokenCount(
+          lastBreakdown?.inputTokens ?? lastBreakdownV1?.input_tokens ??
+          tokenUsage.inputTokens ?? tokenUsage.totalInputTokens
+        );
+        const usedTokens = normalizeNumericTokenCount(
+          lastBreakdown?.totalTokens ?? lastBreakdownV1?.total_tokens ??
+          totalBreakdown?.totalTokens ?? totalBreakdownV1?.total_tokens ??
+          tokenUsage.totalTokens ?? tokenUsage.totalInputTokens ?? tokenUsage.inputTokens
+        );
         const modelId = normalizeNonEmptyString(tokenUsage.model) ?? normalizeNonEmptyString(tokenUsage.modelId);
 
         const mapped = await this.repository.findSessionByThread(threadId);
