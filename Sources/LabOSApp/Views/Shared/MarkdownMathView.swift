@@ -89,37 +89,7 @@ struct MarkdownMathView: View {
 
     private var fallbackMarkdown: some View {
         Markdown(preparedMarkdown)
-            .markdownTheme(.gitHub)
-            .markdownTextStyle(\.code) {
-                FontFamilyVariant(.monospaced)
-                FontSize(.em(0.9))
-                ForegroundColor(.primary)
-                BackgroundColor(Color.black.opacity(colorScheme == .dark ? 0.22 : 0.06))
-            }
-            .markdownBlockStyle(\.codeBlock) { configuration in
-                ScrollView(.horizontal) {
-                    configuration.label
-                        .padding(12)
-                }
-                .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color(.secondarySystemBackground))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08))
-                )
-            }
-            .markdownBlockStyle(\.blockquote) { configuration in
-                HStack(alignment: .top, spacing: 10) {
-                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .fill(Color.primary.opacity(colorScheme == .dark ? 0.25 : 0.22))
-                        .frame(width: 3)
-                    configuration.label
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            .markdownTheme(.labOS)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 

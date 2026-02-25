@@ -55,6 +55,17 @@
             parallelizable = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "6F37439A33FD5E7EA83EDEA1"
+               BuildableName = "LabOSAppTests.xctest"
+               BlueprintName = "LabOSAppTests"
+               ReferencedContainer = "container:LabOS.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "040C3D396D40F3A2807181DD"
                BuildableName = "LabOSE2ETests.xctest"
                BlueprintName = "LabOSE2ETests"

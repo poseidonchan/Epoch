@@ -138,27 +138,7 @@ struct ArtifactPreviewView: View {
                             MarkdownMathView(markdown: content)
                         } else {
                             Markdown(content)
-                                .markdownTheme(.gitHub)
-                                .markdownTextStyle(\.code) {
-                                    FontFamilyVariant(.monospaced)
-                                    FontSize(.em(0.9))
-                                    ForegroundColor(.primary)
-                                    BackgroundColor(Color.black.opacity(colorScheme == .dark ? 0.22 : 0.06))
-                                }
-                                .markdownBlockStyle(\.codeBlock) { configuration in
-                                    ScrollView(.horizontal) {
-                                        configuration.label
-                                            .padding(12)
-                                    }
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                            .fill(Color(.secondarySystemBackground))
-                                    )
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                            .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08))
-                                    )
-                                }
+                                .markdownTheme(.labOS)
                                 .textSelection(.enabled)
                         }
                     }
@@ -270,7 +250,7 @@ private struct ExpandedArtifactPreview: View {
                             .padding(12)
                     } else {
                         Markdown(content)
-                            .markdownTheme(.gitHub)
+                            .markdownTheme(.labOS)
                             .padding(12)
                     }
                 }

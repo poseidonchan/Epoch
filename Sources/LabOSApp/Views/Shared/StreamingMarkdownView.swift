@@ -8,8 +8,6 @@ struct StreamingMarkdownView: View {
     var isStreaming: Bool
     var throttleInterval: TimeInterval = 0.2
 
-    @Environment(\.colorScheme) private var colorScheme
-
     @State private var renderedText: String = ""
     @State private var pendingText: String = ""
     @State private var lastFlush: Date = .distantPast
@@ -28,20 +26,7 @@ struct StreamingMarkdownView: View {
         Group {
             if shouldRenderMarkdown {
                 Markdown(normalizedRenderedText)
-                    .markdownTheme(.gitHub)
-                    .markdownTextStyle(\.text) {
-                        BackgroundColor(nil)
-                    }
-                    .markdownBlockStyle(\.blockquote) { configuration in
-                        HStack(alignment: .top, spacing: 10) {
-                            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                .fill(Color.primary.opacity(colorScheme == .dark ? 0.25 : 0.22))
-                                .frame(width: 3)
-                            configuration.label
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                    .markdownTheme(.labOS)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.disabled)
             } else {

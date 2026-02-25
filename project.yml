@@ -60,6 +60,19 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: labos.LabOSCoreTests
         GENERATE_INFOPLIST_FILE: YES
 
+  LabOSAppTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests/LabOSAppTests
+    dependencies:
+      - target: LabOSApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: labos.LabOSAppTests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: LabOSApp
+
   LabOSE2ETests:
     type: bundle.ui-testing
     platform: iOS
@@ -81,4 +94,5 @@ schemes:
     test:
       targets:
         - LabOSCoreTests
+        - LabOSAppTests
         - LabOSE2ETests

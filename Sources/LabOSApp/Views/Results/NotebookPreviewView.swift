@@ -59,27 +59,7 @@ struct NotebookPreviewView: View {
 
     private func markdownCell(_ markdown: String) -> some View {
         Markdown(markdown)
-            .markdownTheme(.gitHub)
-            .markdownTextStyle(\.code) {
-                FontFamilyVariant(.monospaced)
-                FontSize(.em(0.9))
-                ForegroundColor(.primary)
-                BackgroundColor(Color.black.opacity(colorScheme == .dark ? 0.22 : 0.06))
-            }
-            .markdownBlockStyle(\.codeBlock) { configuration in
-                ScrollView(.horizontal) {
-                    configuration.label
-                        .padding(12)
-                }
-                .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color(.secondarySystemBackground))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08))
-                )
-            }
+            .markdownTheme(.labOS)
             .textSelection(.enabled)
     }
 
