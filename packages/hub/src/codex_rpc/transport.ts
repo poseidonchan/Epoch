@@ -27,6 +27,7 @@ type CodexRuntime = {
   repository: CodexRepository;
   engines: CodexEngineRegistry;
   router: CodexRpcRouter;
+  ready: Promise<void>;
   activeSocket: WebSocket | null;
 };
 
@@ -87,6 +88,7 @@ export function attachCodexTransport(options: CodexTransportOptions) {
     }
 
     const accepted = runtime.connection.ingressQueue.enqueue(async () => {
+      await runtime.ready;
       await dispatchInboundMessage(runtime.router, parsed);
     });
 
@@ -156,13 +158,16 @@ function getOrCreateRuntime(args: {
     repository,
     engines,
     connection,
+    token: args.token,
   });
+  const ready = repository.clearActiveCodexStateForToken(args.token).catch(() => {});
   const runtime: CodexRuntime = {
     token: args.token,
     connection,
     repository,
     engines,
     router,
+    ready,
     activeSocket: null,
   };
   runtimesByToken.set(args.token, runtime);

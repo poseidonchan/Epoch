@@ -92,6 +92,10 @@ test("handleTurnStart forwards plan mode as collaborationMode=plan", async () =>
   assert.ok(capturedStartArgs);
   assert.equal(capturedStartArgs.collaborationMode.mode, "plan");
   assert.equal(capturedStartArgs.collaborationMode.settings.model, "gpt-5.3-codex");
+  assert.match(
+    capturedStartArgs.collaborationMode.settings.developer_instructions,
+    /plan mode is active/i
+  );
 });
 
 test("handleTurnStart injects indexed project snippets into turn input", async () => {
@@ -330,6 +334,10 @@ test("handleTurnStart still forwards collaborationMode when stored model is miss
     assert.equal(capturedStartArgs.model, "gpt-5.3-codex");
     assert.equal(capturedStartArgs.collaborationMode.mode, "plan");
     assert.equal(capturedStartArgs.collaborationMode.settings.model, "gpt-5.3-codex");
+    assert.match(
+      capturedStartArgs.collaborationMode.settings.developer_instructions,
+      /plan mode is active/i
+    );
   } finally {
     if (originalModel == null) {
       delete process.env.LABOS_MODEL;

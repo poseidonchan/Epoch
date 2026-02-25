@@ -12,6 +12,7 @@ type LabosHandlerContext = {
   repository: CodexRepository;
   engines: CodexEngineRegistry;
   pendingUserInputSummaryBySession?: Map<string, { count: number; kind: string | null }>;
+  runtimeToken?: string;
 };
 
 type ThreadSyncState = "ready" | "needsRemoteHydration";
@@ -598,10 +599,33 @@ export async function handleLabosSessionRead(
   }
 
   const session = mapSessionRow(sessionRow, ctx.pendingUserInputSummaryBySession?.get(sessionId));
+  const pendingInputs = await ctx.repository.listPendingInputsForSession({
+    sessionId,
+    token: ctx.runtimeToken ?? null,
+  });
+  const activePlan = await ctx.repository.readPlanSnapshotForSession({
+    sessionId,
+    token: ctx.runtimeToken ?? null,
+  });
   const response: Record<string, unknown> = {
     session,
     thread,
+    pendingUserInputs: pendingInputs.map((entry) => ({
+      requestId: entry.requestId,
+      method: entry.method,
+      kind: entry.kind,
+      params: entry.params,
+      createdAt: entry.createdAt,
+    })),
   };
+  if (activePlan && activePlan.plan.length > 0) {
+    response.activePlan = {
+      turnId: activePlan.turnId,
+      explanation: activePlan.explanation,
+      plan: activePlan.plan,
+      updatedAt: activePlan.updatedAt,
+    };
+  }
   if (rehydratedFromLegacy) {
     response.rehydratedFromLegacy = true;
   }

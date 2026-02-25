@@ -30,19 +30,23 @@ type CodexRouterContext = {
   repository: CodexRepository;
   engines: CodexEngineRegistry;
   connection: CodexConnectionState;
+  token: string;
 };
 
 export class CodexRpcRouter {
   private readonly repository: CodexRepository;
   private readonly engines: CodexEngineRegistry;
   private readonly connection: CodexConnectionState;
+  private readonly token: string;
 
   private readonly turnAggregators = new Map<string, TurnAggregationState>();
+  private readonly turnPlanModeByScopedTurnId = new Map<string, boolean>();
 
   constructor(ctx: CodexRouterContext) {
     this.repository = ctx.repository;
     this.engines = ctx.engines;
     this.connection = ctx.connection;
+    this.token = ctx.token;
   }
 
   async handleRequest(request: JsonRpcRequest) {
@@ -103,6 +107,7 @@ export class CodexRpcRouter {
         }
         case "turn/start": {
           const prepared = await handleTurnStart({ repository: this.repository, engines: this.engines }, params);
+          this.turnPlanModeByScopedTurnId.set(scopedTurnId(prepared.threadId, prepared.turnId), prepared.planMode);
           this.connection.sendResult(request.id, {
             threadId: prepared.threadId,
             turn: prepared.turn,
@@ -161,6 +166,7 @@ export class CodexRpcRouter {
               repository: this.repository,
               engines: this.engines,
               pendingUserInputSummaryBySession: this.connection.pendingUserInputSummaryMap(),
+              runtimeToken: this.token,
             },
             params
           );
@@ -188,6 +194,7 @@ export class CodexRpcRouter {
               repository: this.repository,
               engines: this.engines,
               pendingUserInputSummaryBySession: this.connection.pendingUserInputSummaryMap(),
+              runtimeToken: this.token,
             },
             params
           );
@@ -268,14 +275,30 @@ export class CodexRpcRouter {
         }
 
         if (event.type === "serverRequest") {
+          let persistedPendingRequestId: string | null = null;
           try {
             const sessionMapping = await this.repository.findSessionByThread(args.threadId);
-            const pendingKind = pendingInputKindForMethod(event.method);
+            const pendingKind = pendingInputKindForMethod(event.method, event.params);
+            const preferredRequestId =
+              event.id ?? `labos_srvreq_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+            if (pendingKind && sessionMapping) {
+              const requestId = requestIdKey(preferredRequestId);
+              persistedPendingRequestId = requestId;
+              await this.repository.upsertPendingInput({
+                token: this.token,
+                requestId,
+                sessionId: sessionMapping.sessionId,
+                threadId: args.threadId,
+                method: event.method,
+                kind: pendingKind,
+                params: event.params,
+              });
+            }
             const response = await this.connection.sendServerRequest(
               event.method,
               event.params,
               5 * 60_000,
-              event.id,
+              preferredRequestId,
               pendingKind && sessionMapping
                 ? {
                     sessionId: sessionMapping.sessionId,
@@ -283,10 +306,24 @@ export class CodexRpcRouter {
                   }
                 : undefined
             );
+            if (persistedPendingRequestId) {
+              await this.repository.resolvePendingInput({
+                token: this.token,
+                requestId: persistedPendingRequestId,
+                status: "resolved",
+              });
+            }
             if (event.respond) {
               await event.respond({ result: response });
             }
           } catch (err) {
+            if (persistedPendingRequestId && shouldResolvePendingRequestOnError(err)) {
+              await this.repository.resolvePendingInput({
+                token: this.token,
+                requestId: persistedPendingRequestId,
+                status: "resolved",
+              });
+            }
             const message = err instanceof Error ? err.message : String(err);
             if (event.respond) {
               await event.respond({
@@ -339,6 +376,7 @@ export class CodexRpcRouter {
 
     const threadRecord = await this.repository.getThreadRecord(threadId);
     const projectId = threadRecord?.projectId ?? null;
+    const sessionMapping = await this.repository.findSessionByThread(threadId);
     // Persist turn/item lifecycle for all engines so sessions can switch backends
     // without losing replayable history.
     const persistTurnItemState = true;
@@ -423,13 +461,27 @@ export class CodexRpcRouter {
           plan,
         });
         this.turnAggregators.set(turnId, aggregator);
+        if (sessionMapping && plan.length > 0) {
+          await this.repository.upsertPlanSnapshot({
+            sessionId: sessionMapping.sessionId,
+            token: this.token,
+            threadId,
+            turnId,
+            explanation: normalizeNullableString(params.explanation),
+            plan,
+          });
+        }
       }
     }
 
+    let completedTurnId: string | null = null;
+    let shouldRequestPlanImplementation = false;
+    let implementationSessionId: string | null = null;
     if (method === "turn/completed") {
       const turn = params.turn as Record<string, unknown> | undefined;
       const turnId = normalizeNonEmptyString(turn?.id);
       if (turnId) {
+        completedTurnId = turnId;
         const persistedTurnId = await this.resolveOrCreatePersistedTurnId({
           threadId,
           rawTurnId: turnId,
@@ -450,6 +502,20 @@ export class CodexRpcRouter {
             id: threadId,
             updatedAt: nowUnixSeconds(),
           });
+        }
+        if (sessionMapping) {
+          await this.repository.clearPlanSnapshotForSession({
+            sessionId: sessionMapping.sessionId,
+            token: this.token,
+          });
+        }
+        const scopedCompletedTurnId = scopedTurnId(threadId, turnId);
+        const wasPlanModeTurn = this.turnPlanModeByScopedTurnId.get(scopedCompletedTurnId) === true;
+        this.turnPlanModeByScopedTurnId.delete(scopedCompletedTurnId);
+        const status = normalizeTurnStatus(turn?.status);
+        if (wasPlanModeTurn && status === "completed" && sessionMapping) {
+          shouldRequestPlanImplementation = true;
+          implementationSessionId = sessionMapping.sessionId;
         }
         this.turnAggregators.delete(turnId);
       }
@@ -480,6 +546,117 @@ export class CodexRpcRouter {
     }
 
     this.connection.sendNotification(method, params);
+
+    if (shouldRequestPlanImplementation && completedTurnId && implementationSessionId) {
+      void this
+        .requestPlanImplementationConfirmation({
+          threadId,
+          turnId: completedTurnId,
+          sessionId: implementationSessionId,
+        })
+        .catch(() => {});
+    }
+  }
+
+  private async requestPlanImplementationConfirmation(args: {
+    threadId: string;
+    turnId: string;
+    sessionId: string;
+  }) {
+    const thread = await this.repository.readThread(args.threadId, true);
+    if (!thread) return;
+    const completedTurn = findTurnByIdVariants(thread, args.threadId, args.turnId);
+    if (!completedTurn) return;
+    if (!turnContainsProposedPlanBlock(completedTurn)) return;
+
+    const requestId = `labos_impl_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+    const params = buildPlanImplementationPromptParams({
+      threadId: args.threadId,
+      turnId: args.turnId,
+    });
+
+    await this.repository.upsertPendingInput({
+      token: this.token,
+      requestId,
+      sessionId: args.sessionId,
+      threadId: args.threadId,
+      method: "item/tool/requestUserInput",
+      kind: "implement_confirmation",
+      params,
+    });
+
+    let response: unknown;
+    try {
+      response = await this.connection.sendServerRequest(
+        "item/tool/requestUserInput",
+        params,
+        5 * 60_000,
+        requestId,
+        {
+          sessionId: args.sessionId,
+          kind: "implement_confirmation",
+        }
+      );
+      await this.repository.resolvePendingInput({
+        token: this.token,
+        requestId,
+        status: "resolved",
+      });
+    } catch (err) {
+      if (shouldResolvePendingRequestOnError(err)) {
+        await this.repository.resolvePendingInput({
+          token: this.token,
+          requestId,
+          status: "resolved",
+        });
+      }
+      return;
+    }
+
+    const followup = decidePlanImplementationFollowup(response);
+    if (!followup) return;
+    await this.startFollowupTurn({
+      threadId: args.threadId,
+      sessionId: args.sessionId,
+      text: followup.text,
+      planMode: followup.planMode,
+    });
+  }
+
+  private async startFollowupTurn(args: {
+    threadId: string;
+    sessionId: string;
+    text: string;
+    planMode: boolean;
+  }) {
+    const prepared = await handleTurnStart(
+      {
+        repository: this.repository,
+        engines: this.engines,
+      },
+      {
+        threadId: args.threadId,
+        sessionId: args.sessionId,
+        input: [
+          {
+            type: "text",
+            text: args.text,
+            text_elements: [],
+          },
+        ],
+        planMode: args.planMode,
+      }
+    );
+    this.turnPlanModeByScopedTurnId.set(scopedTurnId(prepared.threadId, prepared.turnId), prepared.planMode);
+    for (const notification of prepared.preludeNotifications) {
+      await this.persistAndSendNotification(notification.method, notification.params);
+    }
+    void this.consumeTurnEvents({
+      threadId: prepared.threadId,
+      turnId: prepared.turnId,
+      seedTurn: prepared.turn,
+      events: prepared.events,
+    });
   }
 
   private async resolveOrCreatePersistedTurnId(args: {
@@ -531,14 +708,122 @@ export class CodexRpcRouter {
   }
 }
 
-function pendingInputKindForMethod(method: string): string | null {
+function pendingInputKindForMethod(method: string, params?: Record<string, unknown>): string | null {
   if (method === "item/tool/requestUserInput") {
+    const firstQuestionId = firstPromptQuestionId(params);
+    if (firstQuestionId === "labos_plan_implementation_decision") {
+      return "implement_confirmation";
+    }
     return "prompt";
   }
   if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
     return "approval";
   }
   return null;
+}
+
+function firstPromptQuestionId(params?: Record<string, unknown>): string | null {
+  const questions = params?.questions;
+  if (!Array.isArray(questions) || questions.length === 0) return null;
+  const first = questions[0];
+  if (!first || typeof first !== "object" || Array.isArray(first)) return null;
+  return normalizeNonEmptyString((first as Record<string, unknown>).id);
+}
+
+function requestIdKey(id: string | number): string {
+  return typeof id === "string" ? id : String(id);
+}
+
+function shouldResolvePendingRequestOnError(err: unknown): boolean {
+  const message = String(err instanceof Error ? err.message : err ?? "")
+    .trim()
+    .toLowerCase();
+  if (!message) return false;
+  if (message.includes("connection closed") || message.includes("hub shutdown")) return false;
+  return true;
+}
+
+function findTurnByIdVariants(thread: Thread, threadId: string, turnId: string): Turn | null {
+  const scopedId = scopedTurnId(threadId, turnId);
+  return (
+    thread.turns.find((turn) => {
+      const id = turn.id.trim();
+      return id === turnId || id === scopedId;
+    }) ?? null
+  );
+}
+
+export function turnContainsProposedPlanBlock(turn: Turn): boolean {
+  for (const item of turn.items) {
+    if (item.type !== "agentMessage") continue;
+    const text = normalizeNonEmptyString((item as Record<string, unknown>).text);
+    if (!text) continue;
+    if (text.includes("<proposed_plan>") && text.includes("</proposed_plan>")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function buildPlanImplementationPromptParams(args: { threadId: string; turnId: string }): Record<string, unknown> {
+  return {
+    threadId: args.threadId,
+    turnId: args.turnId,
+    itemId: `labos_plan_implementation_${args.turnId}`,
+    prompt: "Plan is ready. Would you like me to implement it now?",
+    questions: [
+      {
+        id: "labos_plan_implementation_decision",
+        header: "Implement Plan",
+        question: "Do you want to implement this plan now?",
+        isOther: true,
+        isSecret: false,
+        options: [
+          {
+            label: "Implement now",
+            description: "Start implementing the approved plan immediately.",
+          },
+          {
+            label: "Keep planning",
+            description: "Continue refining the plan before implementation.",
+          },
+        ],
+      },
+    ],
+  };
+}
+
+export function decidePlanImplementationFollowup(
+  response: unknown
+): { planMode: boolean; text: string } | null {
+  if (!response || typeof response !== "object" || Array.isArray(response)) return null;
+  const result = response as Record<string, unknown>;
+  const answers = result.answers;
+  if (!answers || typeof answers !== "object" || Array.isArray(answers)) return null;
+  const entry = (answers as Record<string, unknown>).labos_plan_implementation_decision;
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+  const answerList = (entry as Record<string, unknown>).answers;
+  if (!Array.isArray(answerList) || answerList.length === 0) return null;
+  const raw = normalizeNonEmptyString(answerList[0]);
+  if (!raw) return null;
+
+  const normalized = raw.toLowerCase();
+  if (normalized === "implement now") {
+    return {
+      planMode: false,
+      text: "Implement the approved plan now and proceed with execution.",
+    };
+  }
+  if (normalized === "keep planning") {
+    return {
+      planMode: true,
+      text: "Continue in plan mode and refine the plan before implementation.",
+    };
+  }
+  return {
+    planMode: true,
+    text: `Continue in plan mode and revise the plan based on this feedback: ${raw}`,
+  };
 }
 
 function normalizeParams(raw: unknown): Record<string, unknown> {
