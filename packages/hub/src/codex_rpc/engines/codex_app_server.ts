@@ -88,6 +88,10 @@ export class CodexAppServerEngine implements CodexEngineSession {
     return await this.request("model/list", params);
   }
 
+  async skillsList(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return await this.request("skills/list", params);
+  }
+
   async startTurn(args: EngineStartTurnArgs): Promise<EngineStartTurnResult> {
     await this.ensureStarted();
 
