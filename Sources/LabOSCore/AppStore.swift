@@ -944,7 +944,6 @@ public final class AppStore: ObservableObject {
                         }
                     }
                 }
-                livePlanBySession[sessionID] = nil
                 codexTurnDiffBySession[sessionID] = nil
             }
         case "turn/completed":
@@ -1002,7 +1001,10 @@ public final class AppStore: ObservableObject {
                 }
 
                 codexActiveTurnIDBySession[sessionID] = nil
-                livePlanBySession[sessionID] = nil
+                if let livePlan = livePlanBySession[sessionID],
+                   Self.codexPlanIsTerminal(livePlan) {
+                    livePlanBySession[sessionID] = nil
+                }
                 codexTurnDiffBySession[sessionID] = nil
                 streamingSessions.remove(sessionID)
                 codexPendingThreadBindingSessions.remove(sessionID)
@@ -1749,6 +1751,20 @@ public final class AppStore: ObservableObject {
         default:
             return "pending"
         }
+    }
+
+    internal static func codexPlanIsTerminal(_ plan: AgentPlanUpdatedPayload) -> Bool {
+        !codexPlanHasIncompleteSteps(plan)
+    }
+
+    internal static func codexPlanHasIncompleteSteps(_ plan: AgentPlanUpdatedPayload) -> Bool {
+        for item in plan.plan {
+            let normalized = item.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if normalized != "completed" {
+                return true
+            }
+        }
+        return false
     }
 
     private func sessionProjectID(_ sessionID: UUID) -> UUID? {

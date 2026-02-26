@@ -107,7 +107,9 @@ struct SessionShelfView: View {
 
         if let run = activeRun {
             rows.append(AnyView(runProgressCard(run)))
-        } else if let plan = store.livePlanBySession[sessionID] {
+        }
+
+        if let plan = store.livePlanBySession[sessionID] {
             rows.append(AnyView(agentPlanCard(plan)))
         }
 

@@ -1855,7 +1855,7 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         XCTAssertGreaterThan(turnStartIndex, sessionEndIndex)
     }
 
-    func testCodexTurnPlanUpdatedHydratesLivePlanAndClearsOnCompletion() throws {
+    func testCodexTurnPlanUpdatedHydratesLivePlanAndKeepsIncompletePlanOnCompletion() throws {
         let store = AppStore(bootstrapDemo: false)
         let projectID = UUID()
         let sessionID = UUID()
@@ -1905,6 +1905,62 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
                     "threadId": .string("thread_plan_progress"),
                     "turn": .object([
                         "id": .string("turn_plan_progress"),
+                        "status": .string("completed"),
+                    ]),
+                ])
+            )
+        )
+
+        let retainedPlan = try XCTUnwrap(store.livePlanBySession[sessionID])
+        XCTAssertEqual(retainedPlan.plan.count, 2)
+        XCTAssertEqual(retainedPlan.plan[0].status, "completed")
+        XCTAssertEqual(retainedPlan.plan[1].status, "in_progress")
+    }
+
+    func testCodexTurnCompletedClearsTerminalLivePlan() throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        store.projects = [Project(id: projectID, name: "Plan Terminal Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Codex Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_plan_terminal"
+            ),
+        ]
+        store.codexSessionByThread["thread_plan_terminal"] = sessionID
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "turn/plan/updated",
+                params: .object([
+                    "threadId": .string("thread_plan_terminal"),
+                    "turnId": .string("turn_plan_terminal"),
+                    "plan": .array([
+                        .object([
+                            "step": .string("Investigate context"),
+                            "status": .string("completed"),
+                        ]),
+                        .object([
+                            "step": .string("Propose options"),
+                            "status": .string("completed"),
+                        ]),
+                    ]),
+                ])
+            )
+        )
+        XCTAssertNotNil(store.livePlanBySession[sessionID])
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "turn/completed",
+                params: .object([
+                    "threadId": .string("thread_plan_terminal"),
+                    "turn": .object([
+                        "id": .string("turn_plan_terminal"),
                         "status": .string("completed"),
                     ]),
                 ])

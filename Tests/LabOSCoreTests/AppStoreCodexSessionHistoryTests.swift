@@ -329,6 +329,198 @@ final class AppStoreCodexSessionHistoryTests: XCTestCase {
         XCTAssertEqual(fraction, 0.88, accuracy: 0.0001)
     }
 
+    func testSessionReadWithoutActivePlanKeepsIncompleteLocalLivePlan() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        let threadID = "thr_history_plan_keep"
+
+        store.projects = [Project(id: projectID, name: "Codex History Plan Keep Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Codex Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: threadID
+            ),
+        ]
+        store.codexConnectionState = .connected
+
+        store.livePlanBySession[sessionID] = AgentPlanUpdatedPayload(
+            agentRunId: UUID(),
+            projectId: projectID,
+            sessionId: sessionID,
+            explanation: "Keep this plan",
+            plan: [
+                .init(step: "Step A", status: "completed"),
+                .init(step: "Step B", status: "in_progress"),
+            ]
+        )
+
+        let thread = CodexThread(
+            id: threadID,
+            preview: "history",
+            modelProvider: "openai",
+            createdAt: 1,
+            updatedAt: 2,
+            path: nil,
+            cwd: "/tmp",
+            cliVersion: "0.1.0",
+            source: "appServer",
+            gitInfo: nil,
+            turns: [
+                CodexTurn(
+                    id: "turn_keep_1",
+                    items: [
+                        .userMessage(
+                            CodexUserMessageItem(
+                                type: "userMessage",
+                                id: "item_keep_user_1",
+                                content: [CodexUserInput(type: "text", text: "Hi", url: nil, path: nil)]
+                            )
+                        ),
+                        .agentMessage(
+                            CodexAgentMessageItem(
+                                type: "agentMessage",
+                                id: "item_keep_agent_1",
+                                text: "Hello from history"
+                            )
+                        ),
+                    ],
+                    status: "completed",
+                    error: nil
+                ),
+            ]
+        )
+        let codexSession = store.sessionsByProject[projectID]![0]
+
+        store.codexRequestOverrideForTests = { method, _ in
+            switch method {
+            case "labos/session/read":
+                let sessionJSON = try Self.encodeJSONValue(codexSession, store: store)
+                let threadJSON = try Self.encodeJSONValue(thread, store: store)
+                return CodexRPCResponse(
+                    id: .string(UUID().uuidString),
+                    result: .object([
+                        "session": sessionJSON,
+                        "thread": threadJSON,
+                    ]),
+                    error: nil
+                )
+            default:
+                XCTFail("Unexpected method: \(method)")
+                throw NSError(domain: "LabOSCoreTests", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unexpected method"])
+            }
+        }
+        defer { store.codexRequestOverrideForTests = nil }
+
+        store.openSession(projectID: projectID, sessionID: sessionID)
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            (store.codexItemsBySession[sessionID] ?? []).count == 2
+        }
+
+        let retained = try XCTUnwrap(store.livePlanBySession[sessionID])
+        XCTAssertEqual(retained.plan.count, 2)
+        XCTAssertEqual(retained.plan[1].status, "in_progress")
+    }
+
+    func testSessionReadWithoutActivePlanClearsTerminalLocalLivePlan() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        let threadID = "thr_history_plan_clear"
+
+        store.projects = [Project(id: projectID, name: "Codex History Plan Clear Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Codex Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: threadID
+            ),
+        ]
+        store.codexConnectionState = .connected
+
+        store.livePlanBySession[sessionID] = AgentPlanUpdatedPayload(
+            agentRunId: UUID(),
+            projectId: projectID,
+            sessionId: sessionID,
+            explanation: "Already done",
+            plan: [
+                .init(step: "Step A", status: "completed"),
+                .init(step: "Step B", status: "completed"),
+            ]
+        )
+
+        let thread = CodexThread(
+            id: threadID,
+            preview: "history",
+            modelProvider: "openai",
+            createdAt: 1,
+            updatedAt: 2,
+            path: nil,
+            cwd: "/tmp",
+            cliVersion: "0.1.0",
+            source: "appServer",
+            gitInfo: nil,
+            turns: [
+                CodexTurn(
+                    id: "turn_clear_1",
+                    items: [
+                        .userMessage(
+                            CodexUserMessageItem(
+                                type: "userMessage",
+                                id: "item_clear_user_1",
+                                content: [CodexUserInput(type: "text", text: "Hi", url: nil, path: nil)]
+                            )
+                        ),
+                        .agentMessage(
+                            CodexAgentMessageItem(
+                                type: "agentMessage",
+                                id: "item_clear_agent_1",
+                                text: "Hello from history"
+                            )
+                        ),
+                    ],
+                    status: "completed",
+                    error: nil
+                ),
+            ]
+        )
+        let codexSession = store.sessionsByProject[projectID]![0]
+
+        store.codexRequestOverrideForTests = { method, _ in
+            switch method {
+            case "labos/session/read":
+                let sessionJSON = try Self.encodeJSONValue(codexSession, store: store)
+                let threadJSON = try Self.encodeJSONValue(thread, store: store)
+                return CodexRPCResponse(
+                    id: .string(UUID().uuidString),
+                    result: .object([
+                        "session": sessionJSON,
+                        "thread": threadJSON,
+                    ]),
+                    error: nil
+                )
+            default:
+                XCTFail("Unexpected method: \(method)")
+                throw NSError(domain: "LabOSCoreTests", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unexpected method"])
+            }
+        }
+        defer { store.codexRequestOverrideForTests = nil }
+
+        store.openSession(projectID: projectID, sessionID: sessionID)
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            (store.codexItemsBySession[sessionID] ?? []).count == 2
+        }
+
+        XCTAssertNil(store.livePlanBySession[sessionID])
+    }
+
     private static func encodeJSONValue<T: Encodable>(_ value: T, store: AppStore) throws -> JSONValue {
         let data = try store.gatewayJSONEncoder.encode(value)
         return try store.gatewayJSONDecoder.decode(JSONValue.self, from: data)

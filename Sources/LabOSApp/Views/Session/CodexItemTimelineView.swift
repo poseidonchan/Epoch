@@ -95,6 +95,7 @@ struct CodexItemTimelineView: View {
 
     @ViewBuilder
     private func turnRow(_ turn: CodexTrajectoryTurn) -> some View {
+        let isExpanded = isTurnExpanded(turn.id)
         let shouldShowSummary = turn.hasTrajectorySummary
             || turn.isStreaming
             || (isPlanModeEnabled && (turn.hasThinkingStatus || turn.finalAnswerItemID != nil))
@@ -107,7 +108,7 @@ struct CodexItemTimelineView: View {
                 let turnKey = turnKeyByTurnID[turn.id]
                 CodexTrajectorySummaryBar(
                     turnID: turn.id,
-                    isExpanded: isTurnExpanded(turn.id),
+                    isExpanded: isExpanded,
                     isStreaming: turn.isStreaming,
                     isInterrupted: interruptedTurnIDs.contains(turn.id),
                     startedAt: turnKey.flatMap { startedAtByTurnKey[$0] },
@@ -118,7 +119,7 @@ struct CodexItemTimelineView: View {
                     }
                 )
 
-                if isTurnExpanded(turn.id) {
+                if isExpanded {
                     trajectoryDetails(for: turn)
                         .transition(.opacity)
                 }
@@ -136,7 +137,7 @@ struct CodexItemTimelineView: View {
                 )
             } else if let proposedPlanText {
                 proposedPlanCard(proposedPlanText)
-            } else if turn.isStreaming || turn.hasThinkingStatus {
+            } else if !isExpanded, (turn.isStreaming || turn.hasThinkingStatus) {
                 Text(pendingTurnStatus(for: turn))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)

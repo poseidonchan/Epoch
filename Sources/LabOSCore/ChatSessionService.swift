@@ -1596,7 +1596,8 @@ internal final class ChatSessionService {
                     explanation: activePlanPayload.explanation?.trimmingCharacters(in: .whitespacesAndNewlines),
                     plan: normalizedSteps
                 )
-            } else if store.activeInlineProcessBySession[sessionID] == nil {
+            } else if let existingPlan = store.livePlanBySession[sessionID],
+                      AppStore.codexPlanIsTerminal(existingPlan) {
                 store.livePlanBySession[sessionID] = nil
             }
             sessionHistoryLastFetchedAtBySession[sessionID] = now
