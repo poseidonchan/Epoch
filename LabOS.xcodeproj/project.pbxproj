@@ -73,6 +73,7 @@
 		8CE26E55A0918609921F8CFC /* MarkdownTheme+LabOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AE4E6E0BB1BDF87AFE4A61D /* MarkdownTheme+LabOS.swift */; };
 		8E652A83F1923B24AD64911C /* CodexAssistantActionTargets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20F37255D3D315F62CA2D626 /* CodexAssistantActionTargets.swift */; };
 		943C592F0EE7DB0661AC44E7 /* KaTeX_Main-Italic.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = C21B47F7AAFD8B26F87441CC /* KaTeX_Main-Italic.woff2 */; };
+		970EBF84E13F395966849E21 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = D45B3619423ED3A80264415E /* Assets.xcassets */; };
 		97DC8BCCC264ADF5B7F83D00 /* markdown-math-renderer.js in Resources */ = {isa = PBXBuildFile; fileRef = 4B73551CDAFFFCFB66EC92FF /* markdown-math-renderer.js */; };
 		9E2520F1FCE123621CC01B9B /* KaTeX_Main-Bold.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 7B4488123F637C3E4BCFE60B /* KaTeX_Main-Bold.woff2 */; };
 		A14B7C4AACA74104F0F3BCA9 /* HubIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB9F6360C65BCE5F8F085497 /* HubIntegrationTests.swift */; };
@@ -107,6 +108,7 @@
 		E1AD2001D831D093B578E2DD /* ProjectsDrawerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F2A63CE55013CFDE15FACCA /* ProjectsDrawerView.swift */; };
 		E3790E020C8F5630B9ACAA93 /* KaTeX_Size3-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 3521D0203F1384F620518026 /* KaTeX_Size3-Regular.woff2 */; };
 		E8680185E3100A5214C5B21B /* ComposerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 829FEF7F456D1B161770311D /* ComposerService.swift */; };
+		E89B918E08938D2A06013FF2 /* LabOS-icon-source.png in Resources */ = {isa = PBXBuildFile; fileRef = B21AF368C2358BF121C409CE /* LabOS-icon-source.png */; };
 		ECD30007D702964E34C826AD /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = 458D033A6A936A607513EBFE /* MarkdownUI */; };
 		ECDC9881ED5415F1E03C50B0 /* CodexThreadItemWebSearchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 203109A994C6AB7B853271A7 /* CodexThreadItemWebSearchTests.swift */; };
 		ED37E6C0F88B55CC8FA15D0F /* github-dark.min.css in Resources */ = {isa = PBXBuildFile; fileRef = 0D6DBF2B2CDBD9752C2565E4 /* github-dark.min.css */; };
@@ -261,6 +263,7 @@
 		ACD8C027FC01CDC34F3C90E3 /* CodexDockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexDockView.swift; sourceTree = "<group>"; };
 		AD563F42A3BAEB6EE80AE201 /* CodexTrajectoryLeafView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexTrajectoryLeafView.swift; sourceTree = "<group>"; };
 		AD868C2720E3412B2648601D /* MarkdownMathView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownMathView.swift; sourceTree = "<group>"; };
+		B21AF368C2358BF121C409CE /* LabOS-icon-source.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "LabOS-icon-source.png"; sourceTree = "<group>"; };
 		B91AA911BAEBDD15F8746A2F /* KaTeX_SansSerif-Bold.woff2 */ = {isa = PBXFileReference; path = "KaTeX_SansSerif-Bold.woff2"; sourceTree = "<group>"; };
 		BC6D41CCA6E1CB44F794FEA1 /* LabOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LabOSApp.swift; sourceTree = "<group>"; };
 		BC82D58946630E5FD74F27D1 /* CodexCommandExecutionCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexCommandExecutionCard.swift; sourceTree = "<group>"; };
@@ -272,6 +275,7 @@
 		CA2C3D126ED95547A5977A91 /* AppStoreCodexSkillsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreCodexSkillsTests.swift; sourceTree = "<group>"; };
 		CF33BCF594E0FEF19FB1D36E /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
 		D1688F834B3194EB65F26759 /* NamePromptSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NamePromptSheet.swift; sourceTree = "<group>"; };
+		D45B3619423ED3A80264415E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		D63405BA7CF1863931018509 /* InlineComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineComposerView.swift; sourceTree = "<group>"; };
 		D8058E022BD03DCE69CC0620 /* NotebookDocumentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotebookDocumentTests.swift; sourceTree = "<group>"; };
 		D92C4BA96A4950420952E8B8 /* SessionChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionChatView.swift; sourceTree = "<group>"; };
@@ -380,6 +384,14 @@
 				3FB7089EA136E78CEE406EBA /* katex.min.js */,
 			);
 			path = katex;
+			sourceTree = "<group>";
+		};
+		2F68544A041E5EB84FB6C6A3 /* Branding */ = {
+			isa = PBXGroup;
+			children = (
+				B21AF368C2358BF121C409CE /* LabOS-icon-source.png */,
+			);
+			path = Branding;
 			sourceTree = "<group>";
 		};
 		34189C1E6B0E165807039164 /* Home */ = {
@@ -588,6 +600,8 @@
 		E1CBECEA7919153A38A45FFF /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				D45B3619423ED3A80264415E /* Assets.xcassets */,
+				2F68544A041E5EB84FB6C6A3 /* Branding */,
 				6CA4334797F68D6B247A7B33 /* highlightjs */,
 				1F04511109858D2D5A05C9EA /* katex */,
 				CEB7E2D094828F9EDC8C0980 /* markdown */,
@@ -761,6 +775,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				970EBF84E13F395966849E21 /* Assets.xcassets in Resources */,
 				323E5F26CFE57FF6AEF54EC6 /* KaTeX_AMS-Regular.woff2 in Resources */,
 				059175377FB51AE655C9900E /* KaTeX_Caligraphic-Bold.woff2 in Resources */,
 				C446ADBE71EEB39A20CD14E1 /* KaTeX_Caligraphic-Regular.woff2 in Resources */,
@@ -781,6 +796,7 @@
 				E3790E020C8F5630B9ACAA93 /* KaTeX_Size3-Regular.woff2 in Resources */,
 				215F7FD44374892A5BFAB816 /* KaTeX_Size4-Regular.woff2 in Resources */,
 				138A2C99C574ECB137AAADD3 /* KaTeX_Typewriter-Regular.woff2 in Resources */,
+				E89B918E08938D2A06013FF2 /* LabOS-icon-source.png in Resources */,
 				32641AB44EF6DDB26A152B6B /* auto-render.min.js in Resources */,
 				ED37E6C0F88B55CC8FA15D0F /* github-dark.min.css in Resources */,
 				619ED2679338A920015779E2 /* github.min.css in Resources */,

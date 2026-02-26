@@ -157,6 +157,7 @@ export class BridgeService {
   private pending = new Map<string, PendingRequest>();
 
   private hpcPrefs: HpcPrefs = {};
+  private readonly heartbeatIntervalMs = normalizePositiveInt(process.env.LABOS_HPC_HEARTBEAT_MS, 1_000);
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private heartbeatInFlight = false;
   private slurmUser: string | null = null;
@@ -271,7 +272,7 @@ export class BridgeService {
   private startHeartbeatLoop() {
     if (this.heartbeatTimer) return;
     const tick = () => void this.sendHeartbeat();
-    this.heartbeatTimer = setInterval(tick, 5_000);
+    this.heartbeatTimer = setInterval(tick, this.heartbeatIntervalMs);
     this.heartbeatTimer.unref();
     tick();
   }
@@ -1571,6 +1572,13 @@ function normalizeOptionalString(v: unknown): string | undefined {
   if (typeof v !== "string") return undefined;
   const trimmed = v.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function normalizePositiveInt(raw: unknown, fallback: number): number {
+  const parsed = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  const normalized = Math.floor(parsed);
+  return normalized > 0 ? normalized : fallback;
 }
 
 function normalizePermissionLevel(v: unknown): PermissionLevel | null {
