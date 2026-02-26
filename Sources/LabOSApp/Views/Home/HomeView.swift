@@ -15,6 +15,7 @@ struct HomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
+                pendingApprovalsCard
                 runningTasksCard
                 resourceCard
             }
@@ -109,6 +110,70 @@ struct HomeView: View {
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(.secondarySystemBackground)))
     }
 
+    private var pendingApprovalsCard: some View {
+        let rows = store.homePendingApprovals
+        let preview = Array(rows.prefix(4))
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Pending Approvals")
+                    .font(.headline)
+                Spacer()
+                Text("\(rows.count)")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(Color.orange.opacity(0.18)))
+            }
+
+            if rows.isEmpty {
+                Text("No pending input needed.")
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(preview) { row in
+                        pendingApprovalRow(row)
+                    }
+                    if rows.count > preview.count {
+                        Text("+\(rows.count - preview.count) more")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(.secondarySystemBackground)))
+    }
+
+    private func pendingApprovalRow(_ row: HomePendingApprovalRow) -> some View {
+        Button {
+            store.openSession(projectID: row.projectID, sessionID: row.sessionID)
+        } label: {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(row.projectName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(row.sessionTitle)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text("\(row.pendingCount) item\(row.pendingCount == 1 ? "" : "s") · \(pendingKindLabel(row.pendingKind))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Label("Open", systemImage: "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.blue)
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(.tertiarySystemBackground)))
+        }
+        .buttonStyle(.plain)
+    }
+
     private func runningTaskSlide(_ row: HomeTaskRow) -> some View {
         Button {
             store.openRun(projectID: row.projectID, runID: row.runID)
@@ -163,13 +228,19 @@ struct HomeView: View {
             HStack {
                 metricBlock(value: store.resourceStatus.computeConnected ? "Connected" : "Disconnected", label: "Compute")
                 Spacer()
-                metricBlock(value: "\(store.resourceStatus.queueDepth)", label: "Queue depth")
+                metricBlock(
+                    value: slurmJobsSummary(),
+                    label: store.resourceStatus.hpc == nil ? "Queue depth" : "Slurm Jobs"
+                )
             }
 
             HStack {
                 metricBlock(value: "\(Int(store.resourceStatus.storageUsedPercent))%", label: "Storage")
                 Spacer()
-                metricBlock(value: "CPU \(Int(store.resourceStatus.cpuPercent))% / RAM \(Int(store.resourceStatus.ramPercent))%", label: "Usage")
+                metricBlock(
+                    value: slurmUsageSummary(),
+                    label: store.resourceStatus.hpc == nil ? "Usage" : "Allocation"
+                )
             }
         }
         .padding(14)
@@ -191,6 +262,42 @@ struct HomeView: View {
         if hour < 12 { return "Good morning" }
         if hour < 18 { return "Good afternoon" }
         return "Welcome back"
+    }
+
+    private func pendingKindLabel(_ kind: String?) -> String {
+        switch kind?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "approval":
+            return "Approval"
+        case "plan":
+            return "Plan"
+        case "prompt":
+            return "Prompt"
+        default:
+            return "Input"
+        }
+    }
+
+    private func slurmJobsSummary() -> String {
+        if let hpc = store.resourceStatus.hpc {
+            return "R \(hpc.runningJobs) / PD \(hpc.pendingJobs)"
+        }
+        return "\(store.resourceStatus.queueDepth)"
+    }
+
+    private func slurmUsageSummary() -> String {
+        guard let hpc = store.resourceStatus.hpc else {
+            return "CPU \(Int(store.resourceStatus.cpuPercent))% / RAM \(Int(store.resourceStatus.ramPercent))%"
+        }
+
+        let cpu = usagePair(used: hpc.inUse?.cpu, limit: hpc.limit?.cpu)
+        let gpu = usagePair(used: hpc.inUse?.gpus, limit: hpc.limit?.gpus)
+        return "CPU \(cpu) · GPU \(gpu)"
+    }
+
+    private func usagePair(used: Int?, limit: Int?) -> String {
+        let usedText = used.map(String.init) ?? "—"
+        let limitText = limit.map(String.init) ?? "—"
+        return "\(usedText)/\(limitText)"
     }
 }
 

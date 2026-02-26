@@ -878,6 +878,37 @@ public struct HomeTaskRow: Identifiable, Hashable, Sendable {
     }
 }
 
+public struct HomePendingApprovalRow: Identifiable, Hashable, Sendable {
+    public let id: UUID
+    public let projectID: UUID
+    public let projectName: String
+    public let sessionID: UUID
+    public let sessionTitle: String
+    public let pendingCount: Int
+    public let pendingKind: String?
+    public let updatedAt: Date
+
+    public init(
+        id: UUID? = nil,
+        projectID: UUID,
+        projectName: String,
+        sessionID: UUID,
+        sessionTitle: String,
+        pendingCount: Int,
+        pendingKind: String?,
+        updatedAt: Date
+    ) {
+        self.id = id ?? sessionID
+        self.projectID = projectID
+        self.projectName = projectName
+        self.sessionID = sessionID
+        self.sessionTitle = sessionTitle
+        self.pendingCount = pendingCount
+        self.pendingKind = pendingKind
+        self.updatedAt = updatedAt
+    }
+}
+
 public enum MarkdownDisplayNormalizer {
     public static func normalize(_ text: String) -> String {
         guard text.contains("\\`") else { return text }

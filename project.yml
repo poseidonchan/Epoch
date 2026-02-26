@@ -32,7 +32,6 @@ targets:
       - Sources/LabOSApp
     resources:
       - path: Sources/LabOSApp/Resources
-        type: folder
     dependencies:
       - target: LabOSCore
       - package: MarkdownUI

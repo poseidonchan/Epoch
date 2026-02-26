@@ -222,6 +222,7 @@ public final class AppStore: ObservableObject {
     private var codexEnsureConnectedTask: Task<Bool, Never>?
     internal var gatewayDeviceID: UUID = UUID()
     private var resourcesPollTask: Task<Void, Never>?
+    private var homeRunsPollTask: Task<Void, Never>?
     internal var codexThreadBySession: [UUID: String] = [:]
     internal var codexSessionByThread: [String: UUID] = [:]
     internal var codexPendingThreadBindingSessions: Set<UUID> = []
@@ -471,6 +472,7 @@ public final class AppStore: ObservableObject {
             composerService.pushHpcPreferencesToGateway()
             startGatewayEventLoop()
             startResourcePolling()
+            startHomeRunsPolling()
         }
 
         await connectCodex()
@@ -526,6 +528,7 @@ public final class AppStore: ObservableObject {
 
             self.startGatewayEventLoop()
             self.startResourcePolling()
+            self.startHomeRunsPolling()
             await self.composerService.refreshModelsFromGateway()
             self.composerService.pushHpcPreferencesToGateway()
 
@@ -716,6 +719,8 @@ public final class AppStore: ObservableObject {
         codexEnsureConnectedTask = nil
         resourcesPollTask?.cancel()
         resourcesPollTask = nil
+        homeRunsPollTask?.cancel()
+        homeRunsPollTask = nil
         gatewayClient?.disconnect()
         gatewayClient = nil
         codexClient?.disconnect()
@@ -794,7 +799,33 @@ public final class AppStore: ObservableObject {
                     // keep last known
                 }
 
-                try? await Task.sleep(for: .seconds(5))
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    private func startHomeRunsPolling() {
+        homeRunsPollTask?.cancel()
+        homeRunsPollTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                if case .home = self.context {
+                    let projectIDs = self.projects.map(\.id)
+                    if self.shouldUseCodexRPC {
+                        for projectID in projectIDs {
+                            if Task.isCancelled { break }
+                            await self.projectService.refreshProjectSessionsFromCodex(projectID: projectID, failHard: false)
+                            await self.projectService.refreshProjectRunsFromCodex(projectID: projectID, failHard: false)
+                        }
+                    } else if self.isGatewayConnected {
+                        for projectID in projectIDs {
+                            if Task.isCancelled { break }
+                            await self.projectService.refreshProjectSessionsFromGateway(projectID: projectID, failHard: false)
+                            await self.projectService.refreshProjectRunsFromGateway(projectID: projectID, failHard: false)
+                        }
+                    }
+                }
+                try? await Task.sleep(for: .seconds(1))
             }
         }
     }
@@ -2587,6 +2618,37 @@ public final class AppStore: ObservableObject {
         return rows
     }
 
+    public var homePendingApprovals: [HomePendingApprovalRow] {
+        var rows: [HomePendingApprovalRow] = []
+        for project in projects {
+            for session in sessions(for: project.id) where session.lifecycle == .active {
+                let pendingCount = homePendingUserInputCount(for: session)
+                guard pendingCount > 0 else { continue }
+                rows.append(
+                    HomePendingApprovalRow(
+                        projectID: project.id,
+                        projectName: project.name,
+                        sessionID: session.id,
+                        sessionTitle: session.title,
+                        pendingCount: pendingCount,
+                        pendingKind: homePendingUserInputKind(for: session),
+                        updatedAt: session.updatedAt
+                    )
+                )
+            }
+        }
+
+        return rows.sorted { lhs, rhs in
+            if lhs.pendingCount != rhs.pendingCount {
+                return lhs.pendingCount > rhs.pendingCount
+            }
+            if lhs.updatedAt != rhs.updatedAt {
+                return lhs.updatedAt > rhs.updatedAt
+            }
+            return lhs.sessionTitle.localizedCaseInsensitiveCompare(rhs.sessionTitle) == .orderedAscending
+        }
+    }
+
     public func sessions(for projectID: UUID) -> [Session] {
         projectService.sessions(for: projectID)
     }
@@ -2656,6 +2718,36 @@ public final class AppStore: ObservableObject {
 
     public func codexPendingPromptQueue(for sessionID: UUID) -> [CodexPendingPrompt] {
         codexPendingPromptBySession[sessionID] ?? []
+    }
+
+    private func homePendingUserInputCount(for session: Session) -> Int {
+        if let sessionCount = session.pendingUserInputCount, sessionCount > 0 {
+            return sessionCount
+        }
+        var count = 0
+        count += codexPendingPromptQueue(for: session.id).count
+        count += codexPendingApprovals(for: session.id).count
+        if pendingApproval(for: session.id) != nil {
+            count += 1
+        }
+        return count
+    }
+
+    private func homePendingUserInputKind(for session: Session) -> String? {
+        if let rawKind = session.pendingUserInputKind,
+           let kind = normalizedOptionalString(rawKind) {
+            return kind
+        }
+        if let prompt = codexPendingPrompt(for: session.id) {
+            return normalizedOptionalString(prompt.kind) ?? "prompt"
+        }
+        if !codexPendingApprovals(for: session.id).isEmpty {
+            return "approval"
+        }
+        if pendingApproval(for: session.id) != nil {
+            return "plan"
+        }
+        return nil
     }
 
     public func codexPromptDraft(

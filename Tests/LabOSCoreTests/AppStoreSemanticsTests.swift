@@ -308,6 +308,88 @@ final class AppStoreSemanticsTests: XCTestCase {
         XCTAssertTrue(store.uploadedArtifacts(for: project.id).isEmpty)
     }
 
+    func testHomePendingApprovalsAggregatesAcrossProjects() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        guard let projectA = await store.createProject(name: "Project A"),
+              let projectB = await store.createProject(name: "Project B"),
+              let sessionA1 = await store.createSession(projectID: projectA.id, title: "Alpha"),
+              let sessionA2 = await store.createSession(projectID: projectA.id, title: "Beta"),
+              let sessionB1 = await store.createSession(projectID: projectB.id, title: "Gamma")
+        else {
+            XCTFail("Failed to seed projects/sessions")
+            return
+        }
+
+        var sessionsA = store.sessions(for: projectA.id)
+        if let idx = sessionsA.firstIndex(where: { $0.id == sessionA1.id }) {
+            sessionsA[idx].hasPendingUserInput = true
+            sessionsA[idx].pendingUserInputCount = 2
+            sessionsA[idx].pendingUserInputKind = "approval"
+            sessionsA[idx].updatedAt = Date().addingTimeInterval(-30)
+        }
+        if let idx = sessionsA.firstIndex(where: { $0.id == sessionA2.id }) {
+            sessionsA[idx].hasPendingUserInput = true
+            sessionsA[idx].pendingUserInputCount = 1
+            sessionsA[idx].pendingUserInputKind = "prompt"
+            sessionsA[idx].updatedAt = Date().addingTimeInterval(-5)
+        }
+        store.sessionsByProject[projectA.id] = sessionsA
+
+        var sessionsB = store.sessions(for: projectB.id)
+        if let idx = sessionsB.firstIndex(where: { $0.id == sessionB1.id }) {
+            sessionsB[idx].hasPendingUserInput = false
+            sessionsB[idx].pendingUserInputCount = 0
+            sessionsB[idx].pendingUserInputKind = nil
+        }
+        store.sessionsByProject[projectB.id] = sessionsB
+
+        let rows = store.homePendingApprovals
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows[0].sessionID, sessionA1.id)
+        XCTAssertEqual(rows[0].pendingCount, 2)
+        XCTAssertEqual(rows[1].sessionID, sessionA2.id)
+        XCTAssertEqual(rows[1].pendingCount, 1)
+    }
+
+    func testHomePendingApprovalsFallsBackToRuntimePendingState() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        guard let project = await store.createProject(name: "Project Runtime Pending"),
+              let session = await store.createSession(projectID: project.id, title: "Needs Approval")
+        else {
+            XCTFail("Failed to seed project/session")
+            return
+        }
+
+        var sessions = store.sessions(for: project.id)
+        if let idx = sessions.firstIndex(where: { $0.id == session.id }) {
+            sessions[idx].hasPendingUserInput = false
+            sessions[idx].pendingUserInputCount = 0
+            sessions[idx].pendingUserInputKind = nil
+        }
+        store.sessionsByProject[project.id] = sessions
+
+        store.codexPendingApprovalsBySession[session.id] = [
+            CodexPendingApproval(
+                requestID: .string("req_runtime_pending"),
+                kind: .commandExecution,
+                sessionID: session.id,
+                threadId: "thread_runtime_pending",
+                turnId: "turn_runtime_pending",
+                itemId: "item_runtime_pending",
+                reason: "Need operator confirmation",
+                command: "srun hostname",
+                cwd: nil,
+                grantRoot: nil,
+                rawParams: nil
+            )
+        ]
+
+        let rows = store.homePendingApprovals
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].sessionID, session.id)
+        XCTAssertEqual(rows[0].pendingCount, 1)
+    }
+
     private func makeCodexReady(store: AppStore, sessionID: UUID, threadID: String) {
         store.codexConnectionState = .connected
         store.codexThreadBySession[sessionID] = threadID

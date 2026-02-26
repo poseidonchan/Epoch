@@ -799,26 +799,113 @@ internal final class ProjectService {
         store.codexFullAccessBySession[session.id] = (level == .full)
     }
 
-    func refreshProjectFromCodex(projectID: UUID) async {
-        struct SessionsListParams: Codable, Sendable { var projectId: String; var includeArchived: Bool }
-        struct ArtifactsListParams: Codable, Sendable { var projectId: String; var limit: Int }
-        struct RunsListParams: Codable, Sendable { var projectId: String; var limit: Int }
+    private func mergeRuns(projectID: UUID, incoming: [RunRecord]) {
+        let existing = Dictionary(uniqueKeysWithValues: (store.runsByProject[projectID] ?? []).map { ($0.id, $0) })
+        let merged = incoming.map { remote in
+            var updated = remote
+            if let local = existing[remote.id] {
+                if updated.activity.isEmpty, !local.activity.isEmpty { updated.activity = local.activity }
+                if updated.stepDetails.isEmpty, !local.stepDetails.isEmpty { updated.stepDetails = local.stepDetails }
+            }
+            return updated
+        }
+        store.runsByProject[projectID] = merged
+    }
 
+    private func applySessionsSnapshot(projectID: UUID, sessions: [Session]) {
+        store.sessionsByProject[projectID] = sessions
+        for session in sessions {
+            store.composerService.ensureComposerPrefs(sessionID: session.id)
+            normalizeSessionPermissionState(session)
+            if let threadId = session.codexThreadId {
+                store.codexThreadBySession[session.id] = threadId
+                store.codexSessionByThread[threadId] = session.id
+            }
+        }
+    }
+
+    @discardableResult
+    func refreshProjectSessionsFromCodex(projectID: UUID, failHard: Bool = false) async -> Bool {
+        struct SessionsListParams: Codable, Sendable { var projectId: String; var includeArchived: Bool }
         do {
             let sessionsResponse = try await store.requestCodex(
                 method: "labos/session/list",
                 params: SessionsListParams(projectId: AppStore.gatewayID(projectID), includeArchived: true)
             )
             let sessions: [Session] = try store.decodeCodexResult(sessionsResponse.result, key: "sessions")
-            store.sessionsByProject[projectID] = sessions
-            for session in sessions {
-                store.composerService.ensureComposerPrefs(sessionID: session.id)
-                normalizeSessionPermissionState(session)
-                if let threadId = session.codexThreadId {
-                    store.codexThreadBySession[session.id] = threadId
-                    store.codexSessionByThread[threadId] = session.id
-                }
+            applySessionsSnapshot(projectID: projectID, sessions: sessions)
+            return true
+        } catch {
+            if failHard {
+                store.lastGatewayErrorMessage = error.localizedDescription
+                store.codexConnectionState = .failed(message: error.localizedDescription)
             }
+            return false
+        }
+    }
+
+    @discardableResult
+    func refreshProjectSessionsFromGateway(projectID: UUID, failHard: Bool = false) async -> Bool {
+        guard let gatewayClient = store.gatewayClient else { return false }
+
+        struct SessionsListParams: Codable, Sendable { var projectId: String; var includeArchived: Bool }
+        do {
+            let sessionsRes = try await gatewayClient.request(
+                method: "sessions.list",
+                params: SessionsListParams(projectId: AppStore.gatewayID(projectID), includeArchived: true)
+            )
+            let sessions: [Session] = try store.decodeGatewayPayload(sessionsRes.payload, key: "sessions")
+            applySessionsSnapshot(projectID: projectID, sessions: sessions)
+            return true
+        } catch {
+            if failHard {
+                store.gatewayConnectionState = .failed(message: error.localizedDescription)
+            }
+            return false
+        }
+    }
+
+    func refreshProjectRunsFromCodex(projectID: UUID, failHard: Bool = false) async {
+        struct RunsListParams: Codable, Sendable { var projectId: String; var limit: Int }
+        do {
+            let runsResponse = try await store.requestCodex(
+                method: "labos/run/list",
+                params: RunsListParams(projectId: AppStore.gatewayID(projectID), limit: 500)
+            )
+            let runs: [RunRecord] = try store.decodeCodexResult(runsResponse.result, key: "runs")
+            mergeRuns(projectID: projectID, incoming: runs)
+        } catch {
+            if failHard {
+                store.lastGatewayErrorMessage = error.localizedDescription
+                store.codexConnectionState = .failed(message: error.localizedDescription)
+            }
+        }
+    }
+
+    func refreshProjectRunsFromGateway(projectID: UUID, failHard: Bool = false) async {
+        guard let gatewayClient = store.gatewayClient else { return }
+
+        struct RunsListParams: Codable, Sendable { var projectId: String }
+        do {
+            let runsRes = try await gatewayClient.request(
+                method: "runs.list",
+                params: RunsListParams(projectId: AppStore.gatewayID(projectID))
+            )
+            let runs: [RunRecord] = try store.decodeGatewayPayload(runsRes.payload, key: "runs")
+            mergeRuns(projectID: projectID, incoming: runs)
+        } catch {
+            if failHard {
+                store.gatewayConnectionState = .failed(message: error.localizedDescription)
+            }
+        }
+    }
+
+    func refreshProjectFromCodex(projectID: UUID) async {
+        struct ArtifactsListParams: Codable, Sendable { var projectId: String; var limit: Int }
+
+        do {
+            let sessionsOk = await refreshProjectSessionsFromCodex(projectID: projectID, failHard: true)
+            guard sessionsOk else { return }
 
             let artifactsResponse = try await store.requestCodex(
                 method: "labos/artifact/list",
@@ -827,21 +914,7 @@ internal final class ProjectService {
             let artifacts: [Artifact] = try store.decodeCodexResult(artifactsResponse.result, key: "artifacts")
             store.artifactsByProject[projectID] = artifacts
 
-            let runsResponse = try await store.requestCodex(
-                method: "labos/run/list",
-                params: RunsListParams(projectId: AppStore.gatewayID(projectID), limit: 500)
-            )
-            let runs: [RunRecord] = try store.decodeCodexResult(runsResponse.result, key: "runs")
-            let existing = Dictionary(uniqueKeysWithValues: (store.runsByProject[projectID] ?? []).map { ($0.id, $0) })
-            let merged = runs.map { remote in
-                var updated = remote
-                if let local = existing[remote.id] {
-                    if updated.activity.isEmpty, !local.activity.isEmpty { updated.activity = local.activity }
-                    if updated.stepDetails.isEmpty, !local.stepDetails.isEmpty { updated.stepDetails = local.stepDetails }
-                }
-                return updated
-            }
-            store.runsByProject[projectID] = merged
+            await refreshProjectRunsFromCodex(projectID: projectID, failHard: true)
         } catch {
             store.lastGatewayErrorMessage = error.localizedDescription
             store.codexConnectionState = .failed(message: error.localizedDescription)
@@ -851,25 +924,11 @@ internal final class ProjectService {
     func refreshProjectFromGateway(projectID: UUID) async {
         guard let gatewayClient = store.gatewayClient else { return }
 
-        struct SessionsListParams: Codable, Sendable { var projectId: String; var includeArchived: Bool }
         struct ArtifactsListParams: Codable, Sendable { var projectId: String; var prefix: String? }
-        struct RunsListParams: Codable, Sendable { var projectId: String }
 
         do {
-            let sessionsRes = try await gatewayClient.request(
-                method: "sessions.list",
-                params: SessionsListParams(projectId: AppStore.gatewayID(projectID), includeArchived: true)
-            )
-            let sessions: [Session] = try store.decodeGatewayPayload(sessionsRes.payload, key: "sessions")
-            store.sessionsByProject[projectID] = sessions
-            for session in sessions {
-                store.composerService.ensureComposerPrefs(sessionID: session.id)
-                normalizeSessionPermissionState(session)
-                if let threadId = session.codexThreadId {
-                    store.codexThreadBySession[session.id] = threadId
-                    store.codexSessionByThread[threadId] = session.id
-                }
-            }
+            let sessionsOk = await refreshProjectSessionsFromGateway(projectID: projectID, failHard: true)
+            guard sessionsOk else { return }
 
             let artifactsRes = try await gatewayClient.request(
                 method: "artifacts.list",
@@ -878,21 +937,7 @@ internal final class ProjectService {
             let artifacts: [Artifact] = try store.decodeGatewayPayload(artifactsRes.payload, key: "artifacts")
             store.artifactsByProject[projectID] = artifacts
 
-            let runsRes = try await gatewayClient.request(
-                method: "runs.list",
-                params: RunsListParams(projectId: AppStore.gatewayID(projectID))
-            )
-            let runs: [RunRecord] = try store.decodeGatewayPayload(runsRes.payload, key: "runs")
-            let existing = Dictionary(uniqueKeysWithValues: (store.runsByProject[projectID] ?? []).map { ($0.id, $0) })
-            let merged = runs.map { remote in
-                var updated = remote
-                if let local = existing[remote.id] {
-                    if updated.activity.isEmpty, !local.activity.isEmpty { updated.activity = local.activity }
-                    if updated.stepDetails.isEmpty, !local.stepDetails.isEmpty { updated.stepDetails = local.stepDetails }
-                }
-                return updated
-            }
-            store.runsByProject[projectID] = merged
+            await refreshProjectRunsFromGateway(projectID: projectID, failHard: true)
         } catch {
             store.gatewayConnectionState = .failed(message: error.localizedDescription)
         }
