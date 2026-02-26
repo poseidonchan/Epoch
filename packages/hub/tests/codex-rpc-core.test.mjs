@@ -167,6 +167,84 @@ test("CodexConnectionState replays unresolved server requests to replacement web
   assert.equal(conn.pendingUserInputSummaryMap().get("session_replay_1"), undefined);
 });
 
+test("CodexConnectionState cancels pending requests by session and kind", async () => {
+  const wsSent = [];
+  const ws = {
+    send(payload) {
+      wsSent.push(JSON.parse(payload));
+    },
+    close() {},
+  };
+
+  const conn = new CodexConnectionState(ws, { maxIngressQueueDepth: 8 });
+  const cancelledPromise = conn.sendServerRequest(
+    "item/tool/requestUserInput",
+    {
+      threadId: "thr_cancel_1",
+      turnId: "turn_cancel_1",
+      itemId: "item_cancel_1",
+      questions: [],
+    },
+    undefined,
+    "req_cancel_1",
+    {
+      sessionId: "session_cancel_1",
+      kind: "implement_confirmation",
+    }
+  );
+  const keepPromptPromise = conn.sendServerRequest(
+    "item/tool/requestUserInput",
+    {
+      threadId: "thr_keep_1",
+      turnId: "turn_keep_1",
+      itemId: "item_keep_1",
+      questions: [],
+    },
+    undefined,
+    "req_keep_1",
+    {
+      sessionId: "session_cancel_1",
+      kind: "prompt",
+    }
+  );
+  const keepSessionPromise = conn.sendServerRequest(
+    "item/tool/requestUserInput",
+    {
+      threadId: "thr_keep_2",
+      turnId: "turn_keep_2",
+      itemId: "item_keep_2",
+      questions: [],
+    },
+    undefined,
+    "req_keep_2",
+    {
+      sessionId: "session_cancel_2",
+      kind: "implement_confirmation",
+    }
+  );
+
+  assert.equal(wsSent.length, 3);
+  const cancelled = conn.cancelPendingServerRequests({
+    sessionId: "session_cancel_1",
+    kind: "implement_confirmation",
+    reason: "superseded",
+  });
+  assert.deepEqual(cancelled, ["req_cancel_1"]);
+  await assert.rejects(cancelledPromise, /superseded/);
+
+  const summary = conn.pendingUserInputSummaryMap();
+  assert.equal(summary.get("session_cancel_1")?.count, 1);
+  assert.equal(summary.get("session_cancel_1")?.kind, "prompt");
+  assert.equal(summary.get("session_cancel_2")?.count, 1);
+  assert.equal(summary.get("session_cancel_2")?.kind, "implement_confirmation");
+
+  conn.handleClientResponse({ id: "req_keep_1", result: { answers: {} } });
+  conn.handleClientResponse({ id: "req_keep_2", result: { answers: {} } });
+  await keepPromptPromise;
+  await keepSessionPromise;
+  assert.equal(conn.pendingUserInputSummaryMap().size, 0);
+});
+
 function deferred() {
   let resolve;
   const promise = new Promise((res) => {
