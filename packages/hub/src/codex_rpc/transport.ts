@@ -7,6 +7,7 @@ import type { DbPool } from "../db/db.js";
 import { CodexConnectionState } from "./connection_state.js";
 import { CodexEngineRegistry } from "./engine_registry.js";
 import { CodexRepository } from "./repository.js";
+import type { CodexRuntimeBridge } from "./runtime_bridge.js";
 import { CodexRpcRouter } from "./router.js";
 import { isJsonRpcNotification, isJsonRpcRequest, isJsonRpcResponse, type JsonRpcRequest, type JsonRpcResponse } from "./types.js";
 
@@ -19,6 +20,7 @@ export type CodexTransportOptions = {
   config: HubConfig;
   stateDir: string;
   pool: DbPool;
+  runtimeBridge?: CodexRuntimeBridge;
 };
 
 type CodexRuntime = {
@@ -143,6 +145,7 @@ function getOrCreateRuntime(args: {
   config: HubConfig;
   stateDir: string;
   pool: DbPool;
+  runtimeBridge?: CodexRuntimeBridge;
 }): CodexRuntime {
   const existing = runtimesByToken.get(args.token);
   if (existing) {
@@ -159,6 +162,7 @@ function getOrCreateRuntime(args: {
     engines,
     connection,
     token: args.token,
+    runtimeBridge: args.runtimeBridge,
   });
   const ready = repository.clearActiveCodexStateForToken(args.token).catch(() => {});
   const runtime: CodexRuntime = {

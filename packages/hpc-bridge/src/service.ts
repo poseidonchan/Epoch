@@ -1,9 +1,10 @@
 import { createHmac } from "node:crypto";
-import { mkdir, readdir, stat, open } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, open, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import os from "node:os";
 
 import WebSocket from "ws";
 import { v4 as uuidv4 } from "uuid";
@@ -46,6 +47,110 @@ type HpcStatus = {
 
 type PermissionLevel = "default" | "full";
 
+type RuntimeExecPolicy = {
+  maxTimeoutMs: number;
+  maxConcurrent: number;
+};
+
+type RuntimeSlurmPolicy = {
+  maxTimeMinutes: number;
+  maxCpus: number;
+  maxMemMB: number;
+  maxGpus: number;
+  maxConcurrent: number;
+};
+
+type RuntimePolicy = {
+  exec: RuntimeExecPolicy;
+  slurm: RuntimeSlurmPolicy;
+};
+
+const DEFAULT_RUNTIME_POLICY: RuntimePolicy = {
+  exec: {
+    maxTimeoutMs: 15 * 60_000,
+    maxConcurrent: 2,
+  },
+  slurm: {
+    maxTimeMinutes: 60,
+    maxCpus: 4,
+    maxMemMB: 16 * 1024,
+    maxGpus: 1,
+    maxConcurrent: 2,
+  },
+};
+
+const FULL_RUNTIME_POLICY: RuntimePolicy = {
+  exec: {
+    maxTimeoutMs: 2 * 60 * 60_000,
+    maxConcurrent: 8,
+  },
+  slurm: {
+    maxTimeMinutes: 24 * 60,
+    maxCpus: 64,
+    maxMemMB: 256 * 1024,
+    maxGpus: 8,
+    maxConcurrent: 8,
+  },
+};
+
+const DANGEROUS_COMMANDS = new Set([
+  "chown",
+  "mkfs",
+  "mkfs.ext4",
+  "mkfs.xfs",
+  "dd",
+  "mount",
+  "umount",
+  "fdisk",
+  "parted",
+  "shutdown",
+  "reboot",
+  "poweroff",
+  "useradd",
+  "userdel",
+  "passwd",
+  "sudo",
+  "su",
+]);
+
+const DEFAULT_ALLOWED_BINARIES = new Set([
+  "bash",
+  "sh",
+  "zsh",
+  "python",
+  "python3",
+  "pip",
+  "pip3",
+  "uv",
+  "conda",
+  "node",
+  "npm",
+  "pnpm",
+  "git",
+  "ls",
+  "cat",
+  "pwd",
+  "echo",
+  "mkdir",
+  "cp",
+  "mv",
+  "rm",
+  "touch",
+  "find",
+  "rg",
+  "sed",
+  "awk",
+  "head",
+  "tail",
+  "wc",
+  "srun",
+  "sbatch",
+  "squeue",
+  "scancel",
+]);
+
+const SHELL_BINARIES = new Set(["bash", "sh", "zsh", "fish"]);
+
 export class BridgeService {
   private ws: WebSocket | null = null;
   private seq = 0;
@@ -56,6 +161,7 @@ export class BridgeService {
   private heartbeatInFlight = false;
   private slurmUser: string | null = null;
   private limitCache: { key: string; fetchedAt: number; limit: HpcTres | null } = { key: "", fetchedAt: 0, limit: null };
+  private runtimeExecActive = new Map<string, { child: ReturnType<typeof spawn>; startedAtMs: number; timedOut: boolean }>();
 
   public constructor(private cfg: BridgeConfig) {
     this.hpcPrefs = {
@@ -399,13 +505,156 @@ export class BridgeService {
           this.sendRes(id, true, res);
           return;
         }
+        case "runtime.exec.start": {
+          const projectId = String(params.projectId ?? "").trim();
+          const sessionId = String(params.sessionId ?? "").trim();
+          const threadId = String(params.threadId ?? "").trim();
+          const turnId = String(params.turnId ?? "").trim();
+          const itemId = String(params.itemId ?? "").trim();
+          const executionId = String(params.executionId ?? uuidv4()).trim();
+          const command = Array.isArray(params.command) ? params.command.map(String).filter(Boolean) : [];
+          const cwd = params.cwd == null ? undefined : String(params.cwd);
+          const timeoutMs = typeof params.timeoutMs === "number" ? Math.max(1, Math.floor(params.timeoutMs)) : undefined;
+          const permissionLevel = normalizePermissionLevel(params.permissionLevel) ?? "default";
+          const policyOverride = normalizeRuntimePolicy(params.policy);
+          const env = params.env && typeof params.env === "object" ? (params.env as Record<string, unknown>) : undefined;
+          const cleanEnv: Record<string, string> | undefined = env
+            ? Object.fromEntries(Object.entries(env).map(([k, v]) => [String(k), String(v ?? "")]))
+            : undefined;
+
+          if (!projectId || !sessionId || !threadId || !turnId || !itemId || !executionId || command.length === 0) {
+            this.sendRes(id, false, undefined, {
+              code: "BAD_REQUEST",
+              message: "runtime.exec.start requires projectId/sessionId/threadId/turnId/itemId/executionId and non-empty command",
+            });
+            return;
+          }
+
+          const policy = this.runtimePolicyFor(permissionLevel, policyOverride);
+          if (this.runtimeExecActive.size >= policy.exec.maxConcurrent) {
+            this.sendRes(id, false, undefined, {
+              code: "RATE_LIMITED",
+              message: `runtime.exec.start concurrency exceeded (${policy.exec.maxConcurrent})`,
+            });
+            return;
+          }
+
+          const result = await this.runtimeExecStart({
+            projectId,
+            sessionId,
+            threadId,
+            turnId,
+            itemId,
+            executionId,
+            command,
+            cwd,
+            env: cleanEnv,
+            timeoutMs,
+            permissionLevel,
+            policyOverride,
+          });
+          this.sendRes(id, true, result);
+          return;
+        }
+        case "runtime.exec.cancel": {
+          const executionId = String(params.executionId ?? "").trim();
+          if (!executionId) {
+            this.sendRes(id, false, undefined, { code: "BAD_REQUEST", message: "runtime.exec.cancel requires executionId" });
+            return;
+          }
+          const cancelled = await this.runtimeExecCancel(executionId);
+          this.sendRes(id, true, { ok: true, cancelled });
+          return;
+        }
+        case "runtime.fs.stat": {
+          const projectId = String(params.projectId ?? "").trim();
+          const inputPath = String(params.path ?? "");
+          if (!projectId || !inputPath) {
+            this.sendRes(id, false, undefined, { code: "BAD_REQUEST", message: "runtime.fs.stat requires projectId/path" });
+            return;
+          }
+          const result = await this.runtimeFsStat(projectId, inputPath);
+          this.sendRes(id, true, result);
+          return;
+        }
+        case "runtime.fs.read": {
+          const projectId = String(params.projectId ?? "").trim();
+          const inputPath = String(params.path ?? "");
+          const offset = typeof params.offset === "number" ? Math.max(0, Math.floor(params.offset)) : 0;
+          const length = typeof params.length === "number" ? Math.max(0, Math.floor(params.length)) : 64 * 1024;
+          const encoding = String(params.encoding ?? "utf8");
+          if (!projectId || !inputPath) {
+            this.sendRes(id, false, undefined, { code: "BAD_REQUEST", message: "runtime.fs.read requires projectId/path" });
+            return;
+          }
+          const result = await this.runtimeFsRead(projectId, inputPath, offset, length, encoding);
+          this.sendRes(id, true, result);
+          return;
+        }
+        case "runtime.fs.write": {
+          const projectId = String(params.projectId ?? "").trim();
+          const inputPath = String(params.path ?? "");
+          const data = String(params.data ?? "");
+          const encoding = String(params.encoding ?? "utf8");
+          const permissionLevel = normalizePermissionLevel(params.permissionLevel) ?? "default";
+          if (!projectId || !inputPath) {
+            this.sendRes(id, false, undefined, { code: "BAD_REQUEST", message: "runtime.fs.write requires projectId/path" });
+            return;
+          }
+          const result = await this.runtimeFsWrite(projectId, inputPath, data, encoding, permissionLevel);
+          this.sendRes(id, true, result);
+          return;
+        }
+        case "runtime.fs.diff": {
+          const projectId = String(params.projectId ?? "").trim();
+          const paths = Array.isArray(params.paths) ? params.paths.map(String).filter(Boolean) : [];
+          if (!projectId) {
+            this.sendRes(id, false, undefined, { code: "BAD_REQUEST", message: "runtime.fs.diff requires projectId" });
+            return;
+          }
+          const result = await this.runtimeFsDiff(projectId, paths);
+          this.sendRes(id, true, result);
+          return;
+        }
+        case "runtime.fs.applyPatch": {
+          const projectId = String(params.projectId ?? "").trim();
+          const sessionId = String(params.sessionId ?? "").trim();
+          const threadId = String(params.threadId ?? "").trim();
+          const turnId = String(params.turnId ?? "").trim();
+          const itemId = String(params.itemId ?? "").trim();
+          const patchId = String(params.patchId ?? uuidv4()).trim();
+          const patch = normalizeOptionalString(params.patch) ?? normalizeOptionalString(params.unifiedDiff) ?? normalizeOptionalString(params.unified_diff);
+          const fileChanges = params.fileChanges && typeof params.fileChanges === "object" ? (params.fileChanges as Record<string, unknown>) : null;
+          const permissionLevel = normalizePermissionLevel(params.permissionLevel) ?? "default";
+          if (!projectId || !sessionId || !threadId || !turnId || !itemId || !patchId || (!patch && !fileChanges)) {
+            this.sendRes(id, false, undefined, {
+              code: "BAD_REQUEST",
+              message: "runtime.fs.applyPatch requires project/session/thread/turn/item ids and patch or fileChanges",
+            });
+            return;
+          }
+          const result = await this.runtimeFsApplyPatch({
+            projectId,
+            sessionId,
+            threadId,
+            turnId,
+            itemId,
+            patchId,
+            patch: patch ?? undefined,
+            fileChanges: fileChanges ?? undefined,
+            permissionLevel,
+          });
+          this.sendRes(id, true, result);
+          return;
+        }
         case "slurm.submit": {
           const projectId = String(params.projectId ?? "");
           const runId = String(params.runId ?? "");
           const job = params.job ?? {};
           const staging = params.staging ?? { uploads: [] };
           const permissionLevel = normalizePermissionLevel(params.permissionLevel) ?? "default";
-          const result = await this.slurmSubmit({ projectId, runId, job, staging, permissionLevel });
+          const policyOverride = normalizeRuntimePolicy(params.policy);
+          const result = await this.slurmSubmit({ projectId, runId, job, staging, permissionLevel, policyOverride });
           this.sendRes(id, true, result);
           return;
         }
@@ -542,7 +791,415 @@ export class BridgeService {
     }
   }
 
+  private runtimePolicyFor(permissionLevel: PermissionLevel, override?: Partial<RuntimePolicy> | null): RuntimePolicy {
+    const base = permissionLevel === "full" ? FULL_RUNTIME_POLICY : DEFAULT_RUNTIME_POLICY;
+    if (!override) return base;
+    return {
+      exec: {
+        ...base.exec,
+        ...(override.exec ?? {}),
+      },
+      slurm: {
+        ...base.slurm,
+        ...(override.slurm ?? {}),
+      },
+    };
+  }
+
+  private async resolveProjectPath(projectId: string, inputPath: string, opts?: { forWrite?: boolean }): Promise<string> {
+    const projectRoot = path.resolve(this.projectRoot(projectId));
+    const canonicalProjectRoot = await realpath(projectRoot).catch(() => projectRoot);
+    const normalizedInput = inputPath.trim();
+    if (!normalizedInput) {
+      throw new Error("path is required");
+    }
+
+    const candidate = path.isAbsolute(normalizedInput)
+      ? path.resolve(normalizedInput)
+      : path.resolve(projectRoot, normalizedInput);
+
+    const guardRoot = (resolvedBase: string) => {
+      if (!resolvedBase.startsWith(canonicalProjectRoot + path.sep) && resolvedBase !== canonicalProjectRoot) {
+        throw new Error(`Path outside project workspace: ${inputPath}`);
+      }
+    };
+
+    const nearestExistingRealPath = async (targetPath: string): Promise<string> => {
+      let cursor = path.resolve(targetPath);
+      while (true) {
+        try {
+          return await realpath(cursor);
+        } catch (err: any) {
+          if (err?.code !== "ENOENT") {
+            throw err;
+          }
+          const parent = path.dirname(cursor);
+          if (parent === cursor) {
+            return cursor;
+          }
+          cursor = parent;
+        }
+      }
+    };
+
+    if (opts?.forWrite) {
+      const parentRealPath = await nearestExistingRealPath(path.dirname(candidate));
+      guardRoot(parentRealPath);
+      try {
+        const st = await lstat(candidate);
+        if (st.isSymbolicLink()) {
+          const resolvedTarget = await realpath(candidate);
+          guardRoot(resolvedTarget);
+          return candidate;
+        }
+      } catch (err: any) {
+        if (err?.code !== "ENOENT") {
+          throw err;
+        }
+      }
+      return candidate;
+    }
+
+    const resolved = await realpath(candidate);
+    guardRoot(resolved);
+    return resolved;
+  }
+
+  private assertRuntimePathPolicy(projectId: string, absPath: string, permissionLevel: PermissionLevel) {
+    this.assertAllowedProjectPath(projectId, absPath);
+    const rel = path.relative(this.projectRoot(projectId), absPath).replaceAll(path.sep, "/");
+    if (permissionLevel === "default" && (rel === ".git" || rel.startsWith(".git/"))) {
+      throw new Error("Default permission does not allow writes under .git/");
+    }
+  }
+
+  private assertRuntimeCommandPolicy(command: string[], permissionLevel: PermissionLevel) {
+    const bin = String(command[0] ?? "").trim();
+    if (!bin) {
+      throw new Error("command is required");
+    }
+
+    const base = path.basename(bin);
+    if (DANGEROUS_COMMANDS.has(base)) {
+      throw new Error(`Command blocked by policy: ${base}`);
+    }
+
+    if (permissionLevel === "full") {
+      return;
+    }
+
+    if (!DEFAULT_ALLOWED_BINARIES.has(base)) {
+      throw new Error(`Command not allowed in default permission: ${base}`);
+    }
+
+    if (SHELL_BINARIES.has(base)) {
+      const hasShellCommand = command.some((arg) => arg === "-c");
+      if (!hasShellCommand) return;
+      const script = command[command.indexOf("-c") + 1] ?? "";
+      if (/[|;&><]/.test(script)) {
+        throw new Error("Shell pipelines/redirection are not allowed in default permission");
+      }
+    }
+  }
+
+  private async runtimeExecStart(opts: {
+    projectId: string;
+    sessionId: string;
+    threadId: string;
+    turnId: string;
+    itemId: string;
+    executionId: string;
+    command: string[];
+    cwd?: string;
+    env?: Record<string, string>;
+    timeoutMs?: number;
+    permissionLevel: PermissionLevel;
+    policyOverride?: Partial<RuntimePolicy> | null;
+  }) {
+    this.assertRuntimeCommandPolicy(opts.command, opts.permissionLevel);
+
+    const policy = this.runtimePolicyFor(opts.permissionLevel, opts.policyOverride);
+    const timeoutMs = Math.min(opts.timeoutMs ?? policy.exec.maxTimeoutMs, policy.exec.maxTimeoutMs);
+    const projectRoot = path.resolve(this.projectRoot(opts.projectId));
+    const cwd = await this.resolveProjectPath(opts.projectId, opts.cwd ?? projectRoot, { forWrite: true });
+    this.assertAllowedProjectPath(opts.projectId, cwd);
+
+    const startedAt = Date.now();
+    this.sendEvent("runtime.exec.started", {
+      projectId: opts.projectId,
+      sessionId: opts.sessionId,
+      threadId: opts.threadId,
+      turnId: opts.turnId,
+      itemId: opts.itemId,
+      executionId: opts.executionId,
+      command: opts.command,
+      cwd,
+      permissionLevel: opts.permissionLevel,
+      ts: new Date(startedAt).toISOString(),
+    });
+
+    const child = spawn(opts.command[0]!, opts.command.slice(1), {
+      cwd,
+      env: { ...process.env, ...(opts.env ?? {}) },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    const procState = { child, startedAtMs: startedAt, timedOut: false };
+    this.runtimeExecActive.set(opts.executionId, procState);
+
+    child.stdout?.on("data", (chunk: Buffer | string) => {
+      const delta = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+      if (!delta) return;
+      stdout += delta;
+      this.sendEvent("runtime.exec.outputDelta", {
+        projectId: opts.projectId,
+        sessionId: opts.sessionId,
+        threadId: opts.threadId,
+        turnId: opts.turnId,
+        itemId: opts.itemId,
+        executionId: opts.executionId,
+        stream: "stdout",
+        delta,
+        ts: new Date().toISOString(),
+      });
+    });
+
+    child.stderr?.on("data", (chunk: Buffer | string) => {
+      const delta = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+      if (!delta) return;
+      stderr += delta;
+      this.sendEvent("runtime.exec.outputDelta", {
+        projectId: opts.projectId,
+        sessionId: opts.sessionId,
+        threadId: opts.threadId,
+        turnId: opts.turnId,
+        itemId: opts.itemId,
+        executionId: opts.executionId,
+        stream: "stderr",
+        delta,
+        ts: new Date().toISOString(),
+      });
+    });
+
+    const timeout = setTimeout(() => {
+      procState.timedOut = true;
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+    }, timeoutMs);
+    timeout.unref();
+
+    const { exitCode } = await new Promise<{ exitCode: number | null }>((resolve) => {
+      child.on("close", (code) => resolve({ exitCode: typeof code === "number" ? code : null }));
+      child.on("error", () => resolve({ exitCode: null }));
+    });
+
+    clearTimeout(timeout);
+    this.runtimeExecActive.delete(opts.executionId);
+
+    const durationMs = Math.max(0, Date.now() - startedAt);
+    const ok = !procState.timedOut && exitCode === 0;
+    const error = procState.timedOut ? "Command timed out" : ok ? null : `Command exited with code ${String(exitCode ?? "unknown")}`;
+
+    this.sendEvent("runtime.exec.completed", {
+      projectId: opts.projectId,
+      sessionId: opts.sessionId,
+      threadId: opts.threadId,
+      turnId: opts.turnId,
+      itemId: opts.itemId,
+      executionId: opts.executionId,
+      ok,
+      exitCode,
+      durationMs,
+      ...(error ? { error } : {}),
+      ts: new Date().toISOString(),
+    });
+
+    return {
+      ok,
+      executionId: opts.executionId,
+      exitCode,
+      durationMs,
+      stdout,
+      stderr,
+      ...(error ? { error } : {}),
+      completedAt: new Date().toISOString(),
+    };
+  }
+
+  private async runtimeExecCancel(executionId: string): Promise<boolean> {
+    const active = this.runtimeExecActive.get(executionId);
+    if (!active) return false;
+    try {
+      active.child.kill("SIGTERM");
+    } catch {
+      return false;
+    }
+    return true;
+  }
+
+  private async runtimeFsStat(projectId: string, inputPath: string) {
+    const abs = await this.resolveProjectPath(projectId, inputPath);
+    const st = await stat(abs);
+    return {
+      path: abs,
+      exists: true,
+      type: st.isDirectory() ? "dir" : "file",
+      sizeBytes: st.size,
+      modifiedAt: st.mtime.toISOString(),
+    };
+  }
+
+  private async runtimeFsRead(projectId: string, inputPath: string, offset: number, length: number, encoding: string) {
+    const abs = await this.resolveProjectPath(projectId, inputPath);
+    const fh = await open(abs, "r");
+    try {
+      const st = await fh.stat();
+      const buf = Buffer.alloc(Math.max(0, length));
+      const { bytesRead } = await fh.read(buf, 0, buf.length, offset);
+      const sliced = buf.subarray(0, bytesRead);
+      const data = encoding === "base64" ? sliced.toString("base64") : sliced.toString("utf8");
+      return {
+        path: abs,
+        data,
+        eof: offset + bytesRead >= st.size,
+      };
+    } finally {
+      await fh.close();
+    }
+  }
+
+  private async runtimeFsWrite(projectId: string, inputPath: string, data: string, encoding: string, permissionLevel: PermissionLevel) {
+    const abs = await this.resolveProjectPath(projectId, inputPath, { forWrite: true });
+    this.assertRuntimePathPolicy(projectId, abs, permissionLevel);
+    await mkdir(path.dirname(abs), { recursive: true });
+    if (encoding === "base64") {
+      await writeFile(abs, Buffer.from(data, "base64"));
+    } else {
+      await writeFile(abs, data, "utf8");
+    }
+    const st = await stat(abs);
+    return {
+      ok: true,
+      path: abs,
+      sizeBytes: st.size,
+      modifiedAt: st.mtime.toISOString(),
+    };
+  }
+
+  private async runtimeFsDiff(projectId: string, paths: string[]) {
+    const projectRoot = path.resolve(this.projectRoot(projectId));
+    await this.ensureProjectWorkspaceDirs(projectRoot);
+    const args = ["-C", projectRoot, "diff", "--no-color", "--"];
+    if (paths.length > 0) {
+      for (const entry of paths) {
+        const abs = await this.resolveProjectPath(projectId, entry, { forWrite: true });
+        args.push(path.relative(projectRoot, abs).replaceAll(path.sep, "/"));
+      }
+    }
+    try {
+      const { stdout } = await execFileAsync("git", args);
+      return { diff: String(stdout ?? "") };
+    } catch {
+      return { diff: "" };
+    }
+  }
+
+  private async runtimeFsApplyPatch(opts: {
+    projectId: string;
+    sessionId: string;
+    threadId: string;
+    turnId: string;
+    itemId: string;
+    patchId: string;
+    patch?: string;
+    fileChanges?: Record<string, unknown>;
+    permissionLevel: PermissionLevel;
+  }) {
+    const projectRoot = path.resolve(this.projectRoot(opts.projectId));
+    await this.ensureProjectWorkspaceDirs(projectRoot);
+
+    const patchText = opts.patch ?? renderPatchFromFileChanges(opts.fileChanges ?? {});
+    if (!patchText.trim()) {
+      throw new Error("Patch is empty");
+    }
+
+    const changedPaths = extractChangedPathsFromPatch(patchText);
+    for (const relPath of changedPaths) {
+      const abs = await this.resolveProjectPath(opts.projectId, relPath, { forWrite: true });
+      this.assertRuntimePathPolicy(opts.projectId, abs, opts.permissionLevel);
+    }
+
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "labos-patch-"));
+    const patchPath = path.join(tmpDir, `${opts.patchId}.patch`);
+    await writeFile(patchPath, patchText, "utf8");
+
+    let applied = false;
+    let error: string | null = null;
+    try {
+      await execFileAsync("git", ["-C", projectRoot, "apply", "--whitespace=nowarn", patchPath]);
+      applied = true;
+    } catch (err: any) {
+      error = String(err?.stderr ?? err?.message ?? "git apply failed");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+
+    const diffRes = await this.runtimeFsDiff(opts.projectId, changedPaths);
+    const diffText = String(diffRes.diff ?? "") || patchText;
+
+    if (changedPaths.length > 0) {
+      for (const changedPath of changedPaths) {
+        const perPathDiff = diffForSinglePath(diffText, changedPath);
+        this.sendEvent("runtime.fs.changed", {
+          projectId: opts.projectId,
+          sessionId: opts.sessionId,
+          threadId: opts.threadId,
+          turnId: opts.turnId,
+          itemId: opts.itemId,
+          patchId: opts.patchId,
+          changeId: `${opts.patchId}:${changedPath}`,
+          path: changedPath,
+          kind: "update",
+          ...(perPathDiff ? { diff: perPathDiff } : {}),
+          ts: new Date().toISOString(),
+        });
+      }
+    }
+
+    this.sendEvent("runtime.fs.patchCompleted", {
+      projectId: opts.projectId,
+      sessionId: opts.sessionId,
+      threadId: opts.threadId,
+      turnId: opts.turnId,
+      itemId: opts.itemId,
+      patchId: opts.patchId,
+      applied,
+      changedPaths,
+      ...(diffText ? { diff: diffText } : {}),
+      ...(error ? { error } : {}),
+      ts: new Date().toISOString(),
+    });
+
+    return {
+      ok: applied,
+      applied,
+      patchId: opts.patchId,
+      changedPaths,
+      diff: diffText,
+      ...(error ? { error } : {}),
+      completedAt: new Date().toISOString(),
+    };
+  }
+
   private projectRoot(projectId: string) {
+    if (!/^[A-Za-z0-9._-]+$/.test(projectId)) {
+      throw new Error(`Invalid projectId: ${projectId}`);
+    }
     return path.join(this.cfg.workspaceRoot, "projects", projectId);
   }
 
@@ -554,12 +1211,27 @@ export class BridgeService {
     await mkdir(path.join(projectRoot, "logs"), { recursive: true });
   }
 
-  private async slurmSubmit(opts: { projectId: string; runId: string; job: any; staging: any; permissionLevel: PermissionLevel }) {
+  private async slurmSubmit(opts: {
+    projectId: string;
+    runId: string;
+    job: any;
+    staging: any;
+    permissionLevel: PermissionLevel;
+    policyOverride?: Partial<RuntimePolicy> | null;
+  }) {
+    const policy = this.runtimePolicyFor(opts.permissionLevel, opts.policyOverride);
     const hasSlurm = await this.hasCommand("sbatch");
     if (!hasSlurm) {
       const fakeId = `SIM-${Date.now()}`;
       this.sendEvent("slurm.job.updated", { projectId: opts.projectId, runId: opts.runId, jobId: fakeId, state: "COMPLETED", ts: new Date().toISOString() });
       return { jobId: fakeId, submittedAt: new Date().toISOString() };
+    }
+
+    const user = await this.getSlurmUser();
+    const runningCount = (await this.squeueJobIds({ user, state: "R" })).length;
+    const pendingCount = (await this.squeueJobIds({ user, state: "PD" })).length;
+    if (runningCount + pendingCount >= policy.slurm.maxConcurrent) {
+      throw new Error(`Slurm concurrency limit exceeded (${policy.slurm.maxConcurrent})`);
     }
 
     const projectRoot = this.projectRoot(opts.projectId);
@@ -594,13 +1266,17 @@ export class BridgeService {
     if (partition) lines.push(`#SBATCH --partition=${shellEscape(partition)}`);
     if (account) lines.push(`#SBATCH --account=${shellEscape(account)}`);
     if (qos) lines.push(`#SBATCH --qos=${shellEscape(qos)}`);
-    const timeMins = Number(opts.job?.resources?.timeLimitMinutes ?? this.cfg.defaults.timeLimitMinutes ?? 10);
-    lines.push(`#SBATCH --time=${Math.max(1, Math.floor(timeMins))}`);
-    const cpus = Number(opts.job?.resources?.cpus ?? this.cfg.defaults.cpus ?? 1);
-    lines.push(`#SBATCH --cpus-per-task=${Math.max(1, Math.floor(cpus))}`);
-    const memMB = Number(opts.job?.resources?.memMB ?? this.cfg.defaults.memMB ?? 512);
-    lines.push(`#SBATCH --mem=${Math.max(1, Math.floor(memMB))}M`);
-    const gpus = Number(opts.job?.resources?.gpus ?? this.cfg.defaults.gpus ?? 0);
+    const requestedTimeMins = Number(opts.job?.resources?.timeLimitMinutes ?? this.cfg.defaults.timeLimitMinutes ?? 10);
+    const timeMins = Math.min(policy.slurm.maxTimeMinutes, Math.max(1, Math.floor(requestedTimeMins)));
+    lines.push(`#SBATCH --time=${timeMins}`);
+    const requestedCpus = Number(opts.job?.resources?.cpus ?? this.cfg.defaults.cpus ?? 1);
+    const cpus = Math.min(policy.slurm.maxCpus, Math.max(1, Math.floor(requestedCpus)));
+    lines.push(`#SBATCH --cpus-per-task=${cpus}`);
+    const requestedMemMb = Number(opts.job?.resources?.memMB ?? this.cfg.defaults.memMB ?? 512);
+    const memMB = Math.min(policy.slurm.maxMemMB, Math.max(1, Math.floor(requestedMemMb)));
+    lines.push(`#SBATCH --mem=${memMB}M`);
+    const requestedGpus = Number(opts.job?.resources?.gpus ?? this.cfg.defaults.gpus ?? 0);
+    const gpus = Math.min(policy.slurm.maxGpus, Math.max(0, Math.floor(requestedGpus)));
     if (gpus > 0) lines.push(`#SBATCH --gres=gpu:${Math.floor(gpus)}`);
     lines.push(`#SBATCH --output=${shellEscape(stdoutPathTemplate)}`);
     lines.push(`#SBATCH --error=${shellEscape(stderrPathTemplate)}`);
@@ -817,6 +1493,75 @@ export class BridgeService {
   }
 }
 
+function renderPatchFromFileChanges(fileChanges: Record<string, unknown>): string {
+  const chunks: string[] = [];
+  for (const [filePath, rawChange] of Object.entries(fileChanges)) {
+    if (!rawChange || typeof rawChange !== "object" || Array.isArray(rawChange)) continue;
+    const change = rawChange as Record<string, unknown>;
+    const type = String(change.type ?? "").trim().toLowerCase();
+    if (!filePath.trim() || !type) continue;
+
+    if (type === "update") {
+      const unified = String(change.unified_diff ?? "");
+      if (unified.trim()) {
+        chunks.push(unified.endsWith("\n") ? unified : `${unified}\n`);
+      }
+      continue;
+    }
+
+    const content = String(change.content ?? "");
+    const lines = content.split(/\r?\n/);
+    if (type === "add") {
+      chunks.push(`diff --git a/${filePath} b/${filePath}`);
+      chunks.push("new file mode 100644");
+      chunks.push("--- /dev/null");
+      chunks.push(`+++ b/${filePath}`);
+      chunks.push(`@@ -0,0 +1,${lines.length} @@`);
+      for (const line of lines) chunks.push(`+${line}`);
+      continue;
+    }
+
+    if (type === "delete") {
+      chunks.push(`diff --git a/${filePath} b/${filePath}`);
+      chunks.push("deleted file mode 100644");
+      chunks.push(`--- a/${filePath}`);
+      chunks.push("+++ /dev/null");
+      chunks.push(`@@ -1,${lines.length} +0,0 @@`);
+      for (const line of lines) chunks.push(`-${line}`);
+      continue;
+    }
+  }
+
+  return chunks.join("\n").trim() ? `${chunks.join("\n")}\n` : "";
+}
+
+function extractChangedPathsFromPatch(patchText: string): string[] {
+  const out = new Set<string>();
+  const lines = patchText.split(/\r?\n/);
+  for (const line of lines) {
+    if (line.startsWith("+++ b/")) {
+      const p = line.slice("+++ b/".length).trim();
+      if (p && p !== "/dev/null") out.add(p);
+      continue;
+    }
+    if (line.startsWith("--- a/")) {
+      const p = line.slice("--- a/".length).trim();
+      if (p && p !== "/dev/null") out.add(p);
+      continue;
+    }
+  }
+  return Array.from(out);
+}
+
+function diffForSinglePath(fullDiff: string, filePath: string): string {
+  if (!fullDiff.trim()) return "";
+  const normalized = filePath.replaceAll("\\", "/");
+  const sections = fullDiff.split(/^diff --git /m);
+  const matches = sections.filter((section) => section.includes(` a/${normalized} `) || section.includes(` b/${normalized}`));
+  if (matches.length === 0) return "";
+  return matches.map((section) => (section.startsWith("diff --git ") ? section : `diff --git ${section}`)).join("\n");
+}
+
 function shellEscape(value: string) {
   if (value === "") return "''";
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
@@ -833,6 +1578,41 @@ function normalizePermissionLevel(v: unknown): PermissionLevel | null {
   if (raw === "default") return "default";
   if (raw === "full") return "full";
   return null;
+}
+
+function normalizeRuntimePolicy(raw: unknown): Partial<RuntimePolicy> | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+
+  const maybeExec = obj.exec && typeof obj.exec === "object" && !Array.isArray(obj.exec)
+    ? (obj.exec as Record<string, unknown>)
+    : null;
+  const maybeSlurm = obj.slurm && typeof obj.slurm === "object" && !Array.isArray(obj.slurm)
+    ? (obj.slurm as Record<string, unknown>)
+    : null;
+
+  const exec: Partial<RuntimeExecPolicy> = {};
+  if (maybeExec) {
+    if (Number.isFinite(Number(maybeExec.maxTimeoutMs))) exec.maxTimeoutMs = Math.max(1, Math.floor(Number(maybeExec.maxTimeoutMs)));
+    if (Number.isFinite(Number(maybeExec.maxConcurrent))) exec.maxConcurrent = Math.max(1, Math.floor(Number(maybeExec.maxConcurrent)));
+  }
+
+  const slurm: Partial<RuntimeSlurmPolicy> = {};
+  if (maybeSlurm) {
+    if (Number.isFinite(Number(maybeSlurm.maxTimeMinutes))) slurm.maxTimeMinutes = Math.max(1, Math.floor(Number(maybeSlurm.maxTimeMinutes)));
+    if (Number.isFinite(Number(maybeSlurm.maxCpus))) slurm.maxCpus = Math.max(1, Math.floor(Number(maybeSlurm.maxCpus)));
+    if (Number.isFinite(Number(maybeSlurm.maxMemMB))) slurm.maxMemMB = Math.max(1, Math.floor(Number(maybeSlurm.maxMemMB)));
+    if (Number.isFinite(Number(maybeSlurm.maxGpus))) slurm.maxGpus = Math.max(0, Math.floor(Number(maybeSlurm.maxGpus)));
+    if (Number.isFinite(Number(maybeSlurm.maxConcurrent))) slurm.maxConcurrent = Math.max(1, Math.floor(Number(maybeSlurm.maxConcurrent)));
+  }
+
+  const hasExec = Object.keys(exec).length > 0;
+  const hasSlurm = Object.keys(slurm).length > 0;
+  if (!hasExec && !hasSlurm) return null;
+  return {
+    ...(hasExec ? { exec } : {}),
+    ...(hasSlurm ? { slurm } : {}),
+  };
 }
 
 function expandSlurmPathTemplate(template: string, jobId: string) {

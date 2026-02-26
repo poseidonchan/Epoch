@@ -19,6 +19,10 @@ test("exports a stable gateway.json", async () => {
   assert.ok(parsed.operatorMethods.includes("projects.list"));
   assert.ok(parsed.operatorMethods.includes("projects.update"));
   assert.ok(parsed.nodeMethods.includes("slurm.submit"));
+  assert.ok(parsed.nodeMethods.includes("runtime.exec.start"));
+  assert.ok(parsed.nodeMethods.includes("runtime.fs.applyPatch"));
   assert.ok(parsed.eventNames.includes("connect.challenge"));
+  assert.ok(parsed.eventNames.includes("runtime.exec.outputDelta"));
+  assert.ok(parsed.eventNames.includes("runtime.fs.patchCompleted"));
   assert.ok(parsed.errorCodes.includes("INTERNAL"));
 });

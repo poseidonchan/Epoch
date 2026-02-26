@@ -32,6 +32,13 @@ export const nodeMethods = [
   "fs.list",
   "fs.readRange",
   "shell.exec",
+  "runtime.exec.start",
+  "runtime.exec.cancel",
+  "runtime.fs.stat",
+  "runtime.fs.read",
+  "runtime.fs.write",
+  "runtime.fs.diff",
+  "runtime.fs.applyPatch",
   "artifact.scan",
   "logs.tail",
   "hpc.prefs.set",
@@ -58,6 +65,11 @@ export const gatewayEventNames = [
   "artifacts.updated",
   "node.heartbeat",
   "slurm.job.updated",
+  "runtime.exec.started",
+  "runtime.exec.outputDelta",
+  "runtime.exec.completed",
+  "runtime.fs.changed",
+  "runtime.fs.patchCompleted",
 ] as const;
 
 export type GatewayEventName = (typeof gatewayEventNames)[number];
