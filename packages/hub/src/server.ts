@@ -138,6 +138,8 @@ type PendingApproval = {
   timeout: NodeJS.Timeout;
 };
 
+type NodeEventSubscriber = (event: string, payload: Record<string, unknown>) => void;
+
 type HpcTres = {
   cpu?: number;
   memMB?: number;
@@ -269,6 +271,24 @@ export async function startHub(opts: HubStartOptions): Promise<HubHandle> {
       config: state.config,
       stateDir: state.stateDir,
       pool: state.pool,
+      runtimeBridge: {
+        isNodeConnected: () => Boolean(state.node),
+        listNodeCommands: () =>
+          Array.isArray(state.node?.ctx.commands) ? state.node!.ctx.commands.map((entry) => String(entry)) : [],
+        callNode: async (method, params) => {
+          const response = await callNode(state, method, params);
+          if (!response || typeof response !== "object" || Array.isArray(response)) return {};
+          return response as Record<string, unknown>;
+        },
+        subscribeNodeEvents: (listener) => {
+          state.nodeEventSubscribers.add(listener as NodeEventSubscriber);
+          return () => {
+            state.nodeEventSubscribers.delete(listener as NodeEventSubscriber);
+          };
+        },
+        getSessionPermissionLevel: async (projectId, sessionId) =>
+          await getSessionPermissionLevel(state, projectId, sessionId).catch(() => "default"),
+      },
     });
   });
 
@@ -331,6 +351,7 @@ function createHubState(opts: HubStartOptions) {
     hpcPrefs: null as HpcPrefs | null,
     seq: 0,
     pendingNodeRequests: new Map<string, PendingNodeRequest>(),
+    nodeEventSubscribers: new Set<NodeEventSubscriber>(),
     pendingApprovals: new Map<string, PendingApproval>(),
     sessionLane: new Map<string, Promise<void>>(),
     oauthRefreshLocks: new Map<string, Promise<void>>(),
@@ -940,11 +961,31 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
           sendResError(ws, id, "BAD_REQUEST", "Missing projectId/sessionId or invalid level");
           return;
         }
+        const previousLevel = await getSessionPermissionLevel(state, projectId, sessionId).catch(() => "default");
         const ok = await setSessionPermissionLevel(state, projectId, sessionId, level, ctx.deviceId);
         if (!ok) {
           sendResError(ws, id, "NOT_FOUND", "Session not found");
           return;
         }
+        await insertSessionPermissionEvent(state, {
+          id: uuidv4(),
+          projectId,
+          sessionId,
+          level,
+          previousLevel,
+          changedByDeviceId: ctx.deviceId,
+        }).catch(() => {
+          // best effort audit trail
+        });
+        await appendPermissionChangeCodexItem(state, {
+          projectId,
+          sessionId,
+          previousLevel,
+          level,
+          changedByDeviceId: ctx.deviceId,
+        }).catch(() => {
+          // best effort replay event
+        });
         sendResOk(ws, id, { ok: true, level });
         broadcastEvent(state, "sessions.permission.updated", { projectId, sessionId, level, updatedAt: new Date().toISOString() });
         return;
@@ -1558,6 +1599,231 @@ async function getSessionPermissionLevel(state: HubState, projectId: string, ses
   const res = await state.pool.query<any>("SELECT permission_level FROM sessions WHERE project_id=$1 AND id=$2", [projectId, sessionId]);
   const raw = res.rows[0]?.permission_level;
   return normalizePermissionLevel(raw) ?? "default";
+}
+
+type RuntimePolicy = {
+  exec: {
+    maxTimeoutMs: number;
+    maxConcurrent: number;
+  };
+  slurm: {
+    maxTimeMinutes: number;
+    maxCpus: number;
+    maxMemMB: number;
+    maxGpus: number;
+    maxConcurrent: number;
+  };
+};
+
+const DEFAULT_RUNTIME_POLICY_BY_LEVEL: Record<"default" | "full", RuntimePolicy> = {
+  default: {
+    exec: {
+      maxTimeoutMs: 15 * 60_000,
+      maxConcurrent: 2,
+    },
+    slurm: {
+      maxTimeMinutes: 60,
+      maxCpus: 4,
+      maxMemMB: 16 * 1024,
+      maxGpus: 1,
+      maxConcurrent: 2,
+    },
+  },
+  full: {
+    exec: {
+      maxTimeoutMs: 2 * 60 * 60_000,
+      maxConcurrent: 8,
+    },
+    slurm: {
+      maxTimeMinutes: 24 * 60,
+      maxCpus: 64,
+      maxMemMB: 256 * 1024,
+      maxGpus: 8,
+      maxConcurrent: 8,
+    },
+  },
+};
+
+async function getProjectRuntimePolicy(
+  state: HubState,
+  projectId: string,
+  permissionLevel: "default" | "full"
+): Promise<RuntimePolicy> {
+  const base = DEFAULT_RUNTIME_POLICY_BY_LEVEL[permissionLevel];
+  const res = await state.pool.query<any>(
+    `SELECT codex_sandbox_json
+     FROM projects
+     WHERE id=$1
+     LIMIT 1`,
+    [projectId]
+  );
+  const rawSandbox = res.rows[0]?.codex_sandbox_json;
+  const sandbox = safeJsonObject(rawSandbox);
+  const runtimePolicyRoot =
+    sandbox && typeof sandbox.runtimePolicy === "object" && sandbox.runtimePolicy && !Array.isArray(sandbox.runtimePolicy)
+      ? (sandbox.runtimePolicy as Record<string, unknown>)
+      : null;
+  if (!runtimePolicyRoot) return base;
+
+  const byLevelRaw =
+    runtimePolicyRoot[permissionLevel] && typeof runtimePolicyRoot[permissionLevel] === "object" && !Array.isArray(runtimePolicyRoot[permissionLevel])
+      ? (runtimePolicyRoot[permissionLevel] as Record<string, unknown>)
+      : runtimePolicyRoot;
+
+  const execRaw =
+    byLevelRaw.exec && typeof byLevelRaw.exec === "object" && !Array.isArray(byLevelRaw.exec)
+      ? (byLevelRaw.exec as Record<string, unknown>)
+      : null;
+  const slurmRaw =
+    byLevelRaw.slurm && typeof byLevelRaw.slurm === "object" && !Array.isArray(byLevelRaw.slurm)
+      ? (byLevelRaw.slurm as Record<string, unknown>)
+      : null;
+
+  const normalizePositive = (value: unknown) => {
+    const parsed = typeof value === "number" ? value : Number(value);
+    if (!Number.isFinite(parsed)) return null;
+    const next = Math.floor(parsed);
+    return next > 0 ? next : null;
+  };
+  const normalizeNonNegative = (value: unknown) => {
+    const parsed = typeof value === "number" ? value : Number(value);
+    if (!Number.isFinite(parsed)) return null;
+    const next = Math.floor(parsed);
+    return next >= 0 ? next : null;
+  };
+
+  return {
+    exec: {
+      maxTimeoutMs: normalizePositive(execRaw?.maxTimeoutMs) ?? base.exec.maxTimeoutMs,
+      maxConcurrent: normalizePositive(execRaw?.maxConcurrent) ?? base.exec.maxConcurrent,
+    },
+    slurm: {
+      maxTimeMinutes: normalizePositive(slurmRaw?.maxTimeMinutes) ?? base.slurm.maxTimeMinutes,
+      maxCpus: normalizePositive(slurmRaw?.maxCpus) ?? base.slurm.maxCpus,
+      maxMemMB: normalizePositive(slurmRaw?.maxMemMB) ?? base.slurm.maxMemMB,
+      maxGpus: normalizeNonNegative(slurmRaw?.maxGpus) ?? base.slurm.maxGpus,
+      maxConcurrent: normalizePositive(slurmRaw?.maxConcurrent) ?? base.slurm.maxConcurrent,
+    },
+  };
+}
+
+async function insertSessionPermissionEvent(
+  state: HubState,
+  args: {
+    id: string;
+    projectId: string;
+    sessionId: string;
+    level: "default" | "full";
+    previousLevel: "default" | "full";
+    changedByDeviceId: string;
+  }
+) {
+  await state.pool.query(
+    `INSERT INTO session_permission_events (
+       id, project_id, session_id, level, previous_level, changed_by_device_id, created_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [args.id, args.projectId, args.sessionId, args.level, args.previousLevel, args.changedByDeviceId, new Date().toISOString()]
+  );
+}
+
+async function appendPermissionChangeCodexItem(
+  state: HubState,
+  args: {
+    projectId: string;
+    sessionId: string;
+    previousLevel: "default" | "full";
+    level: "default" | "full";
+    changedByDeviceId: string;
+  }
+) {
+  const sessionRes = await state.pool.query<any>(
+    `SELECT codex_thread_id
+     FROM sessions
+     WHERE project_id=$1 AND id=$2
+     LIMIT 1`,
+    [args.projectId, args.sessionId]
+  );
+  const threadId = normalizeOptionalString(sessionRes.rows[0]?.codex_thread_id);
+  if (!threadId) return;
+
+  const threadRes = await state.pool.query<any>("SELECT id FROM threads WHERE id=$1 LIMIT 1", [threadId]);
+  if (threadRes.rows.length === 0) return;
+
+  const nowIso = new Date().toISOString();
+  const nowSec = Math.floor(Date.now() / 1000);
+  const suffix = `permission_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+  const turnRawId = suffix;
+  const itemRawId = `${suffix}_item`;
+  const turnId = `${threadId}::turn::${turnRawId}`;
+  const itemId = `${threadId}::item::${itemRawId}`;
+  const text = `Permission changed: ${args.previousLevel} -> ${args.level}`;
+
+  const itemPayload = {
+    type: "permissionChange",
+    id: itemRawId,
+    previousLevel: args.previousLevel,
+    level: args.level,
+    changedByDeviceId: args.changedByDeviceId,
+    changedAt: nowIso,
+    text,
+  };
+
+  await state.pool.query(
+    `INSERT INTO turns (id, thread_id, status, error_json, created_at, completed_at)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [turnId, threadId, "completed", null, nowSec, nowSec]
+  );
+
+  await state.pool.query(
+    `INSERT INTO items (id, thread_id, turn_id, type, payload_json, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [itemId, threadId, turnId, "permissionChange", JSON.stringify(itemPayload), nowSec, nowSec]
+  );
+
+  const eventPayloads = [
+    {
+      method: "turn/started",
+      params: {
+        threadId,
+        turn: {
+          id: turnRawId,
+          items: [],
+          status: "inProgress",
+          error: null,
+        },
+      },
+    },
+    {
+      method: "item/completed",
+      params: {
+        threadId,
+        turnId: turnRawId,
+        item: itemPayload,
+      },
+    },
+    {
+      method: "turn/completed",
+      params: {
+        threadId,
+        turn: {
+          id: turnRawId,
+          items: [],
+          status: "completed",
+          error: null,
+        },
+      },
+    },
+  ];
+
+  for (const event of eventPayloads) {
+    await state.pool.query(
+      `INSERT INTO thread_events (thread_id, event_json, created_at)
+       VALUES ($1,$2,$3)`,
+      [threadId, JSON.stringify(event), nowSec]
+    );
+  }
+
+  await state.pool.query(`UPDATE threads SET preview=$1, updated_at=$2 WHERE id=$3`, [preview(text), nowSec, threadId]);
 }
 
 async function getSessionContextStats(state: HubState, projectId: string, sessionId: string) {
@@ -3058,6 +3324,7 @@ async function executePlan(
   const node = state.node;
   const workspaceRoot = node?.ctx.permissions?.workspaceRoot as string | undefined;
   const permissionLevel = await getSessionPermissionLevel(state, opts.projectId, opts.sessionId).catch(() => "default");
+  const runtimePolicy = await getProjectRuntimePolicy(state, opts.projectId, permissionLevel).catch(() => null);
 
   if (node && workspaceRoot) {
     const prefs = state.hpcPrefs;
@@ -3107,6 +3374,7 @@ async function executePlan(
           command,
           cwd: workdir,
           timeoutMs: 10 * 60 * 1000,
+          ...(runtimePolicy ? { policy: runtimePolicy } : {}),
           permissionLevel,
         });
 
@@ -3227,6 +3495,7 @@ async function executePlan(
         runId: opts.runId,
         job: jobSpec,
         staging: { uploads: [] },
+        ...(runtimePolicy ? { policy: runtimePolicy } : {}),
         permissionLevel,
       });
 
@@ -4056,6 +4325,10 @@ async function repairMessagesFromJsonl(state: HubState) {
 }
 
 async function handleNodeEvent(state: HubState, event: string, payload: any) {
+  const normalizedPayload =
+    payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, unknown>) : {};
+  fanoutNodeEvent(state, event, normalizedPayload);
+
   switch (event) {
     case "node.heartbeat": {
       state.resources.computeConnected = true;
@@ -4134,6 +4407,17 @@ async function handleNodeEvent(state: HubState, event: string, payload: any) {
     }
     default:
       return;
+  }
+}
+
+function fanoutNodeEvent(state: HubState, event: string, payload: Record<string, unknown>) {
+  if (state.nodeEventSubscribers.size === 0) return;
+  for (const subscriber of state.nodeEventSubscribers) {
+    try {
+      subscriber(event, payload);
+    } catch {
+      // ignore subscriber errors
+    }
   }
 }
 

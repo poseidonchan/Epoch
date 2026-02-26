@@ -24,6 +24,7 @@ import { handleTurnInterrupt, handleTurnStart, handleTurnSteer } from "./handler
 import type { CodexConnectionState } from "./connection_state.js";
 import type { CodexEngineRegistry } from "./engine_registry.js";
 import type { CodexRepository } from "./repository.js";
+import type { CodexRuntimeBridge, SessionPermissionLevel } from "./runtime_bridge.js";
 import { TurnAggregationState } from "./turn_aggregator.js";
 import type { JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Thread, ThreadItem, Turn, TurnStatus } from "./types.js";
 import { nowUnixSeconds } from "./types.js";
@@ -33,6 +34,50 @@ type CodexRouterContext = {
   engines: CodexEngineRegistry;
   connection: CodexConnectionState;
   token: string;
+  runtimeBridge?: CodexRuntimeBridge;
+};
+
+type RuntimePolicyShape = {
+  exec: {
+    maxTimeoutMs: number;
+    maxConcurrent: number;
+  };
+  slurm: {
+    maxTimeMinutes: number;
+    maxCpus: number;
+    maxMemMB: number;
+    maxGpus: number;
+    maxConcurrent: number;
+  };
+};
+
+const DEFAULT_RUNTIME_POLICY_BY_LEVEL: Record<SessionPermissionLevel, RuntimePolicyShape> = {
+  default: {
+    exec: {
+      maxTimeoutMs: 15 * 60_000,
+      maxConcurrent: 2,
+    },
+    slurm: {
+      maxTimeMinutes: 60,
+      maxCpus: 4,
+      maxMemMB: 16 * 1024,
+      maxGpus: 1,
+      maxConcurrent: 2,
+    },
+  },
+  full: {
+    exec: {
+      maxTimeoutMs: 2 * 60 * 60_000,
+      maxConcurrent: 8,
+    },
+    slurm: {
+      maxTimeMinutes: 24 * 60,
+      maxCpus: 64,
+      maxMemMB: 256 * 1024,
+      maxGpus: 8,
+      maxConcurrent: 8,
+    },
+  },
 };
 
 export class CodexRpcRouter {
@@ -40,6 +85,7 @@ export class CodexRpcRouter {
   private readonly engines: CodexEngineRegistry;
   private readonly connection: CodexConnectionState;
   private readonly token: string;
+  private readonly runtimeBridge: CodexRuntimeBridge | null;
 
   private readonly turnAggregators = new Map<string, TurnAggregationState>();
   private readonly turnPlanModeByScopedTurnId = new Map<string, boolean>();
@@ -49,6 +95,7 @@ export class CodexRpcRouter {
     this.engines = ctx.engines;
     this.connection = ctx.connection;
     this.token = ctx.token;
+    this.runtimeBridge = ctx.runtimeBridge ?? null;
   }
 
   async handleRequest(request: JsonRpcRequest) {
@@ -108,6 +155,7 @@ export class CodexRpcRouter {
           return;
         }
         case "turn/start": {
+          await this.assertRemoteRuntimeAvailableForTurn();
           await this.cancelPendingImplementConfirmationForTurnRequest(params);
           const prepared = await handleTurnStart({ repository: this.repository, engines: this.engines }, params);
           this.turnPlanModeByScopedTurnId.set(scopedTurnId(prepared.threadId, prepared.turnId), prepared.planMode);
@@ -308,6 +356,313 @@ export class CodexRpcRouter {
     });
   }
 
+  private async assertRemoteRuntimeAvailableForTurn() {
+    if (!this.runtimeBridge) return;
+    if (!this.runtimeBridge.isNodeConnected()) {
+      throw new Error("NODE_OFFLINE: HPC bridge is not connected");
+    }
+    const commands = new Set(this.runtimeBridge.listNodeCommands());
+    const required = ["runtime.exec.start", "runtime.exec.cancel", "runtime.fs.applyPatch", "runtime.fs.diff"];
+    const missing = required.filter((cmd) => !commands.has(cmd));
+    if (missing.length > 0) {
+      throw new Error(`CAPABILITY_MISSING: HPC bridge missing runtime methods (${missing.join(", ")})`);
+    }
+  }
+
+  private async tryHandleRemoteRuntimeServerRequest(args: {
+    threadId: string;
+    method: string;
+    params: Record<string, unknown>;
+  }): Promise<{ handled: boolean; result?: Record<string, unknown>; error?: string }> {
+    if (
+      args.method === "item/commandExecution/requestApproval" ||
+      args.method === "item/fileChange/requestApproval" ||
+      args.method === "execCommandApproval" ||
+      args.method === "applyPatchApproval"
+    ) {
+      return {
+        handled: true,
+        error:
+          "CAPABILITY_MISSING: codex app-server remote runtime extension is required. Legacy approval-based local execution is disabled.",
+      };
+    }
+
+    if (args.method === "runtime/commandExecution/exec") {
+      const result = await this.handleRemoteCommandExecution(args.threadId, args.params);
+      return { handled: true, result };
+    }
+
+    if (args.method === "runtime/fileChange/applyPatch") {
+      const result = await this.handleRemoteFilePatch(args.threadId, args.params);
+      return { handled: true, result };
+    }
+
+    return { handled: false };
+  }
+
+  private async handleRemoteCommandExecution(
+    defaultThreadId: string,
+    params: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    if (!this.runtimeBridge) {
+      throw new Error("CAPABILITY_MISSING: remote runtime bridge is not configured");
+    }
+    await this.assertRemoteRuntimeAvailableForTurn();
+
+    const threadId = normalizeNonEmptyString(params.threadId) ?? defaultThreadId;
+    const turnId = normalizeNonEmptyString(params.turnId);
+    const itemId = normalizeNonEmptyString(params.itemId);
+    if (!turnId || !itemId) {
+      throw new Error("runtime/commandExecution/exec is missing turnId or itemId");
+    }
+
+    const mapped = await this.repository.findSessionByThread(threadId);
+    const sessionId = normalizeNonEmptyString(params.sessionId) ?? mapped?.sessionId ?? null;
+    const projectId = normalizeNonEmptyString(params.projectId) ?? mapped?.projectId ?? null;
+    if (!sessionId || !projectId) {
+      throw new Error("runtime/commandExecution/exec requires projectId/sessionId");
+    }
+
+    const command = normalizeCommandVector(params.command);
+    if (command.length === 0) {
+      throw new Error("runtime/commandExecution/exec requires a non-empty command");
+    }
+
+    const executionId =
+      normalizeNonEmptyString(params.executionId) ?? `exec_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+    const cwd = normalizeNullableString(params.cwd);
+    const timeoutMs = normalizePositiveInteger(params.timeoutMs);
+    const env = normalizeStringRecord(params.env);
+    const permissionLevel = await this.resolvePermissionLevel(projectId, sessionId);
+    const policy = await this.resolveProjectRuntimePolicy(projectId, permissionLevel);
+
+    let streamedAnyDelta = false;
+    const unsubscribe = this.runtimeBridge.subscribeNodeEvents((event, payload) => {
+      if (event !== "runtime.exec.outputDelta") return;
+      const payloadExecutionId = normalizeNonEmptyString(payload.executionId);
+      if (payloadExecutionId && payloadExecutionId !== executionId) return;
+      const payloadThreadId = normalizeNonEmptyString(payload.threadId);
+      const payloadTurnId = normalizeNonEmptyString(payload.turnId);
+      const payloadItemId = normalizeNonEmptyString(payload.itemId);
+      if (payloadExecutionId == null && (payloadThreadId !== threadId || payloadTurnId !== turnId || payloadItemId !== itemId)) {
+        return;
+      }
+      const delta = String(payload.delta ?? "");
+      if (!delta) return;
+      streamedAnyDelta = true;
+      void this.persistAndSendNotification("item/commandExecution/outputDelta", {
+        threadId,
+        turnId,
+        itemId,
+        delta,
+      });
+    });
+
+    try {
+      const response = await this.runtimeBridge.callNode("runtime.exec.start", {
+        projectId,
+        sessionId,
+        threadId,
+        turnId,
+        itemId,
+        executionId,
+        command,
+        ...(cwd ? { cwd } : {}),
+        ...(timeoutMs != null ? { timeoutMs } : {}),
+        ...(env ? { env } : {}),
+        ...(policy ? { policy } : {}),
+        permissionLevel,
+      });
+
+      if (!streamedAnyDelta) {
+        const stdout = normalizeNullableString(response.stdout);
+        const stderr = normalizeNullableString(response.stderr);
+        if (stdout) {
+          await this.persistAndSendNotification("item/commandExecution/outputDelta", {
+            threadId,
+            turnId,
+            itemId,
+            delta: stdout,
+          });
+        }
+        if (stderr) {
+          await this.persistAndSendNotification("item/commandExecution/outputDelta", {
+            threadId,
+            turnId,
+            itemId,
+            delta: stderr,
+          });
+        }
+      }
+
+      return {
+        ...response,
+        executionId,
+      };
+    } finally {
+      unsubscribe();
+    }
+  }
+
+  private async handleRemoteFilePatch(
+    defaultThreadId: string,
+    params: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    if (!this.runtimeBridge) {
+      throw new Error("CAPABILITY_MISSING: remote runtime bridge is not configured");
+    }
+    await this.assertRemoteRuntimeAvailableForTurn();
+
+    const threadId = normalizeNonEmptyString(params.threadId) ?? defaultThreadId;
+    const turnId = normalizeNonEmptyString(params.turnId);
+    const itemId = normalizeNonEmptyString(params.itemId);
+    if (!turnId || !itemId) {
+      throw new Error("runtime/fileChange/applyPatch is missing turnId or itemId");
+    }
+
+    const mapped = await this.repository.findSessionByThread(threadId);
+    const sessionId = normalizeNonEmptyString(params.sessionId) ?? mapped?.sessionId ?? null;
+    const projectId = normalizeNonEmptyString(params.projectId) ?? mapped?.projectId ?? null;
+    if (!sessionId || !projectId) {
+      throw new Error("runtime/fileChange/applyPatch requires projectId/sessionId");
+    }
+
+    const patchId = normalizeNonEmptyString(params.patchId) ?? `patch_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+    const patch = normalizeNullableString(params.patch)
+      ?? normalizeNullableString(params.unifiedDiff)
+      ?? normalizeNullableString(params.unified_diff);
+    const fileChanges = normalizeObject(params.fileChanges) ?? null;
+    if (!patch && !fileChanges) {
+      throw new Error("runtime/fileChange/applyPatch requires patch or fileChanges");
+    }
+
+    const permissionLevel = await this.resolvePermissionLevel(projectId, sessionId);
+    const policy = await this.resolveProjectRuntimePolicy(projectId, permissionLevel);
+    const diffByPath = new Map<string, string>();
+
+    const unsubscribe = this.runtimeBridge.subscribeNodeEvents((event, payload) => {
+      if (event !== "runtime.fs.changed" && event !== "runtime.fs.patchCompleted") return;
+      const payloadPatchId = normalizeNonEmptyString(payload.patchId);
+      if (payloadPatchId && payloadPatchId !== patchId) return;
+      const payloadThreadId = normalizeNonEmptyString(payload.threadId);
+      const payloadTurnId = normalizeNonEmptyString(payload.turnId);
+      const payloadItemId = normalizeNonEmptyString(payload.itemId);
+      if (payloadPatchId == null && (payloadThreadId !== threadId || payloadTurnId !== turnId || payloadItemId !== itemId)) {
+        return;
+      }
+      const diff = String(payload.diff ?? "");
+      const filePath = normalizeNonEmptyString(payload.path);
+      if (filePath && diff) {
+        diffByPath.set(filePath, diff);
+      }
+      if (diff) {
+        void this.persistAndSendNotification("item/fileChange/outputDelta", {
+          threadId,
+          turnId,
+          itemId,
+          delta: diff,
+        });
+        void this.persistAndSendNotification("turn/diff/updated", {
+          threadId,
+          turnId,
+          diff,
+        });
+      }
+    });
+
+    try {
+      const response = await this.runtimeBridge.callNode("runtime.fs.applyPatch", {
+        projectId,
+        sessionId,
+        threadId,
+        turnId,
+        itemId,
+        patchId,
+        ...(patch ? { patch } : {}),
+        ...(fileChanges ? { fileChanges } : {}),
+        ...(policy ? { policy } : {}),
+        permissionLevel,
+      });
+
+      const responseDiff = normalizeNullableString(response.diff);
+      if (responseDiff) {
+        await this.persistAndSendNotification("item/fileChange/outputDelta", {
+          threadId,
+          turnId,
+          itemId,
+          delta: responseDiff,
+        });
+        await this.persistAndSendNotification("turn/diff/updated", {
+          threadId,
+          turnId,
+          diff: responseDiff,
+        });
+      } else if (diffByPath.size > 0) {
+        const diff = Array.from(diffByPath.values()).join("\n");
+        await this.persistAndSendNotification("turn/diff/updated", {
+          threadId,
+          turnId,
+          diff,
+        });
+      }
+
+      return {
+        ...response,
+        patchId,
+      };
+    } finally {
+      unsubscribe();
+    }
+  }
+
+  private async resolvePermissionLevel(projectId: string, sessionId: string): Promise<SessionPermissionLevel> {
+    if (!this.runtimeBridge) return "default";
+    try {
+      return await this.runtimeBridge.getSessionPermissionLevel(projectId, sessionId);
+    } catch {
+      return "default";
+    }
+  }
+
+  private async resolveProjectRuntimePolicy(
+    projectId: string,
+    level: SessionPermissionLevel
+  ): Promise<RuntimePolicyShape | null> {
+    const base = DEFAULT_RUNTIME_POLICY_BY_LEVEL[level];
+    try {
+      const rows = await this.repository.query<{ codex_sandbox_json: string | null }>(
+        `SELECT codex_sandbox_json
+         FROM projects
+         WHERE id=$1
+         LIMIT 1`,
+        [projectId]
+      );
+      const rawSandbox = rows[0]?.codex_sandbox_json;
+      if (!rawSandbox || typeof rawSandbox !== "string") {
+        return base;
+      }
+      const parsed = safeParseJsonObject(rawSandbox);
+      if (!parsed) return base;
+      const runtimePolicyRoot = normalizeObject(parsed.runtimePolicy);
+      if (!runtimePolicyRoot) return base;
+      const byLevel = normalizeObject(runtimePolicyRoot[level]) ?? runtimePolicyRoot;
+      const override = normalizeRuntimePolicyShape(byLevel);
+      if (!override) return base;
+      return {
+        exec: {
+          ...base.exec,
+          ...(override.exec ?? {}),
+        },
+        slurm: {
+          ...base.slurm,
+          ...(override.slurm ?? {}),
+        },
+      };
+    } catch {
+      return base;
+    }
+  }
+
   private async consumeTurnEvents(args: {
     threadId: string;
     turnId: string;
@@ -329,6 +684,21 @@ export class CodexRpcRouter {
         if (event.type === "serverRequest") {
           let persistedPendingRequestId: string | null = null;
           try {
+            const runtimeResponse = await this.tryHandleRemoteRuntimeServerRequest({
+              threadId: args.threadId,
+              method: event.method,
+              params: event.params,
+            });
+            if (runtimeResponse.error) {
+              throw new Error(runtimeResponse.error);
+            }
+            if (runtimeResponse.handled) {
+              if (event.respond) {
+                await event.respond({ result: runtimeResponse.result ?? {} });
+              }
+              continue;
+            }
+
             const dynamicPlanUpdate = extractPlanUpdateFromDynamicToolCall(event.method, event.params);
             if (dynamicPlanUpdate) {
               await this.persistAndSendNotification("turn/plan/updated", {
@@ -1028,6 +1398,101 @@ function normalizeNonEmptyString(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizePositiveInteger(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    const value = Math.floor(raw);
+    return value > 0 ? value : null;
+  }
+  if (typeof raw === "string" && raw.trim()) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) {
+      const value = Math.floor(parsed);
+      return value > 0 ? value : null;
+    }
+  }
+  return null;
+}
+
+function normalizeCommandVector(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw
+      .map((entry) => String(entry ?? "").trim())
+      .filter((entry) => entry.length > 0);
+  }
+  const text = normalizeNonEmptyString(raw);
+  if (!text) return [];
+  return text.split(/\s+/).filter(Boolean);
+}
+
+function normalizeStringRecord(raw: unknown): Record<string, string> | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const entries = Object.entries(raw as Record<string, unknown>).map(([key, value]) => [String(key), String(value ?? "")]);
+  if (entries.length === 0) return null;
+  return Object.fromEntries(entries);
+}
+
+function normalizeRuntimePolicyShape(raw: unknown): Partial<RuntimePolicyShape> | null {
+  const obj = normalizeObject(raw);
+  if (!obj) return null;
+
+  const execRaw = normalizeObject(obj.exec);
+  const slurmRaw = normalizeObject(obj.slurm);
+
+  const exec: Partial<RuntimePolicyShape["exec"]> = {};
+  if (execRaw) {
+    const maxTimeoutMs = normalizePositiveInteger(execRaw.maxTimeoutMs);
+    const maxConcurrent = normalizePositiveInteger(execRaw.maxConcurrent);
+    if (maxTimeoutMs != null) exec.maxTimeoutMs = maxTimeoutMs;
+    if (maxConcurrent != null) exec.maxConcurrent = maxConcurrent;
+  }
+
+  const slurm: Partial<RuntimePolicyShape["slurm"]> = {};
+  if (slurmRaw) {
+    const maxTimeMinutes = normalizePositiveInteger(slurmRaw.maxTimeMinutes);
+    const maxCpus = normalizePositiveInteger(slurmRaw.maxCpus);
+    const maxMemMB = normalizePositiveInteger(slurmRaw.maxMemMB);
+    const maxGpus = normalizeNonNegativeInteger(slurmRaw.maxGpus);
+    const maxConcurrent = normalizePositiveInteger(slurmRaw.maxConcurrent);
+    if (maxTimeMinutes != null) slurm.maxTimeMinutes = maxTimeMinutes;
+    if (maxCpus != null) slurm.maxCpus = maxCpus;
+    if (maxMemMB != null) slurm.maxMemMB = maxMemMB;
+    if (maxGpus != null) slurm.maxGpus = maxGpus;
+    if (maxConcurrent != null) slurm.maxConcurrent = maxConcurrent;
+  }
+
+  const hasExec = Object.keys(exec).length > 0;
+  const hasSlurm = Object.keys(slurm).length > 0;
+  if (!hasExec && !hasSlurm) return null;
+  return {
+    ...(hasExec ? { exec } : {}),
+    ...(hasSlurm ? { slurm } : {}),
+  };
+}
+
+function normalizeNonNegativeInteger(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    const value = Math.floor(raw);
+    return value >= 0 ? value : null;
+  }
+  if (typeof raw === "string" && raw.trim()) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) {
+      const value = Math.floor(parsed);
+      return value >= 0 ? value : null;
+    }
+  }
+  return null;
+}
+
+function safeParseJsonObject(raw: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(raw);
+    return normalizeObject(parsed);
+  } catch {
+    return null;
+  }
 }
 
 function normalizePlanStatus(raw: unknown): "pending" | "inProgress" | "completed" | null {

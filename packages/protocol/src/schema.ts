@@ -282,6 +282,80 @@ export const RunLogDeltaPayload = Type.Object({
 });
 export type RunLogDeltaPayload = Static<typeof RunLogDeltaPayload>;
 
+export const RuntimePermissionLevel = Type.Union([Type.Literal("default"), Type.Literal("full")]);
+export type RuntimePermissionLevel = Static<typeof RuntimePermissionLevel>;
+
+export const RuntimeExecStartedPayload = Type.Object({
+  projectId: UUID,
+  sessionId: Type.Optional(UUID),
+  threadId: Type.String(),
+  turnId: Type.String(),
+  itemId: Type.String(),
+  executionId: Type.String(),
+  command: Type.Array(Type.String()),
+  cwd: Type.String(),
+  permissionLevel: RuntimePermissionLevel,
+  ts: ISODateTime,
+});
+export type RuntimeExecStartedPayload = Static<typeof RuntimeExecStartedPayload>;
+
+export const RuntimeExecOutputDeltaPayload = Type.Object({
+  projectId: UUID,
+  sessionId: Type.Optional(UUID),
+  threadId: Type.String(),
+  turnId: Type.String(),
+  itemId: Type.String(),
+  executionId: Type.String(),
+  stream: Type.Union([Type.Literal("stdout"), Type.Literal("stderr"), Type.Literal("system")]),
+  delta: Type.String(),
+  ts: ISODateTime,
+});
+export type RuntimeExecOutputDeltaPayload = Static<typeof RuntimeExecOutputDeltaPayload>;
+
+export const RuntimeExecCompletedPayload = Type.Object({
+  projectId: UUID,
+  sessionId: Type.Optional(UUID),
+  threadId: Type.String(),
+  turnId: Type.String(),
+  itemId: Type.String(),
+  executionId: Type.String(),
+  ok: Type.Boolean(),
+  exitCode: Type.Optional(Type.Integer()),
+  durationMs: Type.Optional(Type.Integer({ minimum: 0 })),
+  error: Type.Optional(Type.String()),
+  ts: ISODateTime,
+});
+export type RuntimeExecCompletedPayload = Static<typeof RuntimeExecCompletedPayload>;
+
+export const RuntimeFsChangedPayload = Type.Object({
+  projectId: UUID,
+  sessionId: Type.Optional(UUID),
+  threadId: Type.String(),
+  turnId: Type.String(),
+  itemId: Type.String(),
+  changeId: Type.String(),
+  path: Type.String(),
+  kind: Type.String(),
+  diff: Type.Optional(Type.String()),
+  ts: ISODateTime,
+});
+export type RuntimeFsChangedPayload = Static<typeof RuntimeFsChangedPayload>;
+
+export const RuntimeFsPatchCompletedPayload = Type.Object({
+  projectId: UUID,
+  sessionId: Type.Optional(UUID),
+  threadId: Type.String(),
+  turnId: Type.String(),
+  itemId: Type.String(),
+  patchId: Type.String(),
+  applied: Type.Boolean(),
+  changedPaths: Type.Array(Type.String()),
+  diff: Type.Optional(Type.String()),
+  error: Type.Optional(Type.String()),
+  ts: ISODateTime,
+});
+export type RuntimeFsPatchCompletedPayload = Static<typeof RuntimeFsPatchCompletedPayload>;
+
 export const ResourceStatus = Type.Object({
   computeConnected: Type.Boolean(),
   queueDepth: Type.Integer({ minimum: 0 }),
@@ -427,6 +501,12 @@ export const ProtocolSchema = Type.Object({
     HpcStatus,
     NodeHeartbeatPayload,
     RunLogDeltaPayload,
+    RuntimePermissionLevel,
+    RuntimeExecStartedPayload,
+    RuntimeExecOutputDeltaPayload,
+    RuntimeExecCompletedPayload,
+    RuntimeFsChangedPayload,
+    RuntimeFsPatchCompletedPayload,
     JobSpec,
     ResourceStatus,
     ErrorObject,
