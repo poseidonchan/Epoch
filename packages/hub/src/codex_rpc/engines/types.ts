@@ -49,6 +49,7 @@ export interface CodexEngineSession {
   threadList?(params: Record<string, unknown>): Promise<Record<string, unknown>>;
   threadRollback?(params: Record<string, unknown>): Promise<Record<string, unknown>>;
   modelList?(params: Record<string, unknown>): Promise<Record<string, unknown>>;
+  skillsList?(params: Record<string, unknown>): Promise<Record<string, unknown>>;
 
   startTurn(args: EngineStartTurnArgs): Promise<EngineStartTurnResult>;
   interruptTurn(args: { threadId: string; turnId: string }): Promise<void>;

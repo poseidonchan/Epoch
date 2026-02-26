@@ -323,21 +323,93 @@ internal final class ChatSessionService {
             queued.error = nil
         }
 
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            let payloads = self.loadQueuedAttachmentPayloads(item.attachments)
+            let hasAttachments = !payloads.isEmpty
+            let inputParts = self.makeCodexSteerInputParts(text: trimmedText, queuedAttachments: payloads)
+
+            do {
+                _ = try await self.store.requestCodex(
+                    method: "turn/steer",
+                    params: CodexTurnSteerParams(
+                        threadId: threadId,
+                        turnId: turnId,
+                        input: inputParts.isEmpty ? nil : inputParts,
+                        text: nil
+                    )
+                )
+                self.store.lastGatewayErrorMessage = nil
+                self.removeQueuedCodexInput(sessionID: sessionID, queueItemID: queueItemID, deleteAttachmentFiles: true)
+            } catch {
+                if self.isUnsupportedSteerMethodError(error) {
+                    self.performSteerFallbackInterrupt(
+                        sessionID: sessionID,
+                        queueItemID: queueItemID,
+                        threadId: threadId,
+                        turnId: turnId
+                    )
+                } else if !hasAttachments, !trimmedText.isEmpty {
+                    // Retry with text-only steer when the backend rejects the `input` shape.
+                    do {
+                        _ = try await self.store.requestCodex(
+                            method: "turn/steer",
+                            params: CodexTurnSteerParams(
+                                threadId: threadId,
+                                turnId: turnId,
+                                input: nil,
+                                text: trimmedText
+                            )
+                        )
+                        self.store.lastGatewayErrorMessage = nil
+                        self.removeQueuedCodexInput(sessionID: sessionID, queueItemID: queueItemID, deleteAttachmentFiles: true)
+                    } catch {
+                        if self.isUnsupportedSteerMethodError(error) {
+                            self.performSteerFallbackInterrupt(
+                                sessionID: sessionID,
+                                queueItemID: queueItemID,
+                                threadId: threadId,
+                                turnId: turnId
+                            )
+                        } else {
+                            self.store.lastGatewayErrorMessage = error.localizedDescription
+                            self.updateCodexQueuedInput(sessionID: sessionID, itemID: queueItemID) { queued in
+                                queued.status = .failed
+                                queued.error = error.localizedDescription
+                            }
+                        }
+                    }
+                } else {
+                    // Attachment steer requires `input`; fallback to interrupt when steer fails.
+                    self.performSteerFallbackInterrupt(
+                        sessionID: sessionID,
+                        queueItemID: queueItemID,
+                        threadId: threadId,
+                        turnId: turnId
+                    )
+                }
+            }
+        }
+    }
+
+    private func performSteerFallbackInterrupt(sessionID: UUID, queueItemID: UUID, threadId: String, turnId: String) {
         store.suppressCodexTurn(sessionID: sessionID, turnID: turnId)
-        Task { [weak self] in
+
+        Task { @MainActor [weak self] in
             guard let self else { return }
             do {
                 _ = try await self.store.requestCodex(
                     method: "turn/interrupt",
                     params: CodexTurnInterruptParams(threadId: threadId, turnId: turnId)
                 )
+                self.store.lastGatewayErrorMessage = nil
             } catch {
-                await MainActor.run {
-                    self.store.unsuppressCodexTurn(sessionID: sessionID, turnID: turnId)
-                    self.updateCodexQueuedInput(sessionID: sessionID, itemID: queueItemID) { queued in
-                        queued.status = .failed
-                        queued.error = error.localizedDescription
-                    }
+                self.store.unsuppressCodexTurn(sessionID: sessionID, turnID: turnId)
+                self.store.lastGatewayErrorMessage = error.localizedDescription
+                self.updateCodexQueuedInput(sessionID: sessionID, itemID: queueItemID) { queued in
+                    queued.status = .failed
+                    queued.error = error.localizedDescription
                 }
             }
         }
@@ -477,6 +549,12 @@ internal final class ChatSessionService {
 
     private func isUnsupportedSteerMethodError(_ error: Error) -> Bool {
         let message = error.localizedDescription.lowercased()
+        if message.contains("method not found") || message.contains("unknown method") {
+            return true
+        }
+        if message.contains("unknown variant") {
+            return true
+        }
         if message.contains("turn/steer") && message.contains("unknown variant") {
             return true
         }

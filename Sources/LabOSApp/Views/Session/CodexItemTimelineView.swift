@@ -208,7 +208,7 @@ struct CodexItemTimelineView: View {
             guard isPlanModeEnabled else { return nil }
             return CodexProposedPlanExtractor.extract(
                 from: turn.trajectoryLeaves.map(\.item),
-                allowHeuristicFallback: true
+                allowHeuristicFallback: false
             )
         }()
         guard let text else { return nil }

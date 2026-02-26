@@ -39,7 +39,7 @@ test("turnContainsProposedPlanBlock detects plan fences in assistant messages", 
   assert.equal(turnContainsProposedPlanBlock(turnWithoutPlan), false);
 });
 
-test("turnContainsImplementablePlan detects plans with proposed_plan fences or step lists", () => {
+test("turnContainsImplementablePlan detects explicit plan signals", () => {
   const fenced = {
     id: "turn_fenced_plan",
     status: "completed",
@@ -49,6 +49,18 @@ test("turnContainsImplementablePlan detects plans with proposed_plan fences or s
         type: "agentMessage",
         id: "item_1",
         text: "<proposed_plan>\n1. Step one\n2. Step two\n3. Step three\n</proposed_plan>",
+      },
+    ],
+  };
+  const planItem = {
+    id: "turn_plan_item",
+    status: "completed",
+    error: null,
+    items: [
+      {
+        type: "plan",
+        id: "item_plan",
+        text: "1. Step one\n2. Step two\n3. Step three",
       },
     ],
   };
@@ -90,8 +102,9 @@ test("turnContainsImplementablePlan detects plans with proposed_plan fences or s
   };
 
   assert.equal(turnContainsImplementablePlan(fenced), true);
-  assert.equal(turnContainsImplementablePlan(numbered), true);
-  assert.equal(turnContainsImplementablePlan(bullets), true);
+  assert.equal(turnContainsImplementablePlan(planItem), true);
+  assert.equal(turnContainsImplementablePlan(numbered), false);
+  assert.equal(turnContainsImplementablePlan(bullets), false);
   assert.equal(turnContainsImplementablePlan(notAPlan), false);
 });
 

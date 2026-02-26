@@ -5,6 +5,15 @@ import SwiftUI
 import UIKit
 
 struct InlineComposerView: View {
+    struct SkillOption: Identifiable, Hashable {
+        var name: String
+        var displayName: String
+        var description: String?
+        var scope: String?
+
+        var id: String { name.lowercased() }
+    }
+
     enum Style {
         case standard
         case chatGPT
@@ -41,6 +50,10 @@ struct InlineComposerView: View {
     var showsVoiceButton = true
     var modelOptions: [GatewayModelInfo] = []
     var thinkingLevelOptions: [ThinkingLevel] = ThinkingLevel.allCases
+    var skillOptions: [SkillOption] = []
+    var skillsAreLoading = false
+    var skillsErrorText: String? = nil
+    var onRefreshSkills: (() -> Void)? = nil
     var contextRemainingFraction: Double? = nil
     var contextWindowTokens: Int = 258_000
     var useEstimatedContextFallback = true
@@ -144,6 +157,20 @@ struct InlineComposerView: View {
         isFullAccessPermission ? .orange : .secondary
     }
 
+    private struct SkillMention: Hashable {
+        var option: SkillOption
+        var range: Range<String.Index>
+    }
+
+    private struct ActiveSkillToken: Hashable {
+        var query: String
+        var range: Range<String.Index>
+    }
+
+    private var skillLookupByName: [String: SkillOption] {
+        Dictionary(uniqueKeysWithValues: skillOptions.map { ($0.name.lowercased(), $0) })
+    }
+
     var body: some View {
         switch style {
         case .standard:
@@ -203,6 +230,9 @@ struct InlineComposerView: View {
                 showsPlusMenu = false
             }
         }
+        .onChange(of: text) { oldValue, newValue in
+            handleSkillBackspace(oldValue: oldValue, newValue: newValue)
+        }
         .onDisappear {
             showsPlusMenu = false
         }
@@ -249,11 +279,23 @@ struct InlineComposerView: View {
             }
 
             HStack(alignment: .bottom, spacing: 8) {
-                TextField(placeholder, text: $text, axis: .vertical)
-                    .lineLimit(1...5)
-                    .font(.body)
-                    .textInputAutocapitalization(.sentences)
-                    .accessibilityIdentifier("composer.input")
+                ZStack(alignment: .topLeading) {
+                    InlineSkillTokenTextEditor(
+                        text: $text,
+                        skillLookup: skillLookupByName,
+                        colorScheme: colorScheme
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if text.isEmpty {
+                        Text(placeholder)
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 1)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             codexToolbarRow
@@ -740,6 +782,385 @@ struct InlineComposerView: View {
             Capsule()
                 .fill(Color.black.opacity(colorScheme == .dark ? 0.75 : 0.06))
         )
+    }
+
+    private struct InlineSkillTokenTextEditor: UIViewRepresentable {
+        @Binding var text: String
+        var skillLookup: [String: SkillOption]
+        var colorScheme: ColorScheme
+
+        func makeCoordinator() -> Coordinator {
+            Coordinator(parent: self)
+        }
+
+        func makeUIView(context: Context) -> UITextView {
+            let textView = UITextView()
+            textView.delegate = context.coordinator
+            textView.backgroundColor = .clear
+            textView.font = UIFont.preferredFont(forTextStyle: .body)
+            textView.textColor = .label
+            textView.adjustsFontForContentSizeCategory = true
+            textView.textContainerInset = .zero
+            textView.textContainer.lineFragmentPadding = 0
+            textView.textContainer.maximumNumberOfLines = 0
+            textView.textContainer.widthTracksTextView = true
+            textView.textContainer.lineBreakMode = .byWordWrapping
+            textView.isScrollEnabled = true
+            textView.showsHorizontalScrollIndicator = false
+            textView.alwaysBounceHorizontal = false
+            textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            textView.setContentCompressionResistancePriority(.required, for: .vertical)
+            textView.setContentHuggingPriority(.required, for: .vertical)
+            textView.autocapitalizationType = .sentences
+            textView.accessibilityIdentifier = "composer.input"
+
+            context.coordinator.applyRenderedText(
+                to: textView,
+                rawText: text,
+                lookup: skillLookup,
+                colorScheme: colorScheme,
+                preserveSelectionFromCurrent: false
+            )
+            return textView
+        }
+
+        func updateUIView(_ uiView: UITextView, context: Context) {
+            context.coordinator.parent = self
+            context.coordinator.applyRenderedText(
+                to: uiView,
+                rawText: text,
+                lookup: skillLookup,
+                colorScheme: colorScheme,
+                preserveSelectionFromCurrent: true
+            )
+        }
+
+        func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+            guard let width = proposal.width else { return nil }
+            return CGSize(width: width, height: visibleHeight(for: uiView))
+        }
+
+        private func visibleHeight(for textView: UITextView) -> CGFloat {
+            let font = textView.font ?? UIFont.preferredFont(forTextStyle: .body)
+            let verticalInsets = textView.textContainerInset.top + textView.textContainerInset.bottom
+            return ceil(font.lineHeight * 2 + verticalInsets)
+        }
+
+        final class Coordinator: NSObject, UITextViewDelegate {
+            var parent: InlineSkillTokenTextEditor
+            private var isApplyingProgrammaticChange = false
+            private var lastLookupSignature = 0
+            private var lastRawText = ""
+            private var lastColorScheme: ColorScheme = .light
+
+            init(parent: InlineSkillTokenTextEditor) {
+                self.parent = parent
+            }
+
+            func textViewDidChange(_ textView: UITextView) {
+                guard !isApplyingProgrammaticChange else { return }
+                let raw = Self.rawText(from: textView.attributedText ?? NSAttributedString())
+                if parent.text != raw {
+                    parent.text = raw
+                }
+
+                applyRenderedText(
+                    to: textView,
+                    rawText: raw,
+                    lookup: parent.skillLookup,
+                    colorScheme: parent.colorScheme,
+                    preserveSelectionFromCurrent: true
+                )
+            }
+
+            func applyRenderedText(
+                to textView: UITextView,
+                rawText: String,
+                lookup: [String: SkillOption],
+                colorScheme: ColorScheme,
+                preserveSelectionFromCurrent: Bool
+            ) {
+                let lookupSignature = Self.lookupSignature(lookup)
+                let needsRerender = rawText != lastRawText
+                    || lookupSignature != lastLookupSignature
+                    || colorScheme != lastColorScheme
+
+                guard needsRerender else { return }
+
+                let currentAttributed = textView.attributedText ?? NSAttributedString()
+                let currentSelection = textView.selectedRange
+                let rawSelection = Self.rawSelectionRange(fromAttributedSelection: currentSelection, in: currentAttributed)
+                let baseFont = textView.font ?? UIFont.preferredFont(forTextStyle: .body)
+                let rendered = Self.renderedAttributedText(
+                    rawText: rawText,
+                    lookup: lookup,
+                    baseFont: baseFont,
+                    colorScheme: colorScheme
+                )
+
+                isApplyingProgrammaticChange = true
+                textView.attributedText = rendered
+
+                if preserveSelectionFromCurrent {
+                    textView.selectedRange = Self.attributedSelectionRange(fromRawSelection: rawSelection, in: rendered)
+                } else {
+                    let end = Self.attributedOffset(fromRawOffset: rawText.utf16.count, in: rendered)
+                    textView.selectedRange = NSRange(location: end, length: 0)
+                }
+                isApplyingProgrammaticChange = false
+
+                lastLookupSignature = lookupSignature
+                lastRawText = rawText
+                lastColorScheme = colorScheme
+            }
+
+            private static func lookupSignature(_ lookup: [String: SkillOption]) -> Int {
+                var hasher = Hasher()
+                for key in lookup.keys.sorted() {
+                    hasher.combine(key)
+                    if let option = lookup[key] {
+                        hasher.combine(option.name)
+                        hasher.combine(option.displayName)
+                    }
+                }
+                return hasher.finalize()
+            }
+
+            private static func renderedAttributedText(
+                rawText: String,
+                lookup: [String: SkillOption],
+                baseFont: UIFont,
+                colorScheme: ColorScheme
+            ) -> NSAttributedString {
+                let baseAttributes: [NSAttributedString.Key: Any] = [
+                    .font: baseFont,
+                    .foregroundColor: UIColor.label,
+                ]
+                let attributed = NSMutableAttributedString(string: "")
+                let mentions = InlineComposerView.parseSkillMentions(in: rawText, lookup: lookup)
+                var cursor = rawText.startIndex
+
+                for mention in mentions {
+                    if cursor < mention.range.lowerBound {
+                        let prefix = String(rawText[cursor..<mention.range.lowerBound])
+                        attributed.append(NSAttributedString(string: prefix, attributes: baseAttributes))
+                    }
+
+                    let token = "$\(mention.option.name)"
+                    let attachment = SkillTokenAttachment(
+                        token: token,
+                        displayName: mention.option.displayName,
+                        baseFont: baseFont,
+                        colorScheme: colorScheme
+                    )
+                    let attachmentString = NSMutableAttributedString(attachment: attachment)
+                    attachmentString.addAttributes(baseAttributes, range: NSRange(location: 0, length: attachmentString.length))
+                    attributed.append(attachmentString)
+
+                    cursor = mention.range.upperBound
+                }
+
+                if cursor < rawText.endIndex {
+                    let suffix = String(rawText[cursor..<rawText.endIndex])
+                    attributed.append(NSAttributedString(string: suffix, attributes: baseAttributes))
+                }
+
+                if attributed.length == 0 {
+                    attributed.append(NSAttributedString(string: "", attributes: baseAttributes))
+                }
+
+                return attributed
+            }
+
+            private static func rawText(from attributed: NSAttributedString) -> String {
+                guard attributed.length > 0 else { return "" }
+                var output = ""
+                attributed.enumerateAttributes(
+                    in: NSRange(location: 0, length: attributed.length),
+                    options: []
+                ) { attributes, range, _ in
+                    if let attachment = attributes[.attachment] as? SkillTokenAttachment {
+                        output.append(attachment.token)
+                    } else {
+                        output.append(attributed.attributedSubstring(from: range).string)
+                    }
+                }
+                return output
+            }
+
+            private static func rawSelectionRange(
+                fromAttributedSelection selection: NSRange,
+                in attributed: NSAttributedString
+            ) -> NSRange {
+                let start = rawOffset(fromAttributedOffset: selection.location, in: attributed)
+                let end = rawOffset(fromAttributedOffset: selection.location + selection.length, in: attributed)
+                return NSRange(location: start, length: max(0, end - start))
+            }
+
+            private static func attributedSelectionRange(
+                fromRawSelection rawSelection: NSRange,
+                in attributed: NSAttributedString
+            ) -> NSRange {
+                let start = attributedOffset(fromRawOffset: rawSelection.location, in: attributed)
+                let end = attributedOffset(fromRawOffset: rawSelection.location + rawSelection.length, in: attributed)
+                return NSRange(location: start, length: max(0, end - start))
+            }
+
+            private static func rawOffset(fromAttributedOffset offset: Int, in attributed: NSAttributedString) -> Int {
+                guard attributed.length > 0 else { return 0 }
+                let clampedOffset = max(0, min(offset, attributed.length))
+                var cursor = 0
+                var rawOffset = 0
+
+                while cursor < clampedOffset {
+                    var range = NSRange(location: 0, length: 0)
+                    let attributes = attributed.attributes(at: cursor, effectiveRange: &range)
+                    let step = min(range.length, clampedOffset - cursor)
+                    if let attachment = attributes[.attachment] as? SkillTokenAttachment {
+                        if step > 0 {
+                            rawOffset += attachment.token.utf16.count
+                        }
+                    } else {
+                        rawOffset += step
+                    }
+                    cursor += step
+                }
+
+                return rawOffset
+            }
+
+            private static func attributedOffset(fromRawOffset rawOffset: Int, in attributed: NSAttributedString) -> Int {
+                guard attributed.length > 0 else { return 0 }
+                let target = max(0, rawOffset)
+                var rawCursor = 0
+                var attributedCursor = 0
+
+                while attributedCursor < attributed.length {
+                    var range = NSRange(location: 0, length: 0)
+                    let attributes = attributed.attributes(at: attributedCursor, effectiveRange: &range)
+                    if let attachment = attributes[.attachment] as? SkillTokenAttachment {
+                        let tokenLength = attachment.token.utf16.count
+                        if target <= rawCursor {
+                            return attributedCursor
+                        }
+                        if target < rawCursor + tokenLength {
+                            return attributedCursor + range.length
+                        }
+                        rawCursor += tokenLength
+                        attributedCursor = range.location + range.length
+                        continue
+                    }
+
+                    let textLength = range.length
+                    if target <= rawCursor {
+                        return attributedCursor
+                    }
+                    if target <= rawCursor + textLength {
+                        return attributedCursor + (target - rawCursor)
+                    }
+
+                    rawCursor += textLength
+                    attributedCursor = range.location + range.length
+                }
+
+                return attributed.length
+            }
+        }
+
+        private final class SkillTokenAttachment: NSTextAttachment {
+            let token: String
+
+            init(token: String, displayName: String, baseFont: UIFont, colorScheme: ColorScheme) {
+                self.token = token
+                super.init(data: nil, ofType: nil)
+
+                let badge = Self.badgeImage(displayName: displayName, baseFont: baseFont, colorScheme: colorScheme)
+                image = badge
+                let verticalOffset = (baseFont.capHeight - badge.size.height) / 2 - 1
+                bounds = CGRect(origin: CGPoint(x: 0, y: verticalOffset), size: badge.size)
+            }
+
+            required init?(coder: NSCoder) {
+                nil
+            }
+
+            private static func badgeImage(displayName: String, baseFont: UIFont, colorScheme: ColorScheme) -> UIImage {
+                let fontSize = max(13, floor(baseFont.pointSize * 0.82))
+                let textFont = UIFont.systemFont(ofSize: fontSize, weight: .semibold)
+                let textAttributes: [NSAttributedString.Key: Any] = [
+                    .font: textFont,
+                    .foregroundColor: UIColor.systemPurple,
+                ]
+                let label = displayName
+                let textSize = (label as NSString).size(withAttributes: textAttributes)
+
+                let horizontalPadding: CGFloat = 10
+                let verticalPadding: CGFloat = 4
+                let size = CGSize(
+                    width: ceil(textSize.width + horizontalPadding * 2),
+                    height: ceil(textSize.height + verticalPadding * 2)
+                )
+
+                let fillColor = UIColor.systemPurple.withAlphaComponent(colorScheme == .dark ? 0.28 : 0.14)
+                let strokeColor = UIColor.systemPurple.withAlphaComponent(colorScheme == .dark ? 0.42 : 0.30)
+
+                let renderer = UIGraphicsImageRenderer(size: size)
+                return renderer.image { context in
+                    let rect = CGRect(origin: .zero, size: size)
+                    let pillRect = rect.insetBy(dx: 0.5, dy: 0.5)
+                    let path = UIBezierPath(
+                        roundedRect: pillRect,
+                        cornerRadius: floor(pillRect.height / 2)
+                    )
+                    fillColor.setFill()
+                    path.fill()
+                    strokeColor.setStroke()
+                    path.lineWidth = 1
+                    path.stroke()
+
+                    let textRect = CGRect(
+                        x: floor((size.width - textSize.width) / 2),
+                        y: floor((size.height - textSize.height) / 2),
+                        width: ceil(textSize.width),
+                        height: ceil(textSize.height)
+                    )
+                    (label as NSString).draw(in: textRect, withAttributes: textAttributes)
+
+                    context.cgContext.flush()
+                }
+            }
+        }
+    }
+
+    private func handleSkillBackspace(oldValue: String, newValue: String) {
+        guard oldValue != newValue else { return }
+        // Backspace support: when a mention token is at the end, remove it as a unit.
+        guard oldValue.hasPrefix(newValue), oldValue.count == newValue.count + 1 else { return }
+        guard let mention = Self.trailingSkillToken(in: oldValue) else { return }
+        guard mention.range.upperBound == oldValue.endIndex else { return }
+
+        let prefix = String(oldValue[..<mention.range.lowerBound])
+        text = prefix
+    }
+
+    private static func parseSkillMentions(in rawText: String, lookup: [String: SkillOption]) -> [SkillMention] {
+        let coreLookup = lookup.reduce(into: [String: CodexSkillMentionOption]()) { partial, entry in
+            partial[entry.key] = CodexSkillMentionOption(
+                name: entry.value.name,
+                displayName: entry.value.displayName
+            )
+        }
+
+        return CodexSkillMentionCodec.parseMentions(in: rawText, lookup: coreLookup).compactMap { mention in
+            guard let option = lookup[mention.option.name.lowercased()] else { return nil }
+            return SkillMention(option: option, range: mention.range)
+        }
+    }
+
+    private static func trailingSkillToken(in rawText: String) -> ActiveSkillToken? {
+        guard let token = CodexSkillMentionCodec.trailingToken(in: rawText) else { return nil }
+        return ActiveSkillToken(query: token.query, range: token.range)
     }
 
     private func thinkingLabel(_ level: ThinkingLevel) -> String {
@@ -1889,6 +2310,235 @@ actor RecentInlinePhotoCache {
 
     func payload(for token: String) -> CachedInlinePhoto? {
         photos.first(where: { $0.token == token })
+    }
+}
+
+struct ComposerSkillSuggestionState: Equatable {
+    typealias SkillOption = InlineComposerView.SkillOption
+
+    let activeToken: CodexActiveSkillToken
+    let allOptions: [SkillOption]
+    let filteredOptions: [SkillOption]
+    let isLoading: Bool
+    let errorText: String?
+    let canRefresh: Bool
+
+    static func make(
+        text: String,
+        skillOptions: [SkillOption],
+        skillsAreLoading: Bool,
+        skillsErrorText: String?,
+        canRefresh: Bool
+    ) -> ComposerSkillSuggestionState? {
+        let normalizedText = CodexSkillMentionCodec.sanitizedUserInput(text)
+        guard let activeToken = CodexSkillMentionCodec.trailingToken(in: normalizedText) else { return nil }
+#if DEBUG
+        if ProcessInfo.processInfo.environment["LABOS_DEBUG_SKILL_SUGGESTIONS"] != nil {
+            print("[SkillSuggestions] token=\(activeToken.query) text=\"\(normalizedText)\"")
+        }
+#endif
+        let normalizedQuery = activeToken.query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let sortedOptions = skillOptions.sorted { lhs, rhs in
+            lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+        }
+
+        let filtered: [SkillOption]
+        if normalizedQuery.isEmpty {
+            filtered = sortedOptions
+        } else {
+            filtered = skillOptions
+                .filter { option in
+                    option.name.lowercased().contains(normalizedQuery)
+                        || option.displayName.lowercased().contains(normalizedQuery)
+                        || (option.description ?? "").lowercased().contains(normalizedQuery)
+                }
+                .sorted { lhs, rhs in
+                    let lhsPrefix = lhs.name.lowercased().hasPrefix(normalizedQuery)
+                        || lhs.displayName.lowercased().hasPrefix(normalizedQuery)
+                    let rhsPrefix = rhs.name.lowercased().hasPrefix(normalizedQuery)
+                        || rhs.displayName.lowercased().hasPrefix(normalizedQuery)
+                    if lhsPrefix != rhsPrefix {
+                        return lhsPrefix && !rhsPrefix
+                    }
+                    return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+                }
+        }
+
+        return ComposerSkillSuggestionState(
+            activeToken: activeToken,
+            allOptions: sortedOptions,
+            filteredOptions: filtered,
+            isLoading: skillsAreLoading,
+            errorText: skillsErrorText,
+            canRefresh: canRefresh
+        )
+    }
+
+    var normalizedErrorText: String? {
+        guard let errorText else { return nil }
+        let trimmed = errorText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    var isVisible: Bool {
+        if isLoading { return true }
+        if normalizedErrorText != nil { return true }
+        if !allOptions.isEmpty { return true }
+        return canRefresh
+    }
+
+    var limitedSuggestions: [SkillOption] {
+        Array(filteredOptions.prefix(9))
+    }
+
+    var emptyTitle: String {
+        allOptions.isEmpty ? "No skills available" : "No matching skills"
+    }
+
+    static func replacingTrailingToken(in text: String, with option: SkillOption) -> String? {
+        CodexSkillMentionCodec.replacingTrailingToken(in: text, withSkillName: option.name)
+    }
+}
+
+struct SkillSuggestionShelfView: View {
+    typealias SkillOption = InlineComposerView.SkillOption
+
+    let state: ComposerSkillSuggestionState
+    var onSelect: (SkillOption) -> Void
+    var onRefresh: (() -> Void)? = nil
+    var accessibilityPrefix = "composer.skills.shelf"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if state.isLoading && state.limitedSuggestions.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Loading skills…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .accessibilityIdentifier("\(accessibilityPrefix).loading")
+            } else if let error = state.normalizedErrorText, state.limitedSuggestions.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Could not load skills")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    if let onRefresh {
+                        Button("Retry") {
+                            onRefresh()
+                        }
+                        .buttonStyle(.bordered)
+                        .font(.caption.weight(.semibold))
+                        .accessibilityIdentifier("\(accessibilityPrefix).retry")
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+            } else if state.limitedSuggestions.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(state.emptyTitle)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    if let onRefresh, state.allOptions.isEmpty {
+                        Button("Refresh skills") {
+                            onRefresh()
+                        }
+                        .buttonStyle(.bordered)
+                        .font(.caption.weight(.semibold))
+                        .accessibilityIdentifier("\(accessibilityPrefix).refresh")
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .accessibilityIdentifier("\(accessibilityPrefix).empty")
+            } else {
+                ForEach(Array(state.limitedSuggestions.enumerated()), id: \.element.id) { index, option in
+                    Button {
+                        onSelect(option)
+                    } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Image(systemName: "cube.box")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 16)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Text(option.displayName)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+
+                                    if let scope = option.scope, !scope.isEmpty {
+                                        Text(scope)
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+
+                                if let description = option.description,
+                                   !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    Text(description)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("\(accessibilityPrefix).row.\(index)")
+
+                    if index < state.limitedSuggestions.count - 1 {
+                        Divider()
+                            .overlay(Color.primary.opacity(0.08))
+                    }
+                }
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.12))
+        )
+        .accessibilityIdentifier("\(accessibilityPrefix).container")
+    }
+}
+
+extension CodexSkillsListState {
+    func inlineComposerSkillOptions() -> [InlineComposerView.SkillOption] {
+        var deduped: [String: InlineComposerView.SkillOption] = [:]
+        for entry in entries {
+            for skill in entry.skills {
+                let key = skill.name.lowercased()
+                if deduped[key] == nil {
+                    deduped[key] = InlineComposerView.SkillOption(
+                        name: skill.name,
+                        displayName: skill.interface?.displayName ?? skill.name,
+                        description: skill.shortDescription ?? skill.description,
+                        scope: skill.scope
+                    )
+                }
+            }
+        }
+
+        return deduped.values.sorted { lhs, rhs in
+            lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+        }
     }
 }
 

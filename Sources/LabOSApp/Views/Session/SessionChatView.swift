@@ -70,6 +70,27 @@ struct SessionChatView: View {
         store.codexTrajectoryDurations(sessionID: sessionID)
     }
 
+    private var codexSkillsState: CodexSkillsListState {
+        store.codexSkillsState(for: sessionID)
+    }
+
+    private var composerSkillOptions: [InlineComposerView.SkillOption] {
+        guard isCodexSession else { return [] }
+        return codexSkillsState.inlineComposerSkillOptions()
+    }
+
+    private var composerSkillSuggestions: ComposerSkillSuggestionState? {
+        guard isCodexSession else { return nil }
+        let normalizedText = CodexSkillMentionCodec.sanitizedUserInput(composerText)
+        return ComposerSkillSuggestionState.make(
+            text: normalizedText,
+            skillOptions: composerSkillOptions,
+            skillsAreLoading: codexSkillsState.isLoading,
+            skillsErrorText: codexSkillsState.error,
+            canRefresh: true
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -241,7 +262,24 @@ struct SessionChatView: View {
                 showsShelf: true,
                 showsFooter: false,
                 shelf: {
-                    SessionShelfView(projectID: projectID, sessionID: sessionID, renderMode: .dock)
+                    SessionShelfView(
+                        projectID: projectID,
+                        sessionID: sessionID,
+                        renderMode: .dock,
+                        skillSuggestions: composerSkillSuggestions,
+                        onSelectSkillSuggestion: { option in
+                            guard let updated = ComposerSkillSuggestionState.replacingTrailingToken(
+                                in: composerText,
+                                with: option
+                            ) else { return }
+                            composerText = updated
+                        },
+                        onRefreshSkillSuggestions: isCodexSession
+                            ? {
+                                store.refreshCodexSkills(sessionID: sessionID, forceReload: true)
+                            }
+                            : nil
+                    )
                 },
                 composer: {
                     sessionComposer
@@ -253,6 +291,9 @@ struct SessionChatView: View {
         }
         .onAppear {
             loadCodexPromptDraftIfNeeded(prompt: codexPrompt)
+            if isCodexSession, codexSkillsState.updatedAt == nil, !codexSkillsState.isLoading {
+                store.refreshCodexSkills(sessionID: sessionID)
+            }
         }
         .onChange(of: codexPrompt?.id) { _, _ in
             loadCodexPromptDraftIfNeeded(prompt: codexPrompt)
@@ -529,6 +570,10 @@ struct SessionChatView: View {
                 },
                 modelOptions: store.availableModels,
                 thinkingLevelOptions: store.availableThinkingLevels.isEmpty ? ThinkingLevel.allCases : store.availableThinkingLevels,
+                skillOptions: composerSkillOptions,
+                skillsAreLoading: codexSkillsState.isLoading,
+                skillsErrorText: codexSkillsState.error,
+                onRefreshSkills: isCodexSession ? { store.refreshCodexSkills(sessionID: sessionID, forceReload: true) } : nil,
                 contextRemainingFraction: store.contextRemainingFraction(for: sessionID),
                 contextWindowTokens: store.contextWindowTokens(for: sessionID) ?? 258_000,
                 useEstimatedContextFallback: !isCodexSession

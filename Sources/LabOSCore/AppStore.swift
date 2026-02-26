@@ -118,6 +118,7 @@ public final class AppStore: ObservableObject {
     @Published public internal(set) var codexActiveTurnIDBySession: [UUID: String] = [:]
     @Published public internal(set) var codexStatusTextBySession: [UUID: String] = [:]
     @Published public internal(set) var codexTurnDiffBySession: [UUID: CodexTurnDiffState] = [:]
+    @Published public internal(set) var codexSkillsStateBySession: [UUID: CodexSkillsListState] = [:]
     @Published public internal(set) var codexTokenUsageBySession: [UUID: CodexTokenUsage] = [:]
     @Published public internal(set) var codexFullAccessBySession: [UUID: Bool] = [:]
     @Published public internal(set) var codexTrajectoryStartedAtBySession: [UUID: [String: Date]] = [:]
@@ -741,6 +742,7 @@ public final class AppStore: ObservableObject {
         codexActiveTurnIDBySession.removeAll()
         codexStatusTextBySession.removeAll()
         codexTurnDiffBySession.removeAll()
+        codexSkillsStateBySession.removeAll()
         codexTokenUsageBySession.removeAll()
         codexFullAccessBySession.removeAll()
         codexTrajectoryStartedAtBySession.removeAll()
@@ -889,6 +891,53 @@ public final class AppStore: ObservableObject {
         }
         let data = try gatewayJSONEncoder.encode(value)
         return try gatewayJSONDecoder.decode(T.self, from: data)
+    }
+
+    private struct CodexSkillsListResponseWrapper: Codable {
+        var skills: [CodexSkillsListEntry]?
+        var entries: [CodexSkillsListEntry]?
+        var data: [CodexSkillsListEntry]?
+    }
+
+    private func decodeCodexSkillsEntries(_ result: JSONValue?) throws -> [CodexSkillsListEntry] {
+        // Known object wrappers:
+        // - { "skills": [SkillsListEntry] } (legacy)
+        // - { "entries": [SkillsListEntry] } (LabOS compatibility)
+        // - { "data": [SkillsListEntry] } (codex-spec v2)
+        if let object = result?.objectValue {
+            if object["skills"] != nil {
+                return try decodeCodexResult(result, key: "skills")
+            }
+            if object["entries"] != nil {
+                return try decodeCodexResult(result, key: "entries")
+            }
+            if object["data"] != nil {
+                return try decodeCodexResult(result, key: "data")
+            }
+        }
+
+        // Some implementations may return wrapper variants directly.
+        if let wrapper: CodexSkillsListResponseWrapper = try? decodeCodexResult(result) {
+            if let skills = wrapper.skills { return skills }
+            if let entries = wrapper.entries { return entries }
+            if let data = wrapper.data { return data }
+        }
+
+        // Or the array itself.
+        return try decodeCodexResult(result)
+    }
+
+    private func normalizeCodexSkillsErrorMessage(_ error: Error) -> String {
+        let raw = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return "Failed to load skills." }
+
+        let lower = raw.lowercased()
+        let isMethodNotFound = (lower.contains("method not found") || lower.contains("unknown method")) && lower.contains("skills/list")
+        if isMethodNotFound {
+            return "This Hub build does not support skills yet. Update Hub/Codex and retry."
+        }
+
+        return raw
     }
 
     private func handleCodexNotification(_ notification: CodexRPCNotification) {
@@ -2024,7 +2073,7 @@ public final class AppStore: ObservableObject {
               let slice = codexTurnSliceItems(sessionID: prompt.sessionID, userMessageID: normalizedUserTurnID),
               let extracted = CodexProposedPlanExtractor.extract(
                   from: Array(slice),
-                  allowHeuristicFallback: true
+                  allowHeuristicFallback: false
               )
         else { return }
 
@@ -2681,6 +2730,44 @@ public final class AppStore: ObservableObject {
 
     public func codexTurnDiff(for sessionID: UUID) -> CodexTurnDiffState? {
         codexTurnDiffBySession[sessionID]
+    }
+
+    public func codexSkillsState(for sessionID: UUID) -> CodexSkillsListState {
+        codexSkillsStateBySession[sessionID] ?? CodexSkillsListState()
+    }
+
+    public func refreshCodexSkills(sessionID: UUID, cwds: [String]? = nil, forceReload: Bool = false) {
+        guard sessionUsesCodex(sessionID: sessionID) else { return }
+        var state = codexSkillsStateBySession[sessionID] ?? CodexSkillsListState()
+        if state.isLoading {
+            // Prevent duplicate in-flight refreshes; use forceReload to explicitly refresh.
+            if forceReload == false { return }
+        }
+        state.isLoading = true
+        state.error = nil
+        codexSkillsStateBySession[sessionID] = state
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await self.requestCodex(
+                    method: "skills/list",
+                    params: CodexSkillsListParams(cwds: cwds, forceReload: forceReload)
+                )
+                let entries = try self.decodeCodexSkillsEntries(response.result)
+                self.codexSkillsStateBySession[sessionID] = CodexSkillsListState(
+                    isLoading: false,
+                    entries: entries,
+                    error: nil,
+                    updatedAt: Date()
+                )
+            } catch {
+                var failure = self.codexSkillsStateBySession[sessionID] ?? CodexSkillsListState()
+                failure.isLoading = false
+                failure.error = self.normalizeCodexSkillsErrorMessage(error)
+                self.codexSkillsStateBySession[sessionID] = failure
+            }
+        }
     }
 
     public func codexActiveTurnID(for sessionID: UUID) -> String? {

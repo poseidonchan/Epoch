@@ -18,6 +18,7 @@ import {
   handleLabosSessionUpdate,
 } from "./handlers/labos.js";
 import { handleModelList } from "./handlers/model.js";
+import { handleSkillsList } from "./handlers/skills.js";
 import { handleThreadList, handleThreadRead, handleThreadResume, handleThreadRollback, handleThreadStart } from "./handlers/thread.js";
 import { handleTurnInterrupt, handleTurnStart, handleTurnSteer } from "./handlers/turn.js";
 import type { CodexConnectionState } from "./connection_state.js";
@@ -140,6 +141,11 @@ export class CodexRpcRouter {
         }
         case "model/list": {
           const result = await handleModelList({ engines: this.engines }, params);
+          this.connection.sendResult(request.id, result);
+          return;
+        }
+        case "skills/list": {
+          const result = await handleSkillsList({ engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
         }
@@ -863,26 +869,15 @@ export function turnContainsProposedPlanBlock(turn: Turn): boolean {
   return false;
 }
 
-function textContainsPlanSteps(text: string): boolean {
-  const normalized = text.replaceAll("\r\n", "\n");
-  const numbered = normalized.match(/^\s*\d+\.\s+\S+/gm) ?? [];
-  if (numbered.length >= 3) return true;
-  const bullets = normalized.match(/^\s*[-*]\s+\S+/gm) ?? [];
-  return bullets.length >= 3;
-}
-
 export function turnContainsImplementablePlan(turn: Turn): boolean {
+  if (turnContainsProposedPlanBlock(turn)) return true;
+
   for (const item of turn.items) {
-    if (item.type !== "agentMessage" && item.type !== "plan") continue;
+    if (item.type !== "plan") continue;
     const text = normalizeNonEmptyString((item as Record<string, unknown>).text);
-    if (!text) continue;
-    if (text.includes("<proposed_plan>") && text.includes("</proposed_plan>")) {
-      return true;
-    }
-    if (textContainsPlanSteps(text)) {
-      return true;
-    }
+    if (text) return true;
   }
+
   return false;
 }
 

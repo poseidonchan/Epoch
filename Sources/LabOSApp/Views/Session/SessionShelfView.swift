@@ -11,11 +11,16 @@ struct SessionShelfView: View {
     let projectID: UUID
     let sessionID: UUID
     let renderMode: SessionShelfRenderMode
+    let skillSuggestions: ComposerSkillSuggestionState?
+    let onSelectSkillSuggestion: ((InlineComposerView.SkillOption) -> Void)?
+    let onRefreshSkillSuggestions: (() -> Void)?
 
     @EnvironmentObject private var store: AppStore
 
     @State private var showQueueManager = false
     @State private var showDiffReview = false
+    @State private var diffReviewPayload: String = ""
+    @State private var showSkillsSheet = false
     @State private var showRunningTerminals = false
     @State private var isTerminalsExpanded = false
     @State private var terminalEligibilityNow = Date()
@@ -24,10 +29,20 @@ struct SessionShelfView: View {
 
     private let terminalEligibilityTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
-    init(projectID: UUID, sessionID: UUID, renderMode: SessionShelfRenderMode = .cards) {
+    init(
+        projectID: UUID,
+        sessionID: UUID,
+        renderMode: SessionShelfRenderMode = .cards,
+        skillSuggestions: ComposerSkillSuggestionState? = nil,
+        onSelectSkillSuggestion: ((InlineComposerView.SkillOption) -> Void)? = nil,
+        onRefreshSkillSuggestions: (() -> Void)? = nil
+    ) {
         self.projectID = projectID
         self.sessionID = sessionID
         self.renderMode = renderMode
+        self.skillSuggestions = skillSuggestions
+        self.onSelectSkillSuggestion = onSelectSkillSuggestion
+        self.onRefreshSkillSuggestions = onRefreshSkillSuggestions
     }
 
     private var activeRun: RunRecord? {
@@ -78,11 +93,29 @@ struct SessionShelfView: View {
     private var shelfRows: [AnyView] {
         var rows: [AnyView] = []
 
+        if let skillSuggestions, skillSuggestions.isVisible {
+            rows.append(
+                AnyView(
+                    skillSuggestionCard(state: skillSuggestions)
+                        .accessibilityIdentifier("session.shelf.skillSuggestions")
+                )
+            )
+        }
+
         if let diffSummary, let turnDiff {
             rows.append(
                 AnyView(
                     diffCard(summary: diffSummary, diff: turnDiff.diff)
                         .accessibilityIdentifier("session.shelf.diff")
+                )
+            )
+        }
+
+        if store.sessionUsesCodex(sessionID: sessionID) {
+            rows.append(
+                AnyView(
+                    skillsCard()
+                        .accessibilityIdentifier("session.shelf.skills")
                 )
             )
         }
@@ -144,8 +177,14 @@ struct SessionShelfView: View {
             QueueManagerSheet(sessionID: sessionID)
                 .environmentObject(store)
         }
-        .sheet(isPresented: $showDiffReview) {
-            DiffReviewSheet(diff: turnDiff?.diff ?? "")
+        .sheet(isPresented: $showDiffReview, onDismiss: {
+            diffReviewPayload = ""
+        }) {
+            DiffReviewSheet(diff: diffReviewPayload.isEmpty ? (turnDiff?.diff ?? "") : diffReviewPayload)
+        }
+        .sheet(isPresented: $showSkillsSheet) {
+            SkillsListSheet(sessionID: sessionID)
+                .environmentObject(store)
         }
         .sheet(isPresented: $showRunningTerminals) {
             RunningTerminalsSheet(sessionID: sessionID)
@@ -204,10 +243,66 @@ struct SessionShelfView: View {
                 Spacer(minLength: 0)
 
                 Button("Review changes") {
+                    diffReviewPayload = diff
                     showDiffReview = true
                 }
                 .buttonStyle(.bordered)
                 .accessibilityIdentifier("session.shelf.reviewDiff")
+            }
+        }
+    }
+
+    private func skillSuggestionCard(state: ComposerSkillSuggestionState) -> some View {
+        cardContainer {
+            SkillSuggestionShelfView(
+                state: state,
+                onSelect: { option in
+                    onSelectSkillSuggestion?(option)
+                },
+                onRefresh: onRefreshSkillSuggestions,
+                accessibilityPrefix: "session.shelf.skillSuggestions"
+            )
+        }
+    }
+
+    private func skillsCard() -> some View {
+        let state = store.codexSkillsState(for: sessionID)
+        let skillCount = state.entries.reduce(0) { $0 + $1.skills.count }
+
+        return cardContainer {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Skills")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    if state.isLoading {
+                        Text("Loading…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if let error = state.error, !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .lineLimit(2)
+                    } else if state.updatedAt != nil {
+                        Text("\(skillCount) available")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Tap View to load")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                Button("View") {
+                    showSkillsSheet = true
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("session.shelf.skills.view")
             }
         }
     }
@@ -416,6 +511,40 @@ struct SessionShelfView: View {
                     )
             }
 
+            if approval.kind == .fileChange {
+                if let fileChange = fileChangeItem(for: approval) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Files")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+
+                        ForEach(Array(fileChange.changes.prefix(3).enumerated()), id: \.offset) { _, change in
+                            Text(change.path)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        if fileChange.changes.count > 3 {
+                            Text("+ \(fileChange.changes.count - 3) more")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                if let approvalDiff = diffForApproval(approval), !approvalDiff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button {
+                        diffReviewPayload = approvalDiff
+                        showDiffReview = true
+                    } label: {
+                        Label("Review changes", systemImage: "doc.text.magnifyingglass")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+
             HStack(spacing: 10) {
                 Button("Accept Once") {
                     store.respondToCodexApproval(sessionID: sessionID, requestID: approval.requestID, decision: "accept")
@@ -443,6 +572,35 @@ struct SessionShelfView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.06))
         )
+    }
+
+    private func fileChangeItem(for approval: CodexPendingApproval) -> CodexFileChangeItem? {
+        guard approval.kind == .fileChange, let itemID = approval.itemId, !itemID.isEmpty else { return nil }
+        for item in store.codexItems(for: sessionID) {
+            guard case let .fileChange(fileChange) = item else { continue }
+            if fileChange.id == itemID {
+                return fileChange
+            }
+        }
+        return nil
+    }
+
+    private func diffForApproval(_ approval: CodexPendingApproval) -> String? {
+        guard approval.kind == .fileChange else { return nil }
+        if let fileChange = fileChangeItem(for: approval) {
+            let diffs = fileChange.changes
+                .map { $0.diff.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if !diffs.isEmpty {
+                return diffs.joined(separator: "\n\n")
+            }
+        }
+
+        // Fallback: use the aggregated turn diff when available.
+        if let diff = turnDiff?.diff, !diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return diff
+        }
+        return nil
     }
 
     // MARK: - Run Progress (migrated from SessionChatView)

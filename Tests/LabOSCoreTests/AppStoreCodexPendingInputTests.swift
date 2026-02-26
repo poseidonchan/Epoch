@@ -804,13 +804,13 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         var capturedMethod: String?
         store.codexRequestOverrideForTests = { method, _ in
             capturedMethod = method
-            return CodexRPCResponse(id: .string("turn_interrupt_ok"), result: .object([:]), error: nil)
+            return CodexRPCResponse(id: .string("turn_steer_ok"), result: .object([:]), error: nil)
         }
 
         store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: queued.id)
 
         try await waitUntil(timeoutSeconds: 1.0) {
-            capturedMethod == "turn/interrupt"
+            capturedMethod == "turn/steer"
         }
         XCTAssertNil(store.codexPendingPrompt(for: sessionID))
     }
@@ -1274,6 +1274,76 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         store.codexRequestOverrideForTests = { method, params in
             capturedRequests.append((method, params))
             switch method {
+            case "turn/steer":
+                return CodexRPCResponse(id: .string("ok"), result: .object([:]), error: nil)
+            default:
+                XCTFail("Unexpected Codex request: \(method)")
+                return CodexRPCResponse(id: .string("ok"), result: .object([:]), error: nil)
+            }
+        }
+
+        let target = try XCTUnwrap(queuedBefore.dropFirst().first)
+        store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: target.id)
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            capturedRequests.contains(where: { $0.method == "turn/steer" })
+        }
+
+        XCTAssertEqual(capturedRequests.first?.method, "turn/steer")
+        XCTAssertEqual(
+            capturedRequests.first?.params,
+            .object([
+                "threadId": .string("thread_queued"),
+                "turnId": .string("turn_active"),
+                "input": .array([
+                    .object([
+                        "type": .string("text"),
+                        "text": .string("second queued steer"),
+                    ]),
+                    .object([
+                        "type": .string("attachment"),
+                        "name": .string("note.txt"),
+                        "mimeType": .string("text/plain"),
+                        "inlineDataBase64": .string(attachmentBase64),
+                    ]),
+                ]),
+            ])
+        )
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            store.codexQueuedInputs(for: sessionID).count == 1
+        }
+        XCTAssertEqual(store.codexQueuedInputs(for: sessionID).first?.text, "first queued steer")
+        XCTAssertFalse(capturedRequests.contains(where: { $0.method == "turn/start" }))
+    }
+
+    func testSteerQueuedCodexInputFallbackToInterruptWhenSteerUnsupported() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        store.projects = [Project(id: projectID, name: "Steer Fallback Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_queued"
+            ),
+        ]
+        store.codexThreadBySession[sessionID] = "thread_queued"
+        store.codexSessionByThread["thread_queued"] = sessionID
+        store.codexActiveTurnIDBySession[sessionID] = "turn_active"
+        store.streamingSessions.insert(sessionID)
+        store.codexConnectionState = .connected
+        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "queued steer fallback")
+
+        var capturedRequests: [(method: String, params: JSONValue?)] = []
+        store.codexRequestOverrideForTests = { method, params in
+            capturedRequests.append((method, params))
+            switch method {
+            case "turn/steer":
+                throw NSError(domain: "Test", code: -32601, userInfo: [NSLocalizedDescriptionKey: "Method not found"])
             case "turn/interrupt":
                 return CodexRPCResponse(id: .string("ok"), result: .object([:]), error: nil)
             case "turn/start":
@@ -1294,21 +1364,15 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
             }
         }
 
-        let target = try XCTUnwrap(queuedBefore.dropFirst().first)
+        let target = try XCTUnwrap(store.codexQueuedInputs(for: sessionID).first)
         store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: target.id)
 
         try await waitUntil(timeoutSeconds: 1.0) {
             capturedRequests.contains(where: { $0.method == "turn/interrupt" })
         }
 
-        XCTAssertEqual(capturedRequests.first?.method, "turn/interrupt")
-        XCTAssertEqual(
-            capturedRequests.first?.params,
-            .object([
-                "threadId": .string("thread_queued"),
-                "turnId": .string("turn_active"),
-            ])
-        )
+        XCTAssertEqual(capturedRequests.first?.method, "turn/steer")
+        XCTAssertEqual(capturedRequests.dropFirst().first?.method, "turn/interrupt")
 
         store._receiveCodexNotificationForTesting(
             CodexRPCNotification(
@@ -1326,32 +1390,78 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         try await waitUntil(timeoutSeconds: 1.0) {
             capturedRequests.contains(where: { $0.method == "turn/start" })
         }
+        try await waitUntil(timeoutSeconds: 1.0) {
+            store.codexQueuedInputs(for: sessionID).isEmpty
+        }
+    }
 
-        let turnStart = try XCTUnwrap(capturedRequests.first(where: { $0.method == "turn/start" }))
+    func testSteerQueuedCodexInputRetriesWithTextWhenInputPayloadRejected() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        store.projects = [Project(id: projectID, name: "Steer Text Retry Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_queued"
+            ),
+        ]
+        store.codexThreadBySession[sessionID] = "thread_queued"
+        store.codexSessionByThread["thread_queued"] = sessionID
+        store.codexActiveTurnIDBySession[sessionID] = "turn_active"
+        store.streamingSessions.insert(sessionID)
+        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "retry steer text")
+
+        var capturedRequests: [(method: String, params: JSONValue?)] = []
+        store.codexRequestOverrideForTests = { method, params in
+            capturedRequests.append((method, params))
+            if method == "turn/steer" {
+                if params?.objectValue?["input"] != nil {
+                    throw NSError(domain: "Test", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid input payload"])
+                }
+                return CodexRPCResponse(id: .string("ok"), result: .object([:]), error: nil)
+            }
+            XCTFail("Unexpected Codex request: \(method)")
+            return CodexRPCResponse(id: .string("ok"), result: .object([:]), error: nil)
+        }
+
+        let target = try XCTUnwrap(store.codexQueuedInputs(for: sessionID).first)
+        store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: target.id)
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            capturedRequests.filter { $0.method == "turn/steer" }.count >= 2
+        }
+
+        let steerCalls = capturedRequests.filter { $0.method == "turn/steer" }
+        XCTAssertEqual(steerCalls.count, 2)
         XCTAssertEqual(
-            turnStart.params,
+            steerCalls.first?.params,
             .object([
                 "threadId": .string("thread_queued"),
+                "turnId": .string("turn_active"),
                 "input": .array([
                     .object([
                         "type": .string("text"),
-                        "text": .string("second queued steer"),
-                    ]),
-                    .object([
-                        "type": .string("attachment"),
-                        "name": .string("note.txt"),
-                        "mimeType": .string("text/plain"),
-                        "inlineDataBase64": .string(attachmentBase64),
+                        "text": .string("retry steer text"),
                     ]),
                 ]),
-                "planMode": .bool(false),
+            ])
+        )
+        XCTAssertEqual(
+            steerCalls.last?.params,
+            .object([
+                "threadId": .string("thread_queued"),
+                "turnId": .string("turn_active"),
+                "text": .string("retry steer text"),
             ])
         )
 
         try await waitUntil(timeoutSeconds: 1.0) {
-            store.codexQueuedInputs(for: sessionID).count == 1
+            store.codexQueuedInputs(for: sessionID).isEmpty
         }
-        XCTAssertEqual(store.codexQueuedInputs(for: sessionID).first?.text, "first queued steer")
     }
 
     func testSteerQueuedCodexInputFailureMarksRowRetryable() async throws {

@@ -62,6 +62,38 @@ struct ProjectPageView: View {
         return "\(projectFileCount) uploaded files"
     }
 
+    private var projectCodexSkillsState: CodexSkillsListState {
+        store.codexSkillsState(for: composerDraftSessionID)
+    }
+
+    private var projectComposerSkillOptions: [InlineComposerView.SkillOption] {
+        projectCodexSkillsState.inlineComposerSkillOptions()
+    }
+
+    private var projectSkillLoadCwds: [String]? {
+        guard let workspacePath = project?.hpcWorkspacePath?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !workspacePath.isEmpty
+        else {
+            return nil
+        }
+        return [workspacePath]
+    }
+
+    private var projectSkillSuggestions: ComposerSkillSuggestionState? {
+        ComposerSkillSuggestionState.make(
+            text: seedPrompt,
+            skillOptions: projectComposerSkillOptions,
+            skillsAreLoading: projectCodexSkillsState.isLoading,
+            skillsErrorText: projectCodexSkillsState.error,
+            canRefresh: true
+        )
+    }
+
+    private var showsProjectSkillSuggestionShelf: Bool {
+        projectSkillSuggestions?.isVisible == true
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -94,10 +126,33 @@ struct ProjectPageView: View {
         .background(Color(.systemGroupedBackground))
         .safeAreaInset(edge: .bottom, spacing: 0) {
             CodexDockView(
-                showsShelf: false,
+                showsShelf: showsProjectSkillSuggestionShelf,
                 showsFooter: false,
                 shelf: {
-                    EmptyView()
+                    if let projectSkillSuggestions, projectSkillSuggestions.isVisible {
+                        SkillSuggestionShelfView(
+                            state: projectSkillSuggestions,
+                            onSelect: { option in
+                                guard let updated = ComposerSkillSuggestionState.replacingTrailingToken(
+                                    in: seedPrompt,
+                                    with: option
+                                ) else { return }
+                                seedPrompt = updated
+                            },
+                            onRefresh: {
+                                store.refreshCodexSkills(
+                                    sessionID: composerDraftSessionID,
+                                    cwds: projectSkillLoadCwds,
+                                    forceReload: true
+                                )
+                            },
+                            accessibilityPrefix: "project.shelf.skillSuggestions"
+                        )
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                    } else {
+                        EmptyView()
+                    }
                 },
                 composer: {
                     projectComposer
@@ -106,6 +161,12 @@ struct ProjectPageView: View {
                     EmptyView()
                 }
             )
+        }
+        .onAppear {
+            guard projectCodexSkillsState.updatedAt == nil,
+                  !projectCodexSkillsState.isLoading
+            else { return }
+            store.refreshCodexSkills(sessionID: composerDraftSessionID, cwds: projectSkillLoadCwds)
         }
         .sheet(isPresented: $renameProjectPresented) {
             NamePromptSheet(
@@ -368,6 +429,16 @@ struct ProjectPageView: View {
             },
             modelOptions: store.availableModels,
             thinkingLevelOptions: store.availableThinkingLevels.isEmpty ? ThinkingLevel.allCases : store.availableThinkingLevels,
+            skillOptions: projectComposerSkillOptions,
+            skillsAreLoading: projectCodexSkillsState.isLoading,
+            skillsErrorText: projectCodexSkillsState.error,
+            onRefreshSkills: {
+                store.refreshCodexSkills(
+                    sessionID: composerDraftSessionID,
+                    cwds: projectSkillLoadCwds,
+                    forceReload: true
+                )
+            },
             contextRemainingFraction: store.contextRemainingFraction(for: composerDraftSessionID),
             contextWindowTokens: store.contextWindowTokens(for: composerDraftSessionID) ?? 258_000
         ) {

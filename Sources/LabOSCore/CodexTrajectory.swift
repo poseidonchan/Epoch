@@ -117,21 +117,20 @@ public enum CodexTrajectoryAssembler {
             let finalAnswer = finalAnswerItem(in: chunk.items)
             let finalAnswerIndex = finalAnswer?.index
             let finalAnswerItem = finalAnswer?.item
-
-            let trajectorySlice: ArraySlice<CodexThreadItem> = {
-                if let finalAnswerIndex {
-                    return chunk.items[1..<finalAnswerIndex]
-                }
-                return chunk.items.dropFirst()
-            }()
+            // Include all items for this turn (after the user message) except the final answer itself.
+            // Some engines emit a `plan` item after the final agent message, and we still want that
+            // to appear in trajectory leaves (for plan extraction/UI) rather than being dropped.
+            let leafCapacity = max(0, chunk.items.count - 1 - (finalAnswerIndex == nil ? 0 : 1))
 
             var hasThinkingStatus = false
             var leaves: [CodexTrajectoryLeaf] = []
-            leaves.reserveCapacity(trajectorySlice.count)
+            leaves.reserveCapacity(leafCapacity)
             var durationAccumulator = 0
             var hasDuration = false
 
-            for item in trajectorySlice {
+            for (index, item) in chunk.items.enumerated() {
+                if index == 0 { continue }
+                if let finalAnswerIndex, index == finalAnswerIndex { continue }
                 switch item {
                 case .userMessage:
                     continue

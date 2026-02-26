@@ -5,7 +5,7 @@ public enum CodexProposedPlanExtractor {
     private static let truncationSuffix = "\n[...truncated...]"
 
     public static func extract(from items: [CodexThreadItem], allowHeuristicFallback: Bool) -> String? {
-        for item in items {
+        for item in items.reversed() {
             guard case let .agentMessage(agent) = item else { continue }
             if let block = CodexProposedPlanParser.parse(from: agent.text),
                let normalized = normalize(block.planText) {
@@ -13,7 +13,7 @@ public enum CodexProposedPlanExtractor {
             }
         }
 
-        for item in items {
+        for item in items.reversed() {
             guard case let .plan(plan) = item else { continue }
             if let normalized = normalize(plan.text) {
                 return normalized

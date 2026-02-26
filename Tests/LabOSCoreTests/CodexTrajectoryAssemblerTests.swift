@@ -169,6 +169,41 @@ final class CodexTrajectoryAssemblerTests: XCTestCase {
         XCTAssertFalse(turn.trajectoryLeaves.contains(where: { $0.id == "a_final" }))
     }
 
+    func testTrajectoryIncludesPlanItemsEmittedAfterFinalAnswer() throws {
+        let items: [CodexThreadItem] = [
+            .userMessage(
+                CodexUserMessageItem(
+                    type: "userMessage",
+                    id: "u1",
+                    content: [CodexUserInput(type: "text", text: "q", url: nil, path: nil)]
+                )
+            ),
+            .agentMessage(
+                CodexAgentMessageItem(type: "agentMessage", id: "a_final", text: "final")
+            ),
+            .plan(
+                CodexPlanItem(
+                    type: "plan",
+                    id: "p1",
+                    text: """
+                    - Step A
+                    - Step B
+                    - Step C
+                    """
+                )
+            ),
+        ]
+
+        let turns = CodexTrajectoryAssembler.assemble(from: items, isStreaming: false)
+        let turn = try XCTUnwrap(turns.first)
+        XCTAssertEqual(turn.finalAnswerItemID, "a_final")
+        XCTAssertFalse(turn.trajectoryLeaves.contains(where: { $0.id == "a_final" }))
+        XCTAssertTrue(turn.trajectoryLeaves.contains(where: { $0.id == "p1" }))
+
+        let proposed = CodexProposedPlanExtractor.extract(from: turn.trajectoryLeaves.map(\.item), allowHeuristicFallback: false)
+        XCTAssertEqual(proposed, "- Step A\n- Step B\n- Step C")
+    }
+
     func testReasoningUnknownSetsThinkingFlagAndIsNotLeaf() throws {
         let items: [CodexThreadItem] = [
             .userMessage(
