@@ -579,16 +579,32 @@ export class CodexRpcRouter {
     if (method === "thread/tokenUsage/updated") {
       const tokenUsage = params.tokenUsage as Record<string, unknown> | undefined;
       if (tokenUsage) {
-        const contextWindowTokens = normalizeNumericTokenCount(tokenUsage.contextWindow ?? tokenUsage.contextWindowTokens);
-        const usedInputTokens = normalizeNumericTokenCount(tokenUsage.inputTokens ?? tokenUsage.totalInputTokens);
-        const usedTokens = normalizeNumericTokenCount(tokenUsage.totalTokens ?? tokenUsage.totalInputTokens ?? tokenUsage.inputTokens);
-        const modelId = normalizeNonEmptyString(tokenUsage.model) ?? normalizeNonEmptyString(tokenUsage.modelId);
+        const lastUsage = normalizeObject(tokenUsage.last);
+        const totalUsage = normalizeObject(tokenUsage.total);
+        const contextWindowTokens = normalizeNumericTokenCount(
+          tokenUsage.modelContextWindow ?? tokenUsage.contextWindow ?? tokenUsage.contextWindowTokens
+        );
+        const usedInputTokens = normalizeNumericTokenCount(
+          lastUsage?.inputTokens ?? tokenUsage.inputTokens ?? tokenUsage.totalInputTokens ?? totalUsage?.inputTokens
+        );
+        const usedTokens = normalizeNumericTokenCount(
+          lastUsage?.totalTokens ??
+            tokenUsage.totalTokens ??
+            totalUsage?.totalTokens ??
+            tokenUsage.totalInputTokens ??
+            tokenUsage.inputTokens
+        );
+        const modelId =
+          normalizeNonEmptyString(tokenUsage.model) ??
+          normalizeNonEmptyString(tokenUsage.modelId) ??
+          normalizeNonEmptyString(lastUsage?.model) ??
+          normalizeNonEmptyString(totalUsage?.model);
 
         const mapped = await this.repository.findSessionByThread(threadId);
         if (mapped && contextWindowTokens != null && usedInputTokens != null && usedTokens != null) {
           await this.repository.query(
             `UPDATE sessions
-             SET context_model_id=$1,
+             SET context_model_id=COALESCE($1, context_model_id),
                  context_window_tokens=$2,
                  context_used_input_tokens=$3,
                  context_used_tokens=$4,
@@ -1041,6 +1057,11 @@ function normalizeNumericTokenCount(raw: unknown): number | null {
     }
   }
   return null;
+}
+
+function normalizeObject(raw: unknown): Record<string, unknown> | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  return raw as Record<string, unknown>;
 }
 
 function scopedTurnId(threadId: string, turnId: string): string {
