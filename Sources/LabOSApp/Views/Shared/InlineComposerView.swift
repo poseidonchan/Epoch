@@ -348,7 +348,9 @@ struct InlineComposerView: View {
         HStack(alignment: .center, spacing: 12) {
             Spacer(minLength: 0)
             permissionMenu
-            ContextRingView(progress: remainingContext, totalContextTokens: contextWindowTokens)
+            if useEstimatedContextFallback || contextRemainingFraction != nil {
+                ContextRingView(progress: remainingContext, totalContextTokens: contextWindowTokens)
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 24)

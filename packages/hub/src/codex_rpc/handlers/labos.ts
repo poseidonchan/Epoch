@@ -649,6 +649,7 @@ export async function handleLabosSessionRead(
   }
 
   const session = mapSessionRow(sessionRow, ctx.pendingUserInputSummaryBySession?.get(sessionId));
+  const context = mapSessionContextRow(sessionRow);
   const pendingInputs = await ctx.repository.listPendingInputsForSession({
     sessionId,
     token: ctx.runtimeToken ?? null,
@@ -660,6 +661,7 @@ export async function handleLabosSessionRead(
   const response: Record<string, unknown> = {
     session,
     thread,
+    ...(context ? { context } : {}),
     pendingUserInputs: pendingInputs.map((entry) => ({
       requestId: entry.requestId,
       method: entry.method,
@@ -967,6 +969,44 @@ function mapSessionRow(row: any, pendingSummary?: { count: number; kind: string 
     hasPendingUserInput: pendingCount > 0,
     pendingUserInputCount: pendingCount,
     pendingUserInputKind: pendingSummary?.kind ?? null,
+  };
+}
+
+function mapSessionContextRow(row: any) {
+  const projectId = normalizeNonEmptyString(row.project_id);
+  const sessionId = normalizeNonEmptyString(row.id);
+  if (!projectId || !sessionId) return null;
+
+  const modelId = normalizeNonEmptyString(row.context_model_id);
+  const contextWindowTokens = normalizeNumericTokenCount(row.context_window_tokens);
+  const usedInputTokens = normalizeNumericTokenCount(row.context_used_input_tokens);
+  const usedTokens = normalizeNumericTokenCount(row.context_used_tokens);
+  const updatedAt = row.context_updated_at == null ? null : toIso(row.context_updated_at);
+  const remainingTokens =
+    typeof contextWindowTokens === "number" && typeof usedInputTokens === "number"
+      ? Math.max(0, Math.max(1, Math.floor(contextWindowTokens)) - Math.max(0, Math.floor(usedInputTokens)))
+      : typeof contextWindowTokens === "number" && typeof usedTokens === "number"
+        ? Math.max(0, Math.max(1, Math.floor(contextWindowTokens)) - Math.max(0, Math.floor(usedTokens)))
+        : null;
+
+  const hasContextData =
+    modelId != null ||
+    contextWindowTokens != null ||
+    usedInputTokens != null ||
+    usedTokens != null ||
+    updatedAt != null;
+  if (!hasContextData) return null;
+
+  return {
+    projectId,
+    sessionId,
+    permissionLevel: normalizeNonEmptyString(row.permission_level) ?? "default",
+    modelId,
+    contextWindowTokens,
+    usedInputTokens,
+    usedTokens,
+    remainingTokens,
+    updatedAt,
   };
 }
 
@@ -1648,6 +1688,19 @@ function normalizeNonEmptyString(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeNumericTokenCount(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return Math.max(0, Math.floor(raw));
+  }
+  if (typeof raw === "string" && raw.trim()) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) {
+      return Math.max(0, Math.floor(parsed));
+    }
+  }
+  return null;
 }
 
 function toIso(raw: unknown): string {

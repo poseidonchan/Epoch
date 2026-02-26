@@ -5,6 +5,7 @@ struct CodexTrajectorySummaryBar: View {
     let turnID: String
     let isExpanded: Bool
     let isStreaming: Bool
+    let isInterrupted: Bool
     let startedAt: Date?
     let completedDurationMs: Int?
     let estimatedDurationMs: Int?
@@ -47,13 +48,20 @@ struct CodexTrajectorySummaryBar: View {
     }
 
     private var staticSummary: String {
-        if let completedDurationMs, completedDurationMs > 0 {
-            return "Worked for \(Self.format(durationMs: completedDurationMs))"
+        let summary: String = {
+            if let completedDurationMs, completedDurationMs > 0 {
+                return "Worked for \(Self.format(durationMs: completedDurationMs))"
+            }
+            if let estimatedDurationMs, estimatedDurationMs > 0 {
+                return "Worked for \(Self.format(durationMs: estimatedDurationMs))"
+            }
+            return "Worked"
+        }()
+
+        if isInterrupted {
+            return "\(summary) • Interrupted"
         }
-        if let estimatedDurationMs, estimatedDurationMs > 0 {
-            return "Worked for \(Self.format(durationMs: estimatedDurationMs))"
-        }
-        return "Worked"
+        return summary
     }
 
     private static func format(durationMs: Int) -> String {

@@ -316,71 +316,43 @@ internal final class ChatSessionService {
             return
         }
 
-        let payloads = loadQueuedAttachmentPayloads(item.attachments)
-        let localEchoContent = makeLocalEchoContent(text: trimmedText, queuedAttachments: payloads)
-        let optimisticLocalEchoID = appendLocalCodexUserEcho(sessionID: sessionID, content: localEchoContent)
-
+        moveQueuedCodexInputToFront(sessionID: sessionID, itemID: queueItemID)
         updateCodexQueuedInput(sessionID: sessionID, itemID: queueItemID) { queued in
             queued.status = .sending
             queued.error = nil
         }
 
-        let steerInput = makeCodexSteerInputParts(text: trimmedText, queuedAttachments: payloads)
+        store.suppressCodexTurn(sessionID: sessionID, turnID: turnId)
         Task { [weak self] in
             guard let self else { return }
             do {
                 _ = try await self.store.requestCodex(
-                    method: "turn/steer",
-                    params: CodexTurnSteerParams(
-                        threadId: threadId,
-                        turnId: turnId,
-                        input: steerInput,
-                        text: nil
-                    )
+                    method: "turn/interrupt",
+                    params: CodexTurnInterruptParams(threadId: threadId, turnId: turnId)
                 )
-                await MainActor.run {
-                    self.removeQueuedCodexInput(
-                        sessionID: sessionID,
-                        queueItemID: queueItemID,
-                        deleteAttachmentFiles: true
-                    )
-                }
             } catch {
                 await MainActor.run {
-                    if self.isUnsupportedSteerMethodError(error) {
-                        if let optimisticLocalEchoID {
-                            self.removeLocalCodexUserEcho(sessionID: sessionID, itemID: optimisticLocalEchoID)
-                        }
-                        self.moveQueuedCodexInputToFront(sessionID: sessionID, itemID: queueItemID)
-                        self.updateCodexQueuedInput(sessionID: sessionID, itemID: queueItemID) { queued in
-                            queued.status = .queued
-                            queued.error = nil
-                        }
-                        Task { [weak self] in
-                            guard let self else { return }
-                            do {
-                                _ = try await self.store.requestCodex(
-                                    method: "turn/interrupt",
-                                    params: CodexTurnInterruptParams(threadId: threadId, turnId: turnId)
-                                )
-                            } catch {
-                                await MainActor.run {
-                                    self.updateCodexQueuedInput(sessionID: sessionID, itemID: queueItemID) { queued in
-                                        queued.status = .failed
-                                        queued.error = error.localizedDescription
-                                    }
-                                }
-                            }
-                        }
-                        return
-                    }
-                    if let optimisticLocalEchoID {
-                        self.removeLocalCodexUserEcho(sessionID: sessionID, itemID: optimisticLocalEchoID)
-                    }
+                    self.store.unsuppressCodexTurn(sessionID: sessionID, turnID: turnId)
                     self.updateCodexQueuedInput(sessionID: sessionID, itemID: queueItemID) { queued in
                         queued.status = .failed
                         queued.error = error.localizedDescription
                     }
+                }
+            }
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            await MainActor.run {
+                guard self.store.streamingSessions.contains(sessionID) else { return }
+                guard self.store.codexActiveTurnID(for: sessionID) == turnId else { return }
+                guard self.store.isCodexTurnSuppressed(sessionID: sessionID, turnID: turnId) else { return }
+
+                self.store.unsuppressCodexTurn(sessionID: sessionID, turnID: turnId)
+                self.updateCodexQueuedInput(sessionID: sessionID, itemID: queueItemID) { queued in
+                    queued.status = .failed
+                    queued.error = "Interrupt timed out."
                 }
             }
         }
@@ -397,7 +369,7 @@ internal final class ChatSessionService {
 
         store.ensureCodexQueuedInputsLoaded(sessionID: sessionID)
         guard let next = store.codexQueuedInputs(for: sessionID).first else { return }
-        guard next.status == .queued else { return }
+        guard next.status != .failed else { return }
 
         sendCodexQueuedInputAsNextTurn(projectID: projectID, sessionID: sessionID, queuedItemID: next.id)
     }
@@ -1512,6 +1484,37 @@ internal final class ChatSessionService {
                 }
             } else {
                 store.codexItemsBySession[sessionID] = store.codexItemsBySession[sessionID] ?? []
+            }
+
+            let contextPayload: SessionContextState? = {
+                guard let payload = resultObject["context"] else { return nil }
+                guard let data = try? store.gatewayJSONEncoder.encode(payload) else { return nil }
+                return try? store.gatewayJSONDecoder.decode(SessionContextState.self, from: data)
+            }()
+            if let contextPayload {
+                store.sessionContextBySession[sessionID] = contextPayload
+                if let level = AppStore.parsePermissionLevel(contextPayload.permissionLevel) {
+                    store.permissionLevelBySession[sessionID] = level
+                }
+
+                let usageThreadId = (
+                    thread?.id
+                    ?? session.codexThreadId
+                    ?? store.codexThreadBySession[sessionID]
+                    ?? store.codexTokenUsageBySession[sessionID]?.threadId
+                    ?? ""
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !usageThreadId.isEmpty {
+                    store.codexTokenUsageBySession[sessionID] = CodexTokenUsage(
+                        threadId: usageThreadId,
+                        inputTokens: contextPayload.usedInputTokens,
+                        outputTokens: nil,
+                        totalTokens: contextPayload.usedTokens,
+                        contextWindowTokens: contextPayload.contextWindowTokens,
+                        remainingTokens: contextPayload.remainingTokens,
+                        model: contextPayload.modelId
+                    )
+                }
             }
 
             let pendingInputs: [CodexSessionReadPendingInputPayload] = {

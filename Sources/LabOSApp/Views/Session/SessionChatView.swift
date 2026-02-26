@@ -83,6 +83,7 @@ struct SessionChatView: View {
                                 statusText: codexStatusText,
                                 persistedDurationByTurnID: codexTrajectoryDurationByTurnID,
                                 isPlanModeEnabled: store.planModeEnabled(for: sessionID),
+                                interruptedTurnIDs: store.codexInterruptedTurnIDs(sessionID: sessionID),
                                 isStreaming: store.streamingSessions.contains(sessionID),
                                 showAssistantActionBar: true,
                                 onEditUserMessage: { item in

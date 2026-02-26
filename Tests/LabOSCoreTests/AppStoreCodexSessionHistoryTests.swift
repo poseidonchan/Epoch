@@ -216,6 +216,119 @@ final class AppStoreCodexSessionHistoryTests: XCTestCase {
         XCTAssertEqual(store.codexStatusTextBySession[sessionID], "completed")
     }
 
+    func testOpenSessionHydratesContextFromSessionRead() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        let threadID = "thr_history_context_1"
+
+        store.projects = [
+            Project(id: projectID, name: "Codex History Context Project"),
+        ]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Codex Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: threadID
+            ),
+        ]
+        store.codexConnectionState = .connected
+
+        let thread = CodexThread(
+            id: threadID,
+            preview: "context",
+            modelProvider: "openai",
+            createdAt: 1,
+            updatedAt: 2,
+            path: nil,
+            cwd: "/tmp",
+            cliVersion: "0.1.0",
+            source: "appServer",
+            gitInfo: nil,
+            turns: [
+                CodexTurn(
+                    id: "turn_ctx_1",
+                    items: [
+                        .userMessage(
+                            CodexUserMessageItem(
+                                type: "userMessage",
+                                id: "item_ctx_user_1",
+                                content: [CodexUserInput(type: "text", text: "Hi", url: nil, path: nil)]
+                            )
+                        ),
+                        .agentMessage(
+                            CodexAgentMessageItem(
+                                type: "agentMessage",
+                                id: "item_ctx_agent_1",
+                                text: "Context ready"
+                            )
+                        ),
+                    ],
+                    status: "completed",
+                    error: nil
+                ),
+            ]
+        )
+        let context = SessionContextState(
+            projectId: projectID,
+            sessionId: sessionID,
+            permissionLevel: "full",
+            modelId: "gpt-5.1",
+            contextWindowTokens: 100000,
+            usedInputTokens: 12000,
+            usedTokens: 19000,
+            remainingTokens: 88000,
+            updatedAt: Date(timeIntervalSince1970: 1_772_200_000)
+        )
+
+        let codexSession = store.sessionsByProject[projectID]![0]
+        store.codexRequestOverrideForTests = { method, _ in
+            switch method {
+            case "labos/session/read":
+                let sessionJSON = try Self.encodeJSONValue(codexSession, store: store)
+                let threadJSON = try Self.encodeJSONValue(thread, store: store)
+                let contextJSON = try Self.encodeJSONValue(context, store: store)
+                return CodexRPCResponse(
+                    id: .string(UUID().uuidString),
+                    result: .object([
+                        "session": sessionJSON,
+                        "thread": threadJSON,
+                        "context": contextJSON,
+                    ]),
+                    error: nil
+                )
+            default:
+                XCTFail("Unexpected method: \(method)")
+                throw NSError(domain: "LabOSCoreTests", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unexpected method"])
+            }
+        }
+        defer { store.codexRequestOverrideForTests = nil }
+
+        store.openSession(projectID: projectID, sessionID: sessionID)
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            store.sessionContextBySession[sessionID]?.remainingTokens == 88000
+        }
+
+        let hydratedContext = try XCTUnwrap(store.sessionContextBySession[sessionID])
+        XCTAssertEqual(hydratedContext.permissionLevel, "full")
+        XCTAssertEqual(hydratedContext.contextWindowTokens, 100000)
+        XCTAssertEqual(hydratedContext.usedInputTokens, 12000)
+        XCTAssertEqual(hydratedContext.usedTokens, 19000)
+        XCTAssertEqual(hydratedContext.remainingTokens, 88000)
+
+        let usage = try XCTUnwrap(store.codexTokenUsageBySession[sessionID])
+        XCTAssertEqual(usage.threadId, threadID)
+        XCTAssertEqual(usage.inputTokens, 12000)
+        XCTAssertEqual(usage.totalTokens, 19000)
+        XCTAssertEqual(usage.contextWindowTokens, 100000)
+        XCTAssertEqual(usage.remainingTokens, 88000)
+        let fraction = try XCTUnwrap(store.contextRemainingFraction(for: sessionID))
+        XCTAssertEqual(fraction, 0.88, accuracy: 0.0001)
+    }
+
     private static func encodeJSONValue<T: Encodable>(_ value: T, store: AppStore) throws -> JSONValue {
         let data = try store.gatewayJSONEncoder.encode(value)
         return try store.gatewayJSONDecoder.decode(JSONValue.self, from: data)

@@ -601,13 +601,13 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         var capturedMethod: String?
         store.codexRequestOverrideForTests = { method, _ in
             capturedMethod = method
-            return CodexRPCResponse(id: .string("turn_steer_ok"), result: .object([:]), error: nil)
+            return CodexRPCResponse(id: .string("turn_interrupt_ok"), result: .object([:]), error: nil)
         }
 
         store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: queued.id)
 
         try await waitUntil(timeoutSeconds: 1.0) {
-            capturedMethod == "turn/steer"
+            capturedMethod == "turn/interrupt"
         }
         XCTAssertNil(store.codexPendingPrompt(for: sessionID))
     }
@@ -823,8 +823,10 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
             ),
         ]
         store.codexThreadBySession[sessionID] = "thread_queued"
+        store.codexSessionByThread["thread_queued"] = sessionID
         store.codexActiveTurnIDBySession[sessionID] = "turn_active"
         store.streamingSessions.insert(sessionID)
+        store.codexConnectionState = .connected
 
         store.sendMessage(projectID: projectID, sessionID: sessionID, text: "first queued steer")
         let attachmentData = Data("hello".utf8)
@@ -845,27 +847,68 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         let queuedBefore = store.codexQueuedInputs(for: sessionID)
         XCTAssertEqual(queuedBefore.count, 2)
 
-        var capturedMethod: String?
-        var capturedParams: JSONValue?
+        var capturedRequests: [(method: String, params: JSONValue?)] = []
         store.codexRequestOverrideForTests = { method, params in
-            capturedMethod = method
-            capturedParams = params
-            return CodexRPCResponse(id: .string("ok"), result: .object([:]), error: nil)
+            capturedRequests.append((method, params))
+            switch method {
+            case "turn/interrupt":
+                return CodexRPCResponse(id: .string("ok"), result: .object([:]), error: nil)
+            case "turn/start":
+                return CodexRPCResponse(
+                    id: .string("turn_start_ok"),
+                    result: .object([
+                        "threadId": .string("thread_queued"),
+                        "turn": .object([
+                            "id": .string("turn_after_steer"),
+                            "status": .string("inProgress"),
+                        ]),
+                    ]),
+                    error: nil
+                )
+            default:
+                XCTFail("Unexpected Codex request: \(method)")
+                return CodexRPCResponse(id: .string("ok"), result: .object([:]), error: nil)
+            }
         }
 
         let target = try XCTUnwrap(queuedBefore.dropFirst().first)
         store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: target.id)
 
         try await waitUntil(timeoutSeconds: 1.0) {
-            store.codexQueuedInputs(for: sessionID).count == 1
+            capturedRequests.contains(where: { $0.method == "turn/interrupt" })
         }
 
-        XCTAssertEqual(capturedMethod, "turn/steer")
+        XCTAssertEqual(capturedRequests.first?.method, "turn/interrupt")
         XCTAssertEqual(
-            capturedParams,
+            capturedRequests.first?.params,
             .object([
                 "threadId": .string("thread_queued"),
                 "turnId": .string("turn_active"),
+            ])
+        )
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "turn/completed",
+                params: .object([
+                    "threadId": .string("thread_queued"),
+                    "turn": .object([
+                        "id": .string("turn_active"),
+                        "status": .string("interrupted"),
+                    ]),
+                ])
+            )
+        )
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            capturedRequests.contains(where: { $0.method == "turn/start" })
+        }
+
+        let turnStart = try XCTUnwrap(capturedRequests.first(where: { $0.method == "turn/start" }))
+        XCTAssertEqual(
+            turnStart.params,
+            .object([
+                "threadId": .string("thread_queued"),
                 "input": .array([
                     .object([
                         "type": .string("text"),
@@ -878,8 +921,13 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
                         "inlineDataBase64": .string(attachmentBase64),
                     ]),
                 ]),
+                "planMode": .bool(false),
             ])
         )
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            store.codexQueuedInputs(for: sessionID).count == 1
+        }
         XCTAssertEqual(store.codexQueuedInputs(for: sessionID).first?.text, "first queued steer")
     }
 
@@ -918,6 +966,63 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         XCTAssertEqual(queuedAfter.text, "retry steer")
         XCTAssertEqual(queuedAfter.status, .failed)
         XCTAssertNotNil(queuedAfter.error)
+    }
+
+    func testCodexTurnCompletedInterruptedMarksTrajectoryTurnInterrupted() throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        let threadID = "thread_interrupted_marker"
+        let turnID = "turn_interrupted_marker"
+        let userItemID = "user_item_interrupted_marker"
+
+        store.projects = [Project(id: projectID, name: "Interrupted Marker Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Interrupted Marker Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: threadID
+            ),
+        ]
+        store.codexThreadBySession[sessionID] = threadID
+        store.codexSessionByThread[threadID] = sessionID
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "item/started",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "turnId": .string(turnID),
+                    "item": .object([
+                        "type": .string("userMessage"),
+                        "id": .string(userItemID),
+                        "content": .array([
+                            .object([
+                                "type": .string("text"),
+                                "text": .string("hello"),
+                            ]),
+                        ]),
+                    ]),
+                ])
+            )
+        )
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "turn/completed",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "turn": .object([
+                        "id": .string(turnID),
+                        "status": .string("interrupted"),
+                    ]),
+                ])
+            )
+        )
+
+        XCTAssertTrue(store.codexInterruptedTurnIDs(sessionID: sessionID).contains(userItemID))
     }
 
     func testTurnCompletedDrainsQueuedInputsWhenNoPendingUserInput() async throws {
@@ -1384,6 +1489,125 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         )
 
         XCTAssertNil(store.livePlanBySession[sessionID])
+    }
+
+    func testThreadTokenUsageUpdatedParsesNestedShapeAndHydratesContextState() throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        let threadID = "thread_usage_nested"
+
+        store.projects = [Project(id: projectID, name: "Usage Nested Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Usage Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: threadID
+            ),
+        ]
+        store.codexSessionByThread[threadID] = sessionID
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "thread/tokenUsage/updated",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "tokenUsage": .object([
+                        "modelContextWindow": .number(200000),
+                        "last": .object([
+                            "inputTokens": .number(4321),
+                            "totalTokens": .number(6789),
+                            "outputTokens": .number(2468),
+                        ]),
+                    ]),
+                ])
+            )
+        )
+
+        let usage = try XCTUnwrap(store.codexTokenUsageBySession[sessionID])
+        XCTAssertEqual(usage.contextWindowTokens, 200000)
+        XCTAssertEqual(usage.inputTokens, 4321)
+        XCTAssertEqual(usage.totalTokens, 6789)
+        XCTAssertEqual(usage.outputTokens, 2468)
+        XCTAssertEqual(usage.remainingTokens, 195679)
+
+        let context = try XCTUnwrap(store.sessionContextBySession[sessionID])
+        XCTAssertEqual(context.contextWindowTokens, 200000)
+        XCTAssertEqual(context.usedInputTokens, 4321)
+        XCTAssertEqual(context.usedTokens, 6789)
+        XCTAssertEqual(context.remainingTokens, 195679)
+    }
+
+    func testThreadTokenUsageUpdatedSupportsLegacyFlatShape() throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        let threadID = "thread_usage_legacy"
+
+        store.projects = [Project(id: projectID, name: "Usage Legacy Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Usage Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: threadID
+            ),
+        ]
+        store.codexSessionByThread[threadID] = sessionID
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "thread/tokenUsage/updated",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "tokenUsage": .object([
+                        "contextWindow": .number(128000),
+                        "inputTokens": .number(2222),
+                        "totalTokens": .number(3333),
+                    ]),
+                ])
+            )
+        )
+
+        let usage = try XCTUnwrap(store.codexTokenUsageBySession[sessionID])
+        XCTAssertEqual(usage.contextWindowTokens, 128000)
+        XCTAssertEqual(usage.inputTokens, 2222)
+        XCTAssertEqual(usage.totalTokens, 3333)
+        XCTAssertEqual(usage.remainingTokens, 125778)
+    }
+
+    func testCodexContextFractionFallsBackToSessionContextState() throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+
+        store.sessionContextBySession[sessionID] = SessionContextState(
+            projectId: projectID,
+            sessionId: sessionID,
+            contextWindowTokens: 1000,
+            usedInputTokens: 250,
+            usedTokens: 400,
+            remainingTokens: 750
+        )
+        store.codexTokenUsageBySession[sessionID] = nil
+
+        XCTAssertEqual(store.contextWindowTokens(for: sessionID), 1000)
+        let fraction = try XCTUnwrap(store.contextRemainingFraction(for: sessionID))
+        XCTAssertEqual(fraction, 0.75, accuracy: 0.0001)
+    }
+
+    func testCodexContextFractionReturnsNilWhenNoUsageDataExists() {
+        let store = AppStore(bootstrapDemo: false)
+        let sessionID = UUID()
+
+        store.sessionContextBySession[sessionID] = nil
+        store.codexTokenUsageBySession[sessionID] = nil
+
+        XCTAssertNil(store.contextWindowTokens(for: sessionID))
+        XCTAssertNil(store.contextRemainingFraction(for: sessionID))
     }
 
     private func waitUntil(

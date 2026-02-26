@@ -143,6 +143,9 @@ public final class AppStore: ObservableObject {
 
     internal var codexTrajectoryDurationsBySession: [UUID: [String: Int]] = [:]
     internal var codexQueuedInputsLoadedSessions: Set<UUID> = []
+    private var codexSuppressedTurnIDsBySession: [UUID: Set<String>] = [:]
+    private var codexFirstUserMessageIDByScopedBackendTurn: [String: String] = [:]
+    private var codexInterruptedTurnIDsBySession: [UUID: Set<String>] = [:]
 
     @Published public var resourceStatus: ResourceStatus = .placeholder
 
@@ -734,6 +737,9 @@ public final class AppStore: ObservableObject {
         codexTurnDiffBySession.removeAll()
         codexTokenUsageBySession.removeAll()
         codexFullAccessBySession.removeAll()
+        codexSuppressedTurnIDsBySession.removeAll()
+        codexFirstUserMessageIDByScopedBackendTurn.removeAll()
+        codexInterruptedTurnIDsBySession.removeAll()
         codexThreadBySession.removeAll()
         codexSessionByThread.removeAll()
         codexPendingThreadBindingSessions.removeAll()
@@ -879,6 +885,28 @@ public final class AppStore: ObservableObject {
         guard let params = notification.params?.objectValue else { return }
         let threadId = normalizedOptionalString(params["threadId"]?.stringValue ?? "")
         let sessionID = self.resolveCodexSessionID(notificationParams: params, threadId: threadId)
+        let notificationTurnID: String? = {
+            switch notification.method {
+            case "turn/started", "turn/completed":
+                if let turn = params["turn"]?.objectValue,
+                   let rawTurnID = turn["id"]?.stringValue {
+                    return normalizedOptionalString(rawTurnID)
+                }
+                return nil
+            default:
+                if let rawTurnID = params["turnId"]?.stringValue {
+                    return normalizedOptionalString(rawTurnID)
+                }
+                return nil
+            }
+        }()
+
+        if notification.method != "turn/completed",
+           let sessionID,
+           let notificationTurnID,
+           isCodexTurnSuppressed(sessionID: sessionID, turnID: notificationTurnID) {
+            return
+        }
 
         switch notification.method {
         case "turn/started":
@@ -898,9 +926,22 @@ public final class AppStore: ObservableObject {
             }
         case "turn/completed":
             if let sessionID {
+                let turnId = params["turn"]?.objectValue?["id"]?.stringValue.flatMap(normalizedOptionalString)
                 if let turn = params["turn"]?.objectValue,
                    let status = turn["status"]?.stringValue {
                     codexStatusTextBySession[sessionID] = status
+
+                    let normalizedStatus = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    if normalizedStatus == "interrupted"
+                        || normalizedStatus == "canceled"
+                        || normalizedStatus == "cancelled",
+                        let threadId,
+                        let turnId,
+                        let userMessageID = codexFirstUserMessageIDByScopedBackendTurn["\(threadId)|\(turnId)"] {
+                        var interrupted = codexInterruptedTurnIDsBySession[sessionID] ?? Set()
+                        interrupted.insert(userMessageID)
+                        codexInterruptedTurnIDsBySession[sessionID] = interrupted
+                    }
                 }
                 codexActiveTurnIDBySession[sessionID] = nil
                 livePlanBySession[sessionID] = nil
@@ -912,6 +953,10 @@ public final class AppStore: ObservableObject {
                     Task { @MainActor [weak self] in
                         self?.chatService.drainCodexQueueIfPossible(projectID: session.projectID, sessionID: sessionID)
                     }
+                }
+
+                if let turnId {
+                    unsuppressCodexTurn(sessionID: sessionID, turnID: turnId)
                 }
             }
         case "turn/plan/updated":
@@ -1048,11 +1093,21 @@ public final class AppStore: ObservableObject {
     private func applyCodexItem(notificationParams params: [String: JSONValue], sessionID: UUID?) {
         guard let sessionID else { return }
         guard let itemValue = params["item"] else { return }
+        let threadId = normalizedOptionalString(params["threadId"]?.stringValue ?? "")
+        let turnId = normalizedOptionalString(params["turnId"]?.stringValue ?? "")
         guard let itemData = try? gatewayJSONEncoder.encode(itemValue),
               let item = try? gatewayJSONDecoder.decode(CodexThreadItem.self, from: itemData)
         else { return }
 
         let existing = codexItemsBySession[sessionID] ?? []
+        if let threadId,
+           let turnId,
+           case let .userMessage(incomingUser) = item {
+            let key = "\(threadId)|\(turnId)"
+            if codexFirstUserMessageIDByScopedBackendTurn[key] == nil {
+                codexFirstUserMessageIDByScopedBackendTurn[key] = incomingUser.id
+            }
+        }
         if case let .userMessage(incomingUser) = item,
            let localEchoID = Self.matchingLocalEchoUserItemID(for: incomingUser, in: existing) {
             migrateCodexTrajectoryDurationIfNeeded(sessionID: sessionID, fromTurnID: localEchoID, toTurnID: incomingUser.id)
@@ -1461,10 +1516,33 @@ public final class AppStore: ObservableObject {
         guard let threadId = params["threadId"]?.stringValue else { return }
         guard let tokenUsage = params["tokenUsage"]?.objectValue else { return }
 
-        let contextWindow = tokenUsage["contextWindow"]?.intValue ?? tokenUsage["contextWindowTokens"]?.intValue
-        let inputTokens = tokenUsage["inputTokens"]?.intValue ?? tokenUsage["totalInputTokens"]?.intValue
-        let outputTokens = tokenUsage["outputTokens"]?.intValue ?? tokenUsage["totalOutputTokens"]?.intValue
-        let totalTokens = tokenUsage["totalTokens"]?.intValue ?? inputTokens
+        let lastUsage = tokenUsage["last"]?.objectValue ?? [:]
+        let totalUsage = tokenUsage["total"]?.objectValue ?? [:]
+
+        let contextWindow = Self.codexTokenCount(
+            tokenUsage["modelContextWindow"],
+            tokenUsage["contextWindow"],
+            tokenUsage["contextWindowTokens"]
+        )
+        let inputTokens = Self.codexTokenCount(
+            lastUsage["inputTokens"],
+            tokenUsage["inputTokens"],
+            tokenUsage["totalInputTokens"],
+            totalUsage["inputTokens"]
+        )
+        let outputTokens = Self.codexTokenCount(
+            lastUsage["outputTokens"],
+            tokenUsage["outputTokens"],
+            tokenUsage["totalOutputTokens"],
+            totalUsage["outputTokens"]
+        )
+        let totalTokens = Self.codexTokenCount(
+            lastUsage["totalTokens"],
+            tokenUsage["totalTokens"],
+            totalUsage["totalTokens"],
+            tokenUsage["totalInputTokens"],
+            tokenUsage["inputTokens"]
+        )
         let remaining: Int? = {
             guard let contextWindow, let inputTokens else { return nil }
             return max(0, contextWindow - inputTokens)
@@ -1477,7 +1555,10 @@ public final class AppStore: ObservableObject {
             totalTokens: totalTokens,
             contextWindowTokens: contextWindow,
             remainingTokens: remaining,
-            model: tokenUsage["model"]?.stringValue ?? tokenUsage["modelId"]?.stringValue
+            model: tokenUsage["model"]?.stringValue
+                ?? tokenUsage["modelId"]?.stringValue
+                ?? lastUsage["model"]?.stringValue
+                ?? totalUsage["model"]?.stringValue
         )
         codexTokenUsageBySession[sessionID] = usage
 
@@ -1495,6 +1576,14 @@ public final class AppStore: ObservableObject {
                 updatedAt: Date()
             )
         }
+    }
+
+    private static func codexTokenCount(_ values: JSONValue?...) -> Int? {
+        for value in values {
+            guard let raw = value?.intValue else { continue }
+            return max(0, raw)
+        }
+        return nil
     }
 
     private func applyCodexTurnPlanUpdated(notificationParams params: [String: JSONValue], sessionID: UUID?) {
@@ -2126,6 +2215,18 @@ public final class AppStore: ObservableObject {
             return min(1, max(0, Double(remaining) / Double(contextWindow)))
         }
         if sessionUsesCodex(sessionID: sessionID) {
+            if let context = sessionContextBySession[sessionID],
+               let contextWindow = context.contextWindowTokens,
+               contextWindow > 0 {
+                if let remaining = context.remainingTokens {
+                    return min(1, max(0, Double(max(0, remaining)) / Double(contextWindow)))
+                }
+                let used = context.usedInputTokens ?? context.usedTokens
+                if let used {
+                    let remaining = max(0, contextWindow - used)
+                    return min(1, max(0, Double(remaining) / Double(contextWindow)))
+                }
+            }
             return nil
         }
         return composerService.contextRemainingFraction(for: sessionID)
@@ -2137,7 +2238,7 @@ public final class AppStore: ObservableObject {
             return contextWindow
         }
         if sessionUsesCodex(sessionID: sessionID) {
-            return nil
+            return sessionContextBySession[sessionID]?.contextWindowTokens
         }
         return composerService.contextWindowTokens(for: sessionID)
     }
@@ -2357,6 +2458,32 @@ public final class AppStore: ObservableObject {
 
     public func codexStatusText(for sessionID: UUID) -> String? {
         codexStatusTextBySession[sessionID]
+    }
+
+    public func codexInterruptedTurnIDs(sessionID: UUID) -> Set<String> {
+        codexInterruptedTurnIDsBySession[sessionID] ?? []
+    }
+
+    internal func suppressCodexTurn(sessionID: UUID, turnID: String) {
+        let normalized = turnID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        var suppressed = codexSuppressedTurnIDsBySession[sessionID] ?? Set()
+        suppressed.insert(normalized)
+        codexSuppressedTurnIDsBySession[sessionID] = suppressed
+    }
+
+    internal func unsuppressCodexTurn(sessionID: UUID, turnID: String) {
+        let normalized = turnID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        guard var suppressed = codexSuppressedTurnIDsBySession[sessionID] else { return }
+        suppressed.remove(normalized)
+        codexSuppressedTurnIDsBySession[sessionID] = suppressed.isEmpty ? nil : suppressed
+    }
+
+    internal func isCodexTurnSuppressed(sessionID: UUID, turnID: String) -> Bool {
+        let normalized = turnID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return false }
+        return codexSuppressedTurnIDsBySession[sessionID]?.contains(normalized) == true
     }
 
     public func codexTrajectoryDurations(sessionID: UUID) -> [String: Int] {

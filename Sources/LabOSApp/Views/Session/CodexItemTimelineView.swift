@@ -8,6 +8,7 @@ struct CodexItemTimelineView: View {
     let statusText: String?
     let persistedDurationByTurnID: [String: Int]
     let isPlanModeEnabled: Bool
+    let interruptedTurnIDs: Set<String>
     var isStreaming: Bool = false
     var showAssistantActionBar: Bool = true
     var onEditUserMessage: (CodexUserMessageItem) -> Void = { _ in }
@@ -111,6 +112,7 @@ struct CodexItemTimelineView: View {
                     turnID: turn.id,
                     isExpanded: expandedTurnIDs.contains(turn.id),
                     isStreaming: turn.isStreaming,
+                    isInterrupted: interruptedTurnIDs.contains(turn.id),
                     startedAt: turnKey.flatMap { startedAtByTurnKey[$0] },
                     completedDurationMs: turnKey.flatMap { finalizedDurationMsByTurnKey[$0] },
                     estimatedDurationMs: turn.estimatedDurationMs,
