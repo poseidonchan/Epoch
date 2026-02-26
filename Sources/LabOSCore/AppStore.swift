@@ -1945,14 +1945,16 @@ public final class AppStore: ObservableObject {
     private func shouldResumeStreamingAfterPromptResponse(
         sessionID: UUID,
         requestID: CodexRequestID,
-        answers: [String: String]
+        answers: [String: [String]]
     ) -> Bool {
         let queuedPrompt = codexPendingPromptBySession[sessionID]?.first(where: { $0.requestID == requestID })
         let isImplementConfirmation = queuedPrompt?.kind == "implement_confirmation"
             || answers.keys.contains(Self.planImplementationDecisionQuestionID)
         if isImplementConfirmation {
-            guard let rawDecision = answers[Self.planImplementationDecisionQuestionID],
-                  let decision = normalizedOptionalString(rawDecision)
+            guard let decision = firstNormalizedAnswer(
+                for: Self.planImplementationDecisionQuestionID,
+                in: answers
+            )
             else {
                 return false
             }
@@ -1962,6 +1964,16 @@ public final class AppStore: ObservableObject {
             return hasActiveCodexTurn(sessionID: sessionID)
         }
         return hasActiveCodexTurn(sessionID: sessionID)
+    }
+
+    private func firstNormalizedAnswer(for questionID: String, in answers: [String: [String]]) -> String? {
+        guard let answerList = answers[questionID] else { return nil }
+        for answer in answerList {
+            if let normalized = normalizedOptionalString(answer) {
+                return normalized
+            }
+        }
+        return nil
     }
 
     func refreshSessionPendingUserInputMetadata(sessionID: UUID) {
@@ -3035,7 +3047,7 @@ public final class AppStore: ObservableObject {
     public func respondToCodexPrompt(
         sessionID: UUID,
         requestID: CodexRequestID,
-        answers: [String: String]
+        answers: [String: [String]]
     ) {
         Task { [weak self] in
             guard let self else { return }
@@ -3055,12 +3067,17 @@ public final class AppStore: ObservableObject {
             }
 
             var nestedAnswers: [String: JSONValue] = [:]
-            for (questionID, answer) in answers {
+            for (questionID, answerList) in answers {
                 let normalizedQuestionID = questionID.trimmingCharacters(in: .whitespacesAndNewlines)
-                let normalizedAnswer = answer.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !normalizedQuestionID.isEmpty, !normalizedAnswer.isEmpty else { continue }
+                guard !normalizedQuestionID.isEmpty else { continue }
+                let normalizedAnswers = answerList.compactMap { answer -> JSONValue? in
+                    let normalizedAnswer = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !normalizedAnswer.isEmpty else { return nil }
+                    return .string(normalizedAnswer)
+                }
+                guard !normalizedAnswers.isEmpty else { continue }
                 nestedAnswers[normalizedQuestionID] = .object([
-                    "answers": .array([.string(normalizedAnswer)]),
+                    "answers": .array(normalizedAnswers),
                 ])
             }
             let payload = JSONValue.object([
@@ -3107,14 +3124,16 @@ public final class AppStore: ObservableObject {
     private func applyPlanModeAfterCodexPromptResponseIfNeeded(
         sessionID: UUID,
         requestID: CodexRequestID,
-        answers: [String: String]
+        answers: [String: [String]]
     ) {
         let queuedPrompt = codexPendingPromptBySession[sessionID]?.first(where: { $0.requestID == requestID })
         let isImplementConfirmation = queuedPrompt?.kind == "implement_confirmation"
             || answers.keys.contains(Self.planImplementationDecisionQuestionID)
         guard isImplementConfirmation else { return }
-        guard let rawDecision = answers[Self.planImplementationDecisionQuestionID],
-              let decision = normalizedOptionalString(rawDecision)
+        guard let decision = firstNormalizedAnswer(
+            for: Self.planImplementationDecisionQuestionID,
+            in: answers
+        )
         else {
             return
         }

@@ -125,7 +125,7 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         store.respondToCodexPrompt(
             sessionID: sessionID,
             requestID: .string("req_prompt_first"),
-            answers: ["response": "One"]
+            answers: ["response": ["One"]]
         )
 
         try await waitUntil(timeoutSeconds: 1.0) {
@@ -182,7 +182,7 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         store.respondToCodexPrompt(
             sessionID: sessionID,
             requestID: .string("req_prompt_streaming"),
-            answers: ["response": "Continue"]
+            answers: ["response": ["Continue"]]
         )
 
         try await waitUntil(timeoutSeconds: 1.0) {
@@ -388,7 +388,7 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         store.respondToCodexPrompt(
             sessionID: sessionID,
             requestID: requestID,
-            answers: ["question_main": "Option A"]
+            answers: ["question_main": ["Option A"]]
         )
 
         try await waitUntil(timeoutSeconds: 1.0) {
@@ -408,6 +408,46 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
             ])
         )
         XCTAssertNil(store.codexPendingPrompt(for: sessionID))
+    }
+
+    func testRespondToCodexPromptSendsSelectedOptionAndFreeformAnswer() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let sessionID = UUID()
+        let requestID: CodexRequestID = .int(199)
+
+        var capturedResult: JSONValue?
+        store.codexServerResponseOverrideForTests = { _, result, _ in
+            capturedResult = result
+        }
+
+        store.respondToCodexPrompt(
+            sessionID: sessionID,
+            requestID: requestID,
+            answers: [
+                "question_main": [
+                    "No, and tell Codex what to do differently",
+                    "stop",
+                ],
+            ]
+        )
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            capturedResult != nil
+        }
+
+        XCTAssertEqual(
+            capturedResult,
+            .object([
+                "answers": .object([
+                    "question_main": .object([
+                        "answers": .array([
+                            .string("No, and tell Codex what to do differently"),
+                            .string("stop"),
+                        ]),
+                    ]),
+                ]),
+            ])
+        )
     }
 
     func testRespondToCodexPromptClearsSessionPendingMetadata() async throws {
@@ -448,7 +488,7 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         store.respondToCodexPrompt(
             sessionID: sessionID,
             requestID: .int(12),
-            answers: ["response": "Proceed now"]
+            answers: ["response": ["Proceed now"]]
         )
 
         try await waitUntil(timeoutSeconds: 1.0) {
@@ -495,7 +535,7 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         store.respondToCodexPrompt(
             sessionID: sessionID,
             requestID: .string("req_impl_confirm"),
-            answers: ["labos_plan_implementation_decision": "Yes, implement this plan"]
+            answers: ["labos_plan_implementation_decision": ["Yes, implement this plan"]]
         )
 
         try await waitUntil(timeoutSeconds: 1.0) {
@@ -542,7 +582,7 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         store.respondToCodexPrompt(
             sessionID: sessionID,
             requestID: .string("req_impl_feedback"),
-            answers: ["labos_plan_implementation_decision": "Use stricter constraints first"]
+            answers: ["labos_plan_implementation_decision": ["Use stricter constraints first"]]
         )
 
         try await waitUntil(timeoutSeconds: 1.0) {
@@ -589,7 +629,7 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         store.respondToCodexPrompt(
             sessionID: sessionID,
             requestID: .string("req_impl_resume"),
-            answers: ["labos_plan_implementation_decision": "Yes, implement this plan"]
+            answers: ["labos_plan_implementation_decision": ["Yes, implement this plan"]]
         )
 
         try await waitUntil(timeoutSeconds: 1.0) {
@@ -635,7 +675,7 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         store.respondToCodexPrompt(
             sessionID: sessionID,
             requestID: .string("req_impl_streaming"),
-            answers: ["labos_plan_implementation_decision": "Yes, implement this plan"]
+            answers: ["labos_plan_implementation_decision": ["Yes, implement this plan"]]
         )
 
         try await waitUntil(timeoutSeconds: 1.0) {
@@ -684,7 +724,7 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         store.respondToCodexPrompt(
             sessionID: sessionID,
             requestID: .string("req_impl_wait"),
-            answers: ["labos_plan_implementation_decision": "Yes, implement this plan"]
+            answers: ["labos_plan_implementation_decision": ["Yes, implement this plan"]]
         )
 
         try await waitUntil(timeoutSeconds: 1.0) {

@@ -865,9 +865,9 @@ struct SessionChatView: View {
         return options
     }
 
-    private func codexPromptAnswerMap(prompt: CodexPendingPrompt) -> [String: String]? {
+    private func codexPromptAnswerMap(prompt: CodexPendingPrompt) -> [String: [String]]? {
         let questions = codexPromptQuestions(prompt)
-        var answers: [String: String] = [:]
+        var answers: [String: [String]] = [:]
         for question in questions {
             let options = codexPromptDisplayOptions(for: question)
             guard let answer = codexPromptAnswer(for: question, options: options) else {
@@ -881,14 +881,15 @@ struct SessionChatView: View {
     private func codexPromptAnswer(
         for question: CodexPromptQuestion,
         options: [CodexPromptOption]
-    ) -> String? {
+    ) -> [String]? {
         let selectedOption = options.first { $0.id == codexPromptSelectedOptionByQuestionID[question.id] }
         if let selectedOption {
             if selectedOption.isOther {
                 let typed = (codexPromptFreeformByQuestionID[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                return typed.isEmpty ? nil : typed
+                guard !typed.isEmpty else { return nil }
+                return [selectedOption.label, typed]
             }
-            return selectedOption.label
+            return [selectedOption.label]
         }
 
         if !options.isEmpty {
@@ -896,7 +897,7 @@ struct SessionChatView: View {
         }
 
         let typed = (codexPromptFreeformByQuestionID[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return typed.isEmpty ? nil : typed
+        return typed.isEmpty ? nil : [typed]
     }
 
     private func loadCodexPromptDraftIfNeeded(prompt: CodexPendingPrompt?) {
