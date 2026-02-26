@@ -8,8 +8,8 @@ struct QueueManagerSheet: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
 
-    private var isStreaming: Bool {
-        store.streamingSessions.contains(sessionID)
+    private var canInterrupt: Bool {
+        store.canInterruptCodexTurn(sessionID: sessionID)
     }
 
     private var queuedItems: [CodexQueuedUserInputItem] {
@@ -30,7 +30,7 @@ struct QueueManagerSheet: View {
                             QueueRow(item: item)
                         }
                         .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                            if isStreaming {
+                            if canInterrupt {
                                 Button("Steer") {
                                     store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: item.id)
                                 }
@@ -118,8 +118,8 @@ struct QueueManagerSheet: View {
 
         @State private var draftText: String = ""
 
-        private var isStreaming: Bool {
-            store.streamingSessions.contains(sessionID)
+        private var canInterrupt: Bool {
+            store.canInterruptCodexTurn(sessionID: sessionID)
         }
 
         private var item: CodexQueuedUserInputItem? {
@@ -198,7 +198,7 @@ struct QueueManagerSheet: View {
                     }
 
                     HStack(spacing: 10) {
-                        if isStreaming {
+                        if canInterrupt {
                             Button("Steer") {
                                 store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: item.id)
                             }
@@ -238,4 +238,3 @@ struct QueueManagerSheet: View {
     }
 }
 #endif
-

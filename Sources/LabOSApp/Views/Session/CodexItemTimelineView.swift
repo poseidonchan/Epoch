@@ -11,6 +11,7 @@ struct CodexItemTimelineView: View {
     let isPlanModeEnabled: Bool
     let interruptedTurnIDs: Set<String>
     let proposedPlanTextByTurnID: [String: String]
+    var isSessionInFlight: Bool = false
     var isStreaming: Bool = false
     var showAssistantActionBar: Bool = true
     var onEditUserMessage: (CodexUserMessageItem) -> Void = { _ in }
@@ -22,18 +23,15 @@ struct CodexItemTimelineView: View {
         let occurrence: Int
     }
 
-    @State private var expandedTurnIDs: Set<String> = []
+    @State private var expandedTurnKeys: Set<TurnKey> = []
     @State private var expandedGroupIDs: Set<String> = []
     @State private var expandedLeafIDs: Set<String> = []
     @State private var turnKeyByTurnID: [String: TurnKey] = [:]
-    @State private var turnIDByTurnKey: [TurnKey: String] = [:]
     @State private var startedAtByTurnKey: [TurnKey: Date] = [:]
     @State private var finalizedDurationMsByTurnKey: [TurnKey: Int] = [:]
     @State private var wasStreamingByTurnKey: [TurnKey: Bool] = [:]
-    @State private var pendingAutoCollapseTokenByTurnKey: [TurnKey: UUID] = [:]
 
-    private static let autoCollapseDelayNanoseconds: UInt64 = 420_000_000
-    private static let autoCollapseAnimation = Animation.easeInOut(duration: 0.2)
+    private static let turnExpansionAnimation = Animation.easeInOut(duration: 0.2)
     private static let searchingWebStatusText = "Searching web..."
 
     private var turns: [CodexTrajectoryTurn] {
@@ -109,7 +107,7 @@ struct CodexItemTimelineView: View {
                 let turnKey = turnKeyByTurnID[turn.id]
                 CodexTrajectorySummaryBar(
                     turnID: turn.id,
-                    isExpanded: expandedTurnIDs.contains(turn.id),
+                    isExpanded: isTurnExpanded(turn.id),
                     isStreaming: turn.isStreaming,
                     isInterrupted: interruptedTurnIDs.contains(turn.id),
                     startedAt: turnKey.flatMap { startedAtByTurnKey[$0] },
@@ -120,7 +118,7 @@ struct CodexItemTimelineView: View {
                     }
                 )
 
-                if expandedTurnIDs.contains(turn.id) {
+                if isTurnExpanded(turn.id) {
                     trajectoryDetails(for: turn)
                         .transition(.opacity)
                 }
@@ -129,7 +127,13 @@ struct CodexItemTimelineView: View {
             if let finalID = turn.finalAnswerItemID,
                let finalText = turn.finalAnswerText,
                !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                finalAnswerBlock(turn: turn, finalID: finalID, finalText: finalText, proposedPlanText: proposedPlanText)
+                finalAnswerBlock(
+                    turn: turn,
+                    finalID: finalID,
+                    finalText: finalText,
+                    proposedPlanText: proposedPlanText,
+                    isLatestTurn: turns.last?.id == turn.id
+                )
             } else if let proposedPlanText {
                 proposedPlanCard(proposedPlanText)
             } else if turn.isStreaming || turn.hasThinkingStatus {
@@ -141,7 +145,7 @@ struct CodexItemTimelineView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 4)
-        .animation(Self.autoCollapseAnimation, value: expandedTurnIDs.contains(turn.id))
+        .animation(Self.turnExpansionAnimation, value: isTurnExpanded(turn.id))
         .accessibilityIdentifier("codex.turn.\(turn.id.lowercased())")
     }
 
@@ -149,15 +153,19 @@ struct CodexItemTimelineView: View {
         turn: CodexTrajectoryTurn,
         finalID: String,
         finalText: String,
-        proposedPlanText: String?
+        proposedPlanText: String?,
+        isLatestTurn: Bool
     ) -> some View {
         let actionItem = agentMessageByID[finalID]
         let targetStreaming = turn.isStreaming && finalID == latestStreamingAgentMessageID
+        let isLatestInFlightTurn = isSessionInFlight && isLatestTurn
         let copyText = finalAnswerCopyText(from: finalText)
         let hasCopyText = !copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let canShowActions = showAssistantActionBar
             && actionItem != nil
+            && !turn.isStreaming
             && !targetStreaming
+            && !isLatestInFlightTurn
 
         return VStack(alignment: .leading, spacing: 6) {
             finalAnswerContent(finalText, isStreaming: targetStreaming)
@@ -173,7 +181,7 @@ struct CodexItemTimelineView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contextMenu {
-            if hasCopyText {
+            if canShowActions, hasCopyText {
                 Button {
                     copyToPasteboard(copyText)
                 } label: {
@@ -192,8 +200,19 @@ struct CodexItemTimelineView: View {
     }
 
     private func inlineProposedPlanText(for turn: CodexTrajectoryTurn) -> String? {
-        guard let raw = proposedPlanTextByTurnID[turn.id] else { return nil }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text: String? = {
+            if let mapped = proposedPlanTextByTurnID[turn.id] {
+                return mapped
+            }
+            guard isPlanModeEnabled else { return nil }
+            return CodexProposedPlanExtractor.extract(
+                from: turn.trajectoryLeaves.map(\.item),
+                allowHeuristicFallback: true
+            )
+        }()
+        guard let text else { return nil }
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
         if let finalText = turn.finalAnswerText,
@@ -321,11 +340,17 @@ struct CodexItemTimelineView: View {
         return false
     }
 
+    private func isTurnExpanded(_ turnID: String) -> Bool {
+        guard let turnKey = turnKeyByTurnID[turnID] else { return false }
+        return expandedTurnKeys.contains(turnKey)
+    }
+
     private func toggleTurn(_ turnID: String) {
-        if expandedTurnIDs.contains(turnID) {
-            expandedTurnIDs.remove(turnID)
+        guard let turnKey = turnKeyByTurnID[turnID] else { return }
+        if expandedTurnKeys.contains(turnKey) {
+            expandedTurnKeys.remove(turnKey)
         } else {
-            expandedTurnIDs.insert(turnID)
+            expandedTurnKeys.insert(turnKey)
         }
     }
 
@@ -347,10 +372,8 @@ struct CodexItemTimelineView: View {
 
     private func syncTrajectoryState(with turns: [CodexTrajectoryTurn]) {
         let now = Date()
-        let activeTurnIDs = Set(turns.map(\.id))
         var activeTurnKeys: Set<TurnKey> = []
         var nextTurnKeyByTurnID: [String: TurnKey] = [:]
-        var nextTurnIDByTurnKey: [TurnKey: String] = [:]
 
         var seenOccurrencesBySignature: [String: Int] = [:]
 
@@ -362,7 +385,6 @@ struct CodexItemTimelineView: View {
 
             activeTurnKeys.insert(turnKey)
             nextTurnKeyByTurnID[turn.id] = turnKey
-            nextTurnIDByTurnKey[turnKey] = turn.id
 
             if let persistedDurationMs = persistedDurationByTurnID[turn.id],
                persistedDurationMs > 0 {
@@ -381,28 +403,18 @@ struct CodexItemTimelineView: View {
 
             let wasStreaming = wasStreamingByTurnKey[turnKey] ?? false
 
-            if turn.isStreaming {
-                expandedTurnIDs.insert(turn.id)
-                pendingAutoCollapseTokenByTurnKey.removeValue(forKey: turnKey)
-            } else if wasStreaming {
+            if !turn.isStreaming, wasStreaming {
                 finalizeTurnDurationIfNeeded(turnKey: turnKey, turnID: turn.id, now: now)
-                if turn.hasTrajectorySummary, turn.finalAnswerItemID != nil {
-                    scheduleAutoCollapse(for: turnKey)
-                } else {
-                    pendingAutoCollapseTokenByTurnKey.removeValue(forKey: turnKey)
-                }
             }
 
             wasStreamingByTurnKey[turnKey] = turn.isStreaming
         }
 
-        expandedTurnIDs = expandedTurnIDs.intersection(activeTurnIDs)
+        expandedTurnKeys = expandedTurnKeys.intersection(activeTurnKeys)
         turnKeyByTurnID = nextTurnKeyByTurnID
-        turnIDByTurnKey = nextTurnIDByTurnKey
         startedAtByTurnKey = startedAtByTurnKey.filter { activeTurnKeys.contains($0.key) }
         finalizedDurationMsByTurnKey = finalizedDurationMsByTurnKey.filter { activeTurnKeys.contains($0.key) }
         wasStreamingByTurnKey = wasStreamingByTurnKey.filter { activeTurnKeys.contains($0.key) }
-        pendingAutoCollapseTokenByTurnKey = pendingAutoCollapseTokenByTurnKey.filter { activeTurnKeys.contains($0.key) }
 
         let activeGroupIDs = Set(turns.flatMap { $0.groups.map(\.id) })
         expandedGroupIDs = expandedGroupIDs.intersection(activeGroupIDs)
@@ -413,29 +425,6 @@ struct CodexItemTimelineView: View {
 
     private func userInputSignature(_ inputs: [CodexUserInput]) -> String {
         AppStore.codexUserContentSignature(inputs)
-    }
-
-    private func scheduleAutoCollapse(for turnKey: TurnKey) {
-        let token = UUID()
-        pendingAutoCollapseTokenByTurnKey[turnKey] = token
-
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: Self.autoCollapseDelayNanoseconds)
-
-            guard pendingAutoCollapseTokenByTurnKey[turnKey] == token else { return }
-            guard let turnID = turnIDByTurnKey[turnKey],
-                  let turn = turns.first(where: { $0.id == turnID }),
-                  !turn.isStreaming,
-                  turn.finalAnswerItemID != nil else {
-                return
-            }
-
-            withAnimation(Self.autoCollapseAnimation) {
-                expandedTurnIDs.remove(turn.id)
-            }
-            pendingAutoCollapseTokenByTurnKey.removeValue(forKey: turnKey)
-            finalizeTurnDurationIfNeeded(turnKey: turnKey, turnID: turn.id, now: Date())
-        }
     }
 
     private func finalizeTurnDurationIfNeeded(turnKey: TurnKey, turnID: String, now: Date) {

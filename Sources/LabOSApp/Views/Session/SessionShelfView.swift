@@ -17,8 +17,12 @@ struct SessionShelfView: View {
     @State private var showQueueManager = false
     @State private var showDiffReview = false
     @State private var showRunningTerminals = false
+    @State private var isTerminalsExpanded = false
+    @State private var terminalEligibilityNow = Date()
     @State private var isRunProgressExpanded = false
     @State private var isPlanCardExpanded = false
+
+    private let terminalEligibilityTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     init(projectID: UUID, sessionID: UUID, renderMode: SessionShelfRenderMode = .cards) {
         self.projectID = projectID
@@ -49,13 +53,12 @@ struct SessionShelfView: View {
         return Self.summarizeDiff(turnDiff.diff)
     }
 
-    private var runningTerminalsCount: Int {
-        store.codexItems(for: sessionID).reduce(0) { partial, item in
-            guard case let .commandExecution(command) = item else { return partial }
-            let normalized = command.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            guard normalized == "inprogress" || normalized == "in_progress" else { return partial }
-            return partial + 1
-        }
+    private var qualifyingRunningCommands: [CodexCommandExecutionItem] {
+        store.codexRunningCommandsEligibleForShelf(
+            sessionID: sessionID,
+            now: terminalEligibilityNow,
+            minimumDurationMs: 10_000
+        )
     }
 
     private var runProgressAnimation: Animation {
@@ -93,10 +96,10 @@ struct SessionShelfView: View {
             )
         }
 
-        if runningTerminalsCount > 0 {
+        if !qualifyingRunningCommands.isEmpty {
             rows.append(
                 AnyView(
-                    terminalsCard(count: runningTerminalsCount)
+                    terminalsCard(commands: qualifyingRunningCommands)
                         .accessibilityIdentifier("session.shelf.terminals")
                 )
             )
@@ -145,6 +148,14 @@ struct SessionShelfView: View {
         .sheet(isPresented: $showRunningTerminals) {
             RunningTerminalsSheet(sessionID: sessionID)
                 .environmentObject(store)
+        }
+        .onReceive(terminalEligibilityTimer) { value in
+            terminalEligibilityNow = value
+        }
+        .onChange(of: qualifyingRunningCommands.map(\.id)) { _, commandIDs in
+            if commandIDs.isEmpty {
+                isTerminalsExpanded = false
+            }
         }
     }
 
@@ -201,7 +212,7 @@ struct SessionShelfView: View {
 
     private func queueCard(items: [CodexQueuedUserInputItem]) -> some View {
         let previews = Array(items.prefix(2))
-        let isStreaming = store.streamingSessions.contains(sessionID)
+        let canInterrupt = store.canInterruptCodexTurn(sessionID: sessionID)
 
         return cardContainer {
             VStack(alignment: .leading, spacing: 10) {
@@ -245,7 +256,7 @@ struct SessionShelfView: View {
                                 store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: item.id)
                             }
                             .buttonStyle(.borderedProminent)
-                            .disabled(!isStreaming || item.status == .sending)
+                            .disabled(!canInterrupt || item.status == .sending)
 
                             Button {
                                 store.removeQueuedCodexInput(sessionID: sessionID, queueItemID: item.id)
@@ -277,25 +288,93 @@ struct SessionShelfView: View {
         }
     }
 
-    private func terminalsCard(count: Int) -> some View {
+    private func terminalsCard(commands: [CodexCommandExecutionItem]) -> some View {
         cardContainer {
+            VStack(alignment: .leading, spacing: 8) {
+                Button {
+                    withAnimation(runProgressAnimation) {
+                        isTerminalsExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "terminal")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text("Running \(commands.count) command\(commands.count == 1 ? "" : "s")")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(isTerminalsExpanded ? 90 : 0))
+                            .animation(runProgressAnimation, value: isTerminalsExpanded)
+                    }
+                }
+                .buttonStyle(.plain)
+
+                if isTerminalsExpanded {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(commands, id: \.id) { command in
+                                terminalCommandSummaryRow(command)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 160)
+                    .padding(.top, 2)
+                    .clipped()
+                    .transition(runProgressContentTransition)
+                }
+            }
+        }
+        .contextMenu {
             Button {
                 showRunningTerminals = true
             } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "terminal")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Text("Running \(count) terminal\(count == 1 ? "" : "s")")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
+                Label("Open terminal details", systemImage: "rectangle.stack")
             }
-            .buttonStyle(.plain)
+        }
+    }
+
+    private func terminalCommandSummaryRow(_ command: CodexCommandExecutionItem) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(command.command)
+                .font(.system(.subheadline, design: .monospaced))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            Text(command.cwd)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Text("Status: \(commandStatusLabel(command.status))")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
+    }
+
+    private func commandStatusLabel(_ status: String) -> String {
+        let normalized = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "in_progress", "inprogress":
+            return "In progress"
+        case "completed":
+            return "Completed"
+        case "failed":
+            return "Failed"
+        default:
+            let fallback = status.trimmingCharacters(in: .whitespacesAndNewlines)
+            return fallback.isEmpty ? "Unknown" : fallback
         }
     }
 

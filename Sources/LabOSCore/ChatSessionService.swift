@@ -220,7 +220,7 @@ internal final class ChatSessionService {
             attachments: effectiveAttachments
         )
 
-        if usesCodex, store.streamingSessions.contains(sessionID) {
+        if usesCodex, store.codexTurnInFlight(sessionID: sessionID) {
             enqueueCodexQueuedInput(sessionID: sessionID, text: trimmed, attachments: effectiveAttachments)
             store.clearPendingComposerAttachments(sessionID: sessionID)
             return
@@ -365,7 +365,7 @@ internal final class ChatSessionService {
 
     func drainCodexQueueIfPossible(projectID: UUID, sessionID: UUID) {
         guard store.sessionUsesCodex(sessionID: sessionID) else { return }
-        guard !store.streamingSessions.contains(sessionID) else { return }
+        guard !store.codexTurnInFlight(sessionID: sessionID) else { return }
         guard !store.sessionNeedsUserInput(sessionID: sessionID) else { return }
 
         store.ensureCodexQueuedInputsLoaded(sessionID: sessionID)

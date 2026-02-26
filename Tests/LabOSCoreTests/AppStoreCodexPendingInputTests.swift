@@ -553,6 +553,53 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         XCTAssertNil(store.codexPendingPrompt(for: sessionID))
     }
 
+    func testImplementApprovalWithActiveTurnResumesStreaming() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        store.projects = [Project(id: projectID, name: "Implement Resume Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Implement Resume Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_impl_resume"
+            ),
+        ]
+        store.codexPendingPromptBySession[sessionID] = [
+            CodexPendingPrompt(
+                requestID: .string("req_impl_resume"),
+                sessionID: sessionID,
+                threadId: "thread_impl_resume",
+                turnId: "turn_impl_resume",
+                kind: "implement_confirmation",
+                prompt: "Implement this plan?",
+                questions: [],
+                rawParams: nil
+            ),
+        ]
+        store.codexActiveTurnIDBySession[sessionID] = "turn_impl_resume"
+
+        var captured: JSONValue?
+        store.codexServerResponseOverrideForTests = { _, result, _ in
+            captured = result
+        }
+
+        store.respondToCodexPrompt(
+            sessionID: sessionID,
+            requestID: .string("req_impl_resume"),
+            answers: ["labos_plan_implementation_decision": "Yes, implement this plan"]
+        )
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            captured != nil
+        }
+
+        XCTAssertTrue(store.streamingSessions.contains(sessionID))
+        XCTAssertNil(store.codexPendingPrompt(for: sessionID))
+    }
+
     func testRespondToImplementConfirmationPromptWithoutActiveTurnDoesNotMarkStreaming() async throws {
         let store = AppStore(bootstrapDemo: false)
         let projectID = UUID()
@@ -597,6 +644,69 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
 
         XCTAssertFalse(store.streamingSessions.contains(sessionID))
         XCTAssertNil(store.codexPendingPrompt(for: sessionID))
+    }
+
+    func testImplementApprovalWithoutActiveTurnWaitsForTurnStarted() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        let threadID = "thread_impl_wait"
+        let turnID = "turn_impl_wait"
+        store.projects = [Project(id: projectID, name: "Implement Wait Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Implement Wait Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: threadID
+            ),
+        ]
+        store.codexSessionByThread[threadID] = sessionID
+        store.codexPendingPromptBySession[sessionID] = [
+            CodexPendingPrompt(
+                requestID: .string("req_impl_wait"),
+                sessionID: sessionID,
+                threadId: threadID,
+                turnId: turnID,
+                kind: "implement_confirmation",
+                prompt: "Implement this plan?",
+                questions: [],
+                rawParams: nil
+            ),
+        ]
+
+        var captured: JSONValue?
+        store.codexServerResponseOverrideForTests = { _, result, _ in
+            captured = result
+        }
+
+        store.respondToCodexPrompt(
+            sessionID: sessionID,
+            requestID: .string("req_impl_wait"),
+            answers: ["labos_plan_implementation_decision": "Yes, implement this plan"]
+        )
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            captured != nil
+        }
+
+        XCTAssertFalse(store.streamingSessions.contains(sessionID))
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "turn/started",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "turn": .object([
+                        "id": .string(turnID),
+                        "status": .string("inProgress"),
+                    ]),
+                ])
+            )
+        )
+
+        XCTAssertTrue(store.streamingSessions.contains(sessionID))
     }
 
     func testSendMessageDismissesImplementConfirmationPrompt() async throws {
@@ -833,6 +943,32 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: stored))
     }
 
+    func testSendMessageWithActiveTurnButStreamingFalseQueuesCodexInput() {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+
+        store.projects = [Project(id: projectID, name: "Steer Queue Active Turn Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_active_turn_queue"
+            ),
+        ]
+        store.codexThreadBySession[sessionID] = "thread_active_turn_queue"
+        store.codexActiveTurnIDBySession[sessionID] = "turn_active_turn_queue"
+
+        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "Queue while active turn")
+
+        let queued = store.codexQueuedInputs(for: sessionID)
+        XCTAssertEqual(queued.count, 1)
+        XCTAssertEqual(queued.first?.text, "Queue while active turn")
+        XCTAssertEqual(queued.first?.status, .queued)
+    }
+
     func testCodexQueuedInputsReorderPersistsAcrossStoreRecreate() {
         let suiteName = "LabOSCoreTests.CodexQueuedInput.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
@@ -899,6 +1035,27 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
             )
         )
         XCTAssertNil(store.codexActiveTurnID(for: sessionID))
+    }
+
+    func testTurnStartedMarksSessionAsStreaming() {
+        let store = AppStore(bootstrapDemo: false)
+        let sessionID = UUID()
+        store.codexSessionByThread["thread_turn_streaming"] = sessionID
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "turn/started",
+                params: .object([
+                    "threadId": .string("thread_turn_streaming"),
+                    "turn": .object([
+                        "id": .string("turn_streaming"),
+                        "status": .string("inProgress"),
+                    ]),
+                ])
+            )
+        )
+
+        XCTAssertTrue(store.streamingSessions.contains(sessionID))
     }
 
     func testTurnCompletedPersistsDurationFromBackendTurnLifecycle() async throws {

@@ -86,6 +86,7 @@ struct SessionChatView: View {
                                 isPlanModeEnabled: store.planModeEnabled(for: sessionID),
                                 interruptedTurnIDs: store.codexInterruptedTurnIDs(sessionID: sessionID),
                                 proposedPlanTextByTurnID: store.codexProposedPlanTextBySession[sessionID] ?? [:],
+                                isSessionInFlight: store.codexTurnInFlight(sessionID: sessionID),
                                 isStreaming: store.streamingSessions.contains(sessionID),
                                 showAssistantActionBar: true,
                                 onEditUserMessage: { item in
@@ -461,14 +462,15 @@ struct SessionChatView: View {
         if let prompt = codexPrompt {
             codexPromptComposer(prompt)
         } else {
-            let isStreaming = store.streamingSessions.contains(sessionID)
+            let isInFlight = store.codexTurnInFlight(sessionID: sessionID)
+            let canInterrupt = store.canInterruptCodexTurn(sessionID: sessionID)
             let pendingAttachments = store.pendingComposerAttachments(for: sessionID)
             let trimmed = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
             let hasContent = !trimmed.isEmpty || !pendingAttachments.isEmpty
 
             let primaryAction: InlineComposerView.PrimaryAction = {
                 if editingMessageID != nil { return .update }
-                if isStreaming && !hasContent { return .stop }
+                if isInFlight && !hasContent && canInterrupt { return .stop }
                 return .send
             }()
 
@@ -483,7 +485,7 @@ struct SessionChatView: View {
                 }
             }()
 
-            let submitDisabled = primaryAction == .stop && store.codexActiveTurnID(for: sessionID) == nil
+            let submitDisabled = primaryAction == .stop && !canInterrupt
 
             InlineComposerView(
                 placeholder: "Ask LabOS",
@@ -536,7 +538,8 @@ struct SessionChatView: View {
                 let hasContent = !text.isEmpty || !attachments.isEmpty
 
                 if editingMessageID == nil,
-                   store.streamingSessions.contains(sessionID),
+                   store.codexTurnInFlight(sessionID: sessionID),
+                   store.canInterruptCodexTurn(sessionID: sessionID),
                    !hasContent {
                     store.interruptCodexTurn(sessionID: sessionID)
                     return
