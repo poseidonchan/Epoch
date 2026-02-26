@@ -12,6 +12,7 @@ struct SessionShelfView: View {
     let sessionID: UUID
     let renderMode: SessionShelfRenderMode
     let skillSuggestions: ComposerSkillSuggestionState?
+    let showSkillsCatalogCard: Bool
     let onSelectSkillSuggestion: ((InlineComposerView.SkillOption) -> Void)?
     let onRefreshSkillSuggestions: (() -> Void)?
 
@@ -34,6 +35,7 @@ struct SessionShelfView: View {
         sessionID: UUID,
         renderMode: SessionShelfRenderMode = .cards,
         skillSuggestions: ComposerSkillSuggestionState? = nil,
+        showSkillsCatalogCard: Bool = false,
         onSelectSkillSuggestion: ((InlineComposerView.SkillOption) -> Void)? = nil,
         onRefreshSkillSuggestions: (() -> Void)? = nil
     ) {
@@ -41,6 +43,7 @@ struct SessionShelfView: View {
         self.sessionID = sessionID
         self.renderMode = renderMode
         self.skillSuggestions = skillSuggestions
+        self.showSkillsCatalogCard = showSkillsCatalogCard
         self.onSelectSkillSuggestion = onSelectSkillSuggestion
         self.onRefreshSkillSuggestions = onRefreshSkillSuggestions
     }
@@ -111,7 +114,7 @@ struct SessionShelfView: View {
             )
         }
 
-        if store.sessionUsesCodex(sessionID: sessionID) {
+        if showSkillsCatalogCard, store.sessionUsesCodex(sessionID: sessionID) {
             rows.append(
                 AnyView(
                     skillsCard()

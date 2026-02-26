@@ -91,6 +91,12 @@ struct SessionChatView: View {
         )
     }
 
+    private var hasActiveSkillToken: Bool {
+        guard isCodexSession else { return false }
+        let normalizedText = CodexSkillMentionCodec.sanitizedUserInput(composerText)
+        return CodexSkillMentionCodec.trailingToken(in: normalizedText) != nil
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -267,6 +273,7 @@ struct SessionChatView: View {
                         sessionID: sessionID,
                         renderMode: .dock,
                         skillSuggestions: composerSkillSuggestions,
+                        showSkillsCatalogCard: hasActiveSkillToken,
                         onSelectSkillSuggestion: { option in
                             guard let updated = ComposerSkillSuggestionState.replacingTrailingToken(
                                 in: composerText,
