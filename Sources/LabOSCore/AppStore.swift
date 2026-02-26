@@ -1053,10 +1053,46 @@ public final class AppStore: ObservableObject {
         else { return }
 
         let existing = codexItemsBySession[sessionID] ?? []
+        if case let .userMessage(incomingUser) = item,
+           let localEchoID = Self.matchingLocalEchoUserItemID(for: incomingUser, in: existing) {
+            migrateCodexTrajectoryDurationIfNeeded(sessionID: sessionID, fromTurnID: localEchoID, toTurnID: incomingUser.id)
+        }
         codexItemsBySession[sessionID] = Self.upsertCodexItemPreservingLocalEchoes(
             items: existing,
             incoming: item
         )
+    }
+
+    private static func matchingLocalEchoUserItemID(
+        for incomingUser: CodexUserMessageItem,
+        in items: [CodexThreadItem]
+    ) -> String? {
+        let incomingSignature = codexUserContentSignature(incomingUser.content)
+        guard !incomingSignature.isEmpty else { return nil }
+        for item in items {
+            guard case let .userMessage(localUser) = item else { continue }
+            guard localUser.id.hasPrefix(codexLocalUserItemPrefix) else { continue }
+            if codexUserContentSignature(localUser.content) == incomingSignature {
+                return localUser.id
+            }
+        }
+        return nil
+    }
+
+    private func migrateCodexTrajectoryDurationIfNeeded(sessionID: UUID, fromTurnID: String, toTurnID: String) {
+        let fromKey = fromTurnID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let toKey = toTurnID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !fromKey.isEmpty, !toKey.isEmpty, fromKey != toKey else { return }
+        guard let durationMs = codexTrajectoryDuration(sessionID: sessionID, turnID: fromKey),
+              durationMs > 0
+        else { return }
+
+        setCodexTrajectoryDuration(sessionID: sessionID, turnID: toKey, durationMs: durationMs)
+
+        guard var turnDurations = codexTrajectoryDurationsBySession[sessionID] else { return }
+        turnDurations[fromKey] = nil
+        codexTrajectoryDurationsBySession[sessionID] = turnDurations.isEmpty ? nil : turnDurations
+        persistCodexTrajectoryDurations()
     }
 
     internal static func upsertCodexItemPreservingLocalEchoes(
@@ -1085,7 +1121,7 @@ public final class AppStore: ObservableObject {
         return next
     }
 
-    internal static func codexUserContentSignature(_ content: [CodexUserInput]) -> String {
+    public static func codexUserContentSignature(_ content: [CodexUserInput]) -> String {
         let signature = content
             .map { input in
                 let type = input.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -1565,6 +1601,19 @@ public final class AppStore: ObservableObject {
         refreshSessionPendingUserInputMetadata(sessionID: sessionID)
     }
 
+    func dismissImplementConfirmationPrompt(sessionID: UUID) {
+        guard let queue = codexPendingPromptBySession[sessionID], !queue.isEmpty else { return }
+        let removed = queue.filter { $0.kind == "implement_confirmation" }
+        guard !removed.isEmpty else { return }
+
+        let remaining = queue.filter { $0.kind != "implement_confirmation" }
+        codexPendingPromptBySession[sessionID] = remaining.isEmpty ? nil : remaining
+        for prompt in removed {
+            clearCodexPromptDraft(sessionID: sessionID, requestID: prompt.requestID)
+        }
+        refreshSessionPendingUserInputMetadata(sessionID: sessionID)
+    }
+
     func refreshSessionPendingUserInputMetadata(sessionID: UUID) {
         let promptQueue = codexPendingPromptBySession[sessionID] ?? []
         let promptCount = promptQueue.count
@@ -2017,12 +2066,9 @@ public final class AppStore: ObservableObject {
                 codexSessionByThread[previousThreadId] = nil
             }
         }
-        if let sandbox = session.codexSandbox?.objectValue,
-           let mode = sandbox["mode"]?.stringValue {
-            codexFullAccessBySession[session.id] = (mode == "danger-full-access")
-        } else {
-            codexFullAccessBySession[session.id] = false
-        }
+        let permissionLevel = Self.permissionLevel(forCodexSandbox: session.codexSandbox) ?? .default
+        permissionLevelBySession[session.id] = permissionLevel
+        codexFullAccessBySession[session.id] = (permissionLevel == .full)
     }
 
     private func sessionRecord(for sessionID: UUID) -> Session? {
@@ -2102,6 +2148,14 @@ public final class AppStore: ObservableObject {
 
     public func setPermissionLevel(projectID: UUID, sessionID: UUID, level: SessionPermissionLevel) {
         composerService.setPermissionLevel(projectID: projectID, sessionID: sessionID, level: level)
+    }
+
+    public func projectPermissionLevel(for projectID: UUID) -> SessionPermissionLevel {
+        projectService.projectPermissionLevel(for: projectID)
+    }
+
+    public func setProjectPermissionLevel(projectID: UUID, level: SessionPermissionLevel) {
+        projectService.setProjectPermissionLevel(projectID: projectID, level: level)
     }
 
     public var activeProjectSessions: [Session] {
@@ -2351,6 +2405,8 @@ public final class AppStore: ObservableObject {
         requestID: CodexRequestID,
         decision: String
     ) {
+        streamingSessions.insert(sessionID)
+        codexStatusTextBySession[sessionID] = "in_progress"
         Task { [weak self] in
             guard let self, let codexClient = self.codexClient else { return }
             let result = JSONValue.object(["decision": .string(decision)])
@@ -2367,6 +2423,8 @@ public final class AppStore: ObservableObject {
         requestID: CodexRequestID,
         answers: [String: String]
     ) {
+        streamingSessions.insert(sessionID)
+        codexStatusTextBySession[sessionID] = "in_progress"
         Task { [weak self] in
             guard let self else { return }
             self.applyPlanModeAfterCodexPromptResponseIfNeeded(
@@ -3051,6 +3109,44 @@ public final class AppStore: ObservableObject {
         activeSessionID = nil
     }
 
+
+    internal static let codexApprovalPolicyForPermissionChange = "on-request"
+
+    internal static func codexSandbox(for level: SessionPermissionLevel) -> JSONValue {
+        let mode: String
+        switch level {
+        case .default:
+            mode = "workspace-write"
+        case .full:
+            mode = "danger-full-access"
+        }
+        return .object(["mode": .string(mode)])
+    }
+
+    internal static func permissionLevel(forCodexSandbox sandbox: JSONValue?) -> SessionPermissionLevel? {
+        guard let sandbox = sandbox?.objectValue else { return nil }
+        let rawMode = sandbox["mode"]?.stringValue ?? sandbox["type"]?.stringValue
+        guard let mode = normalizedCodexSandboxMode(rawMode) else { return nil }
+        return mode == "danger-full-access" ? .full : .default
+    }
+
+    internal static func normalizedCodexSandboxMode(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let compact = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .filter(\.isLetter)
+        switch compact {
+        case "readonly":
+            return "read-only"
+        case "workspacewrite":
+            return "workspace-write"
+        case "dangerfullaccess":
+            return "danger-full-access"
+        default:
+            return nil
+        }
+    }
 
     internal static func parsePermissionLevel(_ raw: String?) -> SessionPermissionLevel? {
         guard let raw else { return nil }

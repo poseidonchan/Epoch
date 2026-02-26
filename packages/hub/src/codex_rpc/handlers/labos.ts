@@ -140,6 +140,56 @@ export async function handleLabosProjectRename(
   return { project: mapProjectRow(rows[0]) };
 }
 
+export async function handleLabosProjectUpdate(
+  ctx: LabosHandlerContext,
+  rawParams: Record<string, unknown> | undefined
+): Promise<Record<string, unknown>> {
+  const params = rawParams ?? {};
+  const projectId = normalizeNonEmptyString(params.projectId);
+  if (!projectId) {
+    throw new Error("Missing projectId");
+  }
+
+  const updates: string[] = [];
+  const values: unknown[] = [];
+  if (Object.prototype.hasOwnProperty.call(params, "codexApprovalPolicy")) {
+    updates.push(`codex_approval_policy=$${values.length + 1}`);
+    values.push(normalizeNonEmptyString(params.codexApprovalPolicy));
+  }
+  if (Object.prototype.hasOwnProperty.call(params, "codexSandbox")) {
+    updates.push(`codex_sandbox_json=$${values.length + 1}`);
+    const sandbox = normalizeSandboxPolicy(params.codexSandbox);
+    values.push(sandbox ? JSON.stringify(sandbox) : null);
+  }
+  if (updates.length === 0) {
+    throw new Error("No updatable fields were provided");
+  }
+
+  updates.push(`updated_at=$${values.length + 1}`);
+  values.push(new Date().toISOString());
+  values.push(projectId);
+
+  await ctx.repository.query(
+    `UPDATE projects
+     SET ${updates.join(", ")}
+     WHERE id=$${values.length}`,
+    values
+  );
+
+  const rows = await ctx.repository.query<any>(
+    `SELECT id, name, created_at, updated_at, backend_engine, codex_model_provider, codex_model_id,
+            codex_approval_policy, codex_sandbox_json, hpc_workspace_path, hpc_workspace_state
+     FROM projects
+     WHERE id=$1`,
+    [projectId]
+  );
+  if (rows.length === 0) {
+    throw new Error("Project not found");
+  }
+
+  return { project: mapProjectRow(rows[0]) };
+}
+
 export async function handleLabosProjectDelete(
   ctx: LabosHandlerContext,
   rawParams: Record<string, unknown> | undefined

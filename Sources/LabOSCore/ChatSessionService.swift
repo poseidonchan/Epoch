@@ -152,6 +152,7 @@ internal final class ChatSessionService {
         store.selectedModelIdBySession[sessionID] = nil
         store.selectedThinkingLevelBySession[sessionID] = nil
         store.permissionLevelBySession[sessionID] = nil
+        store.composerService.clearPendingPermissionSync(sessionID: sessionID)
         store.livePlanBySession[sessionID] = nil
         pendingLocalUserEchosBySession[sessionID] = nil
         sessionHistoryLastFetchedAtBySession[sessionID] = nil
@@ -201,11 +202,15 @@ internal final class ChatSessionService {
         let hasText = !trimmed.isEmpty
         let effectiveAttachments = attachments ?? store.composerService.pendingComposerAttachments(for: sessionID)
         let hasAttachments = !effectiveAttachments.isEmpty
+        let usesCodex = store.sessionUsesCodex(sessionID: sessionID)
 
         guard hasText || hasAttachments else { return }
-        if !store.sessionUsesCodex(sessionID: sessionID), !hasText {
+        if !usesCodex, !hasText {
             store.lastGatewayErrorMessage = "Text is required for the current backend."
             return
+        }
+        if usesCodex {
+            store.dismissImplementConfirmationPrompt(sessionID: sessionID)
         }
 
         let attachmentRefs = store.composerService.makeSessionAttachmentReferences(
@@ -214,7 +219,7 @@ internal final class ChatSessionService {
             attachments: effectiveAttachments
         )
 
-        if store.sessionUsesCodex(sessionID: sessionID), store.streamingSessions.contains(sessionID) {
+        if usesCodex, store.streamingSessions.contains(sessionID) {
             enqueueCodexQueuedInput(sessionID: sessionID, text: trimmed, attachments: effectiveAttachments)
             store.clearPendingComposerAttachments(sessionID: sessionID)
             return
@@ -223,7 +228,7 @@ internal final class ChatSessionService {
         beginInlineProcess(sessionID: sessionID, runID: UUID())
         clearLiveAgentEvents(sessionID: sessionID)
 
-        if store.sessionUsesCodex(sessionID: sessionID) {
+        if usesCodex {
             sendCodexTurnMessage(
                 projectID: projectID,
                 sessionID: sessionID,
@@ -287,6 +292,7 @@ internal final class ChatSessionService {
 
     func steerQueuedCodexInput(sessionID: UUID, queueItemID: UUID) {
         guard store.sessionUsesCodex(sessionID: sessionID) else { return }
+        store.dismissImplementConfirmationPrompt(sessionID: sessionID)
         store.ensureCodexQueuedInputsLoaded(sessionID: sessionID)
         let queue = store.codexQueuedInputsBySession[sessionID] ?? []
         guard let item = queue.first(where: { $0.id == queueItemID }) else { return }
@@ -799,6 +805,7 @@ internal final class ChatSessionService {
             let model = self.store.selectedModelId(for: sessionID).trimmingCharacters(in: .whitespacesAndNewlines)
             let planMode = self.store.planModeEnabled(for: sessionID)
             do {
+                await self.store.composerService.awaitPendingPermissionSync(sessionID: sessionID)
                 let response = try await self.store.requestCodex(
                     method: "turn/start",
                     params: CodexTurnStartParams(

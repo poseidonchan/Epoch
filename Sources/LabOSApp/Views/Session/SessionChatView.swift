@@ -82,6 +82,7 @@ struct SessionChatView: View {
                                 items: codexItems,
                                 statusText: codexStatusText,
                                 persistedDurationByTurnID: codexTrajectoryDurationByTurnID,
+                                isPlanModeEnabled: store.planModeEnabled(for: sessionID),
                                 isStreaming: store.streamingSessions.contains(sessionID),
                                 showAssistantActionBar: true,
                                 onEditUserMessage: { item in
@@ -232,12 +233,19 @@ struct SessionChatView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 8) {
-                SessionShelfView(projectID: projectID, sessionID: sessionID)
-
-                sessionComposer
-                    .shadow(color: Color.black.opacity(0.08), radius: 12, x: 0, y: 2)
-            }
+            CodexDockView(
+                showsShelf: true,
+                showsFooter: false,
+                shelf: {
+                    SessionShelfView(projectID: projectID, sessionID: sessionID, renderMode: .dock)
+                },
+                composer: {
+                    sessionComposer
+                },
+                footer: {
+                    EmptyView()
+                }
+            )
         }
         .onAppear {
             loadCodexPromptDraftIfNeeded(prompt: codexPrompt)
@@ -490,20 +498,14 @@ struct SessionChatView: View {
                     set: { store.setSelectedThinkingLevel(for: sessionID, level: $0) }
                 ),
                 selectedPermissionLevel: Binding(
-                    get: {
-                        if isCodexSession {
-                            return store.codexFullAccessEnabled(for: sessionID) ? .full : .default
-                        }
-                        return store.permissionLevel(for: sessionID)
-                    },
+                    get: { store.permissionLevel(for: sessionID) },
                     set: { level in
-                        if !isCodexSession {
-                            store.setPermissionLevel(projectID: projectID, sessionID: sessionID, level: level)
-                        }
+                        store.setPermissionLevel(projectID: projectID, sessionID: sessionID, level: level)
                     }
                 ),
                 submitLabel: submitLabel,
                 style: .chatGPT,
+                chatComposerChrome: .embeddedInDock,
                 primaryAction: primaryAction,
                 submitDisabled: submitDisabled,
                 statusText: editingMessageID == nil ? nil : "Editing",
@@ -784,6 +786,9 @@ struct SessionChatView: View {
     }
 
     private func codexPromptDisplayOptions(for question: CodexPromptQuestion) -> [CodexPromptOption] {
+        if question.id == "labos_plan_implementation_decision" {
+            return question.options
+        }
         var options = question.options
         if options.contains(where: { $0.isOther }) {
             return options

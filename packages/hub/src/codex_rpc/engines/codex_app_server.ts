@@ -187,26 +187,82 @@ export class CodexAppServerEngine implements CodexEngineSession {
   }
 
   async steerTurn(args: { threadId: string; turnId: string; input: UserInput[] }): Promise<Record<string, unknown>> {
+    const preferredParams = {
+      threadId: args.threadId,
+      expectedTurnId: args.turnId,
+      input: args.input,
+    };
+    try {
+      return await this.request("turn/steer", preferredParams);
+    } catch (preferredErr) {
+      if (this.isLegacySteerTurnIdShapeError(preferredErr)) {
+        try {
+          return await this.request("turn/steer", {
+            threadId: args.threadId,
+            turnId: args.turnId,
+            input: args.input,
+          });
+        } catch (legacyErr) {
+          if (!this.shouldFallbackSteerToText(legacyErr)) throw legacyErr;
+          return await this.requestSteerWithTextFallback(args, preferredParams);
+        }
+      }
+
+      if (!this.shouldFallbackSteerToText(preferredErr)) throw preferredErr;
+      return await this.requestSteerWithTextFallback(args, preferredParams);
+    }
+  }
+
+  private async requestSteerWithTextFallback(
+    args: { threadId: string; turnId: string; input: UserInput[] },
+    preferredParams: { threadId: string; expectedTurnId: string; input: UserInput[] }
+  ): Promise<Record<string, unknown>> {
+    // Backward-compat: older codex app-server builds may only accept `{text}`.
+    const fallbackText = args.input
+      .map((part) => (part.type === "text" ? part.text : ""))
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+    if (!fallbackText) {
+      throw new Error("turn/steer text fallback is unavailable because no text input was provided");
+    }
+
     try {
       return await this.request("turn/steer", {
-        threadId: args.threadId,
-        turnId: args.turnId,
-        input: args.input,
+        threadId: preferredParams.threadId,
+        expectedTurnId: preferredParams.expectedTurnId,
+        text: fallbackText,
       });
-    } catch (err) {
-      // Backward-compat: older codex app-server builds may only accept `{text}`.
-      const fallbackText = args.input
-        .map((part) => (part.type === "text" ? part.text : ""))
-        .filter(Boolean)
-        .join("\n")
-        .trim();
-      if (!fallbackText) throw err;
+    } catch (preferredErr) {
+      if (!this.isLegacySteerTurnIdShapeError(preferredErr)) throw preferredErr;
       return await this.request("turn/steer", {
         threadId: args.threadId,
         turnId: args.turnId,
         text: fallbackText,
       });
     }
+  }
+
+  private isLegacySteerTurnIdShapeError(error: unknown): boolean {
+    const message = this.errorMessage(error);
+    if (message.includes("missing field `turnid`")) return true;
+    if (message.includes("unknown field `expectedturnid`")) return true;
+    if (message.includes("unknown field `expected_turn_id`")) return true;
+    if (message.includes("invalid request: unknown field `expectedturnid`")) return true;
+    return false;
+  }
+
+  private shouldFallbackSteerToText(error: unknown): boolean {
+    const message = this.errorMessage(error);
+    if (message.includes("unknown field `input`")) return true;
+    if (message.includes("invalid type") && message.includes("input")) return true;
+    if (message.includes("missing field `text`")) return true;
+    return false;
+  }
+
+  private errorMessage(error: unknown): string {
+    if (error instanceof Error) return error.message.toLowerCase();
+    return String(error ?? "").toLowerCase();
   }
 
   async close(): Promise<void> {

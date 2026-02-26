@@ -10,6 +10,11 @@ struct InlineComposerView: View {
         case chatGPT
     }
 
+    enum ChatComposerChrome {
+        case standalone
+        case embeddedInDock
+    }
+
     enum PrimaryAction: Hashable {
         case send
         case stop
@@ -24,6 +29,7 @@ struct InlineComposerView: View {
     @Binding var selectedPermissionLevel: SessionPermissionLevel
     let submitLabel: String
     var style: Style = .standard
+    var chatComposerChrome: ChatComposerChrome = .standalone
     var primaryAction: PrimaryAction = .send
     var submitDisabled: Bool = false
     var statusText: String? = nil
@@ -176,119 +182,22 @@ struct InlineComposerView: View {
     private var chatComposer: some View {
         let hasStatusRow = displayStatusText != nil || !pendingAttachments.isEmpty
 
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .bottom, spacing: 12) {
-                plusMenuButton
-
-                VStack(alignment: .leading, spacing: 10) {
-                    if !pendingAttachments.isEmpty {
-                        pendingAttachmentsRow
-                    }
-
-                    if let statusText = displayStatusText {
-                        statusChip(text: statusText, iconSystemName: statusIconSystemName)
-                    }
-
-                    HStack(spacing: 10) {
-                        modelMenu
-                        thinkingMenu
-
-                        if isPlanModeEnabled {
-                            Divider()
-                                .frame(height: 18)
-
-                            Button {
-                                withAnimation(.easeInOut(duration: 0.15)) {
-                                    isPlanModeEnabled = false
-                                }
-                            } label: {
-                                Label("Plan", systemImage: "list.bullet.clipboard")
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(.blue)
-                            }
-                            .buttonStyle(.plain)
-                        }
-
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.bottom, hasStatusRow ? 0 : 2)
-
-                    HStack(alignment: .bottom, spacing: 8) {
-                        TextField(placeholder, text: $text, axis: .vertical)
-                            .lineLimit(1...5)
-                            .font(.body)
-                            .textInputAutocapitalization(.sentences)
-                            .accessibilityIdentifier("composer.input")
-
-                        if showsVoiceButton {
-                            Button {} label: {
-                                Image(systemName: "mic")
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 34, height: 34)
-                                    .background(
-                                        Circle()
-                                            .fill(Color(.tertiarySystemFill))
-                                    )
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Voice input")
-                        }
-
-                        Button {
-                            guard isSubmitEnabled else { return }
-                            onSubmit()
-                        } label: {
-                            Image(systemName: primaryActionIconSystemName)
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(primaryActionForeground)
-                                .frame(width: 34, height: 34)
-                                .background(
-                                    Circle()
-                                        .fill(primaryActionBackgroundFill)
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!canSubmit || submitDisabled)
-                        .accessibilityLabel(submitLabel)
-                        .accessibilityIdentifier("composer.send")
-                    }
-                }
-                .padding(.horizontal, 14)
-                .padding(.top, hasStatusRow ? 8 : 10)
-                .padding(.bottom, 10)
-                .frame(
-                    maxWidth: .infinity,
-                    minHeight: hasStatusRow ? 114 : 86,
-                    alignment: .topLeading
-                )
-                .background(
-                    RoundedRectangle(cornerRadius: 26, style: .continuous)
-                        .fill(chatComposerBackground)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 26, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.12))
-                )
+        return Group {
+            if chatComposerChrome == .standalone {
+                chatComposerBody(hasStatusRow: hasStatusRow)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+                    .padding(.bottom, 10)
+                    .background(
+                        Color(.systemBackground)
+                            .opacity(colorScheme == .dark ? 0.98 : 0.92)
+                            .ignoresSafeArea(.container, edges: .bottom)
+                            .allowsHitTesting(false)
+                    )
+            } else {
+                chatComposerBody(hasStatusRow: hasStatusRow)
             }
-
-            HStack(alignment: .center, spacing: 12) {
-                Spacer(minLength: 0)
-                permissionMenu
-                ContextRingView(progress: remainingContext, totalContextTokens: contextWindowTokens)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 24)
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .padding(.bottom, 10)
-        .background(
-            Color(.systemBackground)
-                .opacity(colorScheme == .dark ? 0.98 : 0.92)
-                .ignoresSafeArea(.container, edges: .bottom)
-                .allowsHitTesting(false)
-        )
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
                 showsPlusMenu = false
@@ -297,6 +206,153 @@ struct InlineComposerView: View {
         .onDisappear {
             showsPlusMenu = false
         }
+    }
+
+    private func chatComposerBody(hasStatusRow: Bool) -> some View {
+        VStack(alignment: .leading, spacing: chatComposerChrome == .embeddedInDock ? 0 : 10) {
+            chatComposerSurface(hasStatusRow: hasStatusRow)
+
+            if chatComposerChrome == .embeddedInDock {
+                chatComposerDivider
+            }
+
+            chatComposerFooter
+        }
+    }
+
+    private func chatComposerSurface(hasStatusRow: Bool) -> some View {
+        Group {
+            if chatComposerChrome == .standalone {
+                chatComposerSurfaceContent(hasStatusRow: hasStatusRow)
+                    .background(
+                        RoundedRectangle(cornerRadius: 26, style: .continuous)
+                            .fill(chatComposerBackground)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 26, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.12))
+                    )
+            } else {
+                chatComposerSurfaceContent(hasStatusRow: hasStatusRow)
+            }
+        }
+    }
+
+    private func chatComposerSurfaceContent(hasStatusRow: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !pendingAttachments.isEmpty {
+                pendingAttachmentsRow
+            }
+
+            if let statusText = displayStatusText {
+                statusChip(text: statusText, iconSystemName: statusIconSystemName)
+            }
+
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField(placeholder, text: $text, axis: .vertical)
+                    .lineLimit(1...5)
+                    .font(.body)
+                    .textInputAutocapitalization(.sentences)
+                    .accessibilityIdentifier("composer.input")
+            }
+
+            codexToolbarRow
+                .padding(.bottom, hasStatusRow ? 0 : 2)
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, hasStatusRow ? 8 : 10)
+        .padding(.bottom, 10)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: hasStatusRow ? 114 : 86,
+            alignment: .topLeading
+        )
+    }
+
+    private var codexToolbarRow: some View {
+        HStack(spacing: 12) {
+            plusMenuButton
+            modelMenu
+            thinkingMenu
+
+            if isPlanModeEnabled {
+                Divider()
+                    .frame(height: 18)
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        isPlanModeEnabled = false
+                    }
+                } label: {
+                    Label("Plan", systemImage: "list.bullet.clipboard")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.blue)
+                }
+                .buttonStyle(.plain)
+            }
+
+            Spacer(minLength: 0)
+
+            if showsVoiceButton {
+                voiceToolbarButton
+            }
+
+            submitToolbarButton
+        }
+        .padding(.top, 2)
+    }
+
+    private var voiceToolbarButton: some View {
+        Button {} label: {
+            Image(systemName: "mic")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 34, height: 34)
+                .background(
+                    Circle()
+                        .fill(Color(.tertiarySystemFill))
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Voice input")
+    }
+
+    private var submitToolbarButton: some View {
+        Button {
+            guard isSubmitEnabled else { return }
+            onSubmit()
+        } label: {
+            Image(systemName: primaryActionIconSystemName)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(primaryActionForeground)
+                .frame(width: 34, height: 34)
+                .background(
+                    Circle()
+                        .fill(primaryActionBackgroundFill)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(!canSubmit || submitDisabled)
+        .accessibilityLabel(submitLabel)
+        .accessibilityIdentifier("composer.send")
+    }
+
+    private var chatComposerDivider: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(CodexDockTokens.dividerOpacity))
+            .frame(height: CodexDockTokens.dividerThickness)
+            .padding(.horizontal, CodexDockTokens.dividerHorizontalInset)
+    }
+
+    private var chatComposerFooter: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Spacer(minLength: 0)
+            permissionMenu
+            ContextRingView(progress: remainingContext, totalContextTokens: contextWindowTokens)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
     }
 
     private var imageAttachments: [ComposerAttachment] {
@@ -436,17 +492,9 @@ struct InlineComposerView: View {
             showsPlusMenu = true
         } label: {
             Image(systemName: "plus")
-                .font(.system(size: 24, weight: .medium))
-                .foregroundStyle(.primary)
-                .frame(width: 50, height: 50)
-                .background(
-                    Circle()
-                        .fill(Color(.secondarySystemBackground))
-                )
-                .overlay(
-                    Circle()
-                        .strokeBorder(Color.primary.opacity(0.08))
-                )
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 30, height: 30)
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("composer.plus")
@@ -654,7 +702,7 @@ struct InlineComposerView: View {
     private func menuChipLabel(_ text: String) -> some View {
         HStack(spacing: 4) {
             Text(text)
-                .font(.headline.weight(.semibold))
+                .font(.subheadline.weight(.semibold))
                 .lineLimit(1)
 
             Image(systemName: "chevron.down")
@@ -1842,11 +1890,4 @@ actor RecentInlinePhotoCache {
     }
 }
 
-struct ComposerHeightPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
 #endif

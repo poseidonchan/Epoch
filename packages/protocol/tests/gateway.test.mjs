@@ -17,6 +17,7 @@ test("exports a stable gateway.json", async () => {
   assert.ok(Array.isArray(parsed.eventNames));
   assert.ok(Array.isArray(parsed.errorCodes));
   assert.ok(parsed.operatorMethods.includes("projects.list"));
+  assert.ok(parsed.operatorMethods.includes("projects.update"));
   assert.ok(parsed.nodeMethods.includes("slurm.submit"));
   assert.ok(parsed.eventNames.includes("connect.challenge"));
   assert.ok(parsed.errorCodes.includes("INTERNAL"));

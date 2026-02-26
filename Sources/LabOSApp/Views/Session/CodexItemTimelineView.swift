@@ -7,20 +7,27 @@ struct CodexItemTimelineView: View {
     let items: [CodexThreadItem]
     let statusText: String?
     let persistedDurationByTurnID: [String: Int]
+    let isPlanModeEnabled: Bool
     var isStreaming: Bool = false
     var showAssistantActionBar: Bool = true
     var onEditUserMessage: (CodexUserMessageItem) -> Void = { _ in }
     var onBranchAgentMessage: (CodexAgentMessageItem) -> Void = { _ in }
     var onFinalizeTurnDuration: (_ turnID: String, _ durationMs: Int) -> Void = { _, _ in }
 
+    private struct TurnKey: Hashable, Sendable {
+        let signature: String
+        let occurrence: Int
+    }
+
     @State private var expandedTurnIDs: Set<String> = []
     @State private var expandedGroupIDs: Set<String> = []
     @State private var expandedLeafIDs: Set<String> = []
-    @State private var turnStartByID: [String: Date] = [:]
-    @State private var turnStartByIdentity: [String: Date] = [:]
-    @State private var finalizedDurationByID: [String: Int] = [:]
-    @State private var wasStreamingByTurnID: [String: Bool] = [:]
-    @State private var pendingAutoCollapseTokenByTurnID: [String: UUID] = [:]
+    @State private var turnKeyByTurnID: [String: TurnKey] = [:]
+    @State private var turnIDByTurnKey: [TurnKey: String] = [:]
+    @State private var startedAtByTurnKey: [TurnKey: Date] = [:]
+    @State private var finalizedDurationMsByTurnKey: [TurnKey: Int] = [:]
+    @State private var wasStreamingByTurnKey: [TurnKey: Bool] = [:]
+    @State private var pendingAutoCollapseTokenByTurnKey: [TurnKey: UUID] = [:]
 
     private static let autoCollapseDelayNanoseconds: UInt64 = 420_000_000
     private static let autoCollapseAnimation = Animation.easeInOut(duration: 0.2)
@@ -91,16 +98,21 @@ struct CodexItemTimelineView: View {
 
     @ViewBuilder
     private func turnRow(_ turn: CodexTrajectoryTurn) -> some View {
+        let shouldShowSummary = turn.hasTrajectorySummary
+            || turn.isStreaming
+            || (isPlanModeEnabled && (turn.hasThinkingStatus || turn.finalAnswerItemID != nil))
+
         VStack(alignment: .leading, spacing: 8) {
             userBubble(item: turn.userMessage)
 
-            if turn.hasTrajectorySummary {
+            if shouldShowSummary {
+                let turnKey = turnKeyByTurnID[turn.id]
                 CodexTrajectorySummaryBar(
                     turnID: turn.id,
                     isExpanded: expandedTurnIDs.contains(turn.id),
                     isStreaming: turn.isStreaming,
-                    startedAt: turnStartByID[turn.id],
-                    completedDurationMs: finalizedDurationByID[turn.id],
+                    startedAt: turnKey.flatMap { startedAtByTurnKey[$0] },
+                    completedDurationMs: turnKey.flatMap { finalizedDurationMsByTurnKey[$0] },
                     estimatedDurationMs: turn.estimatedDurationMs,
                     onToggle: {
                         toggleTurn(turn.id)
@@ -293,55 +305,57 @@ struct CodexItemTimelineView: View {
     private func syncTrajectoryState(with turns: [CodexTrajectoryTurn]) {
         let now = Date()
         let activeTurnIDs = Set(turns.map(\.id))
-        var activeIdentities: Set<String> = []
+        var activeTurnKeys: Set<TurnKey> = []
+        var nextTurnKeyByTurnID: [String: TurnKey] = [:]
+        var nextTurnIDByTurnKey: [TurnKey: String] = [:]
 
-        for (index, turn) in turns.enumerated() {
-            let turnIdentity = trajectoryIdentity(for: turn, index: index)
-            activeIdentities.insert(turnIdentity)
+        var seenOccurrencesBySignature: [String: Int] = [:]
 
-            if finalizedDurationByID[turn.id] == nil,
+        for turn in turns {
+            let signature = userInputSignature(turn.userMessage.content)
+            let occurrence = seenOccurrencesBySignature[signature, default: 0]
+            seenOccurrencesBySignature[signature] = occurrence + 1
+            let turnKey = TurnKey(signature: signature, occurrence: occurrence)
+
+            activeTurnKeys.insert(turnKey)
+            nextTurnKeyByTurnID[turn.id] = turnKey
+            nextTurnIDByTurnKey[turnKey] = turn.id
+
+            if finalizedDurationMsByTurnKey[turnKey] == nil,
                let persistedDurationMs = persistedDurationByTurnID[turn.id],
                persistedDurationMs > 0 {
-                finalizedDurationByID[turn.id] = persistedDurationMs
-            }
-
-            if turnStartByID[turn.id] == nil,
-               let preservedStartedAt = turnStartByIdentity[turnIdentity] {
-                turnStartByID[turn.id] = preservedStartedAt
+                finalizedDurationMsByTurnKey[turnKey] = persistedDurationMs
             }
 
             if (turn.isStreaming || turn.hasTrajectorySummary),
-               turnStartByID[turn.id] == nil {
-                turnStartByID[turn.id] = now
+               startedAtByTurnKey[turnKey] == nil {
+                startedAtByTurnKey[turnKey] = now
             }
 
-            if let startedAt = turnStartByID[turn.id] {
-                turnStartByIdentity[turnIdentity] = startedAt
-            }
-
-            let wasStreaming = wasStreamingByTurnID[turn.id] ?? false
+            let wasStreaming = wasStreamingByTurnKey[turnKey] ?? false
 
             if turn.isStreaming {
                 expandedTurnIDs.insert(turn.id)
-                pendingAutoCollapseTokenByTurnID.removeValue(forKey: turn.id)
+                pendingAutoCollapseTokenByTurnKey.removeValue(forKey: turnKey)
             } else if wasStreaming {
-                finalizeTurnDurationIfNeeded(turnID: turn.id, now: now)
+                finalizeTurnDurationIfNeeded(turnKey: turnKey, turnID: turn.id, now: now)
                 if turn.hasTrajectorySummary, turn.finalAnswerItemID != nil {
-                    scheduleAutoCollapse(for: turn.id)
+                    scheduleAutoCollapse(for: turnKey)
                 } else {
-                    pendingAutoCollapseTokenByTurnID.removeValue(forKey: turn.id)
+                    pendingAutoCollapseTokenByTurnKey.removeValue(forKey: turnKey)
                 }
             }
 
-            wasStreamingByTurnID[turn.id] = turn.isStreaming
+            wasStreamingByTurnKey[turnKey] = turn.isStreaming
         }
 
         expandedTurnIDs = expandedTurnIDs.intersection(activeTurnIDs)
-        turnStartByID = turnStartByID.filter { activeTurnIDs.contains($0.key) }
-        turnStartByIdentity = turnStartByIdentity.filter { activeIdentities.contains($0.key) }
-        finalizedDurationByID = finalizedDurationByID.filter { activeTurnIDs.contains($0.key) }
-        wasStreamingByTurnID = wasStreamingByTurnID.filter { activeTurnIDs.contains($0.key) }
-        pendingAutoCollapseTokenByTurnID = pendingAutoCollapseTokenByTurnID.filter { activeTurnIDs.contains($0.key) }
+        turnKeyByTurnID = nextTurnKeyByTurnID
+        turnIDByTurnKey = nextTurnIDByTurnKey
+        startedAtByTurnKey = startedAtByTurnKey.filter { activeTurnKeys.contains($0.key) }
+        finalizedDurationMsByTurnKey = finalizedDurationMsByTurnKey.filter { activeTurnKeys.contains($0.key) }
+        wasStreamingByTurnKey = wasStreamingByTurnKey.filter { activeTurnKeys.contains($0.key) }
+        pendingAutoCollapseTokenByTurnKey = pendingAutoCollapseTokenByTurnKey.filter { activeTurnKeys.contains($0.key) }
 
         let activeGroupIDs = Set(turns.flatMap { $0.groups.map(\.id) })
         expandedGroupIDs = expandedGroupIDs.intersection(activeGroupIDs)
@@ -350,53 +364,41 @@ struct CodexItemTimelineView: View {
         expandedLeafIDs = expandedLeafIDs.intersection(activeLeafIDs)
     }
 
-    private func trajectoryIdentity(for turn: CodexTrajectoryTurn, index: Int) -> String {
-        "\(index):\(userInputSignature(turn.userMessage.content))"
-    }
-
     private func userInputSignature(_ inputs: [CodexUserInput]) -> String {
-        inputs
-            .map { input in
-                [
-                    input.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-                    input.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-                    input.url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-                    input.path?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-                ].joined(separator: "|")
-            }
-            .joined(separator: "||")
+        AppStore.codexUserContentSignature(inputs)
     }
 
-    private func scheduleAutoCollapse(for turnID: String) {
+    private func scheduleAutoCollapse(for turnKey: TurnKey) {
         let token = UUID()
-        pendingAutoCollapseTokenByTurnID[turnID] = token
+        pendingAutoCollapseTokenByTurnKey[turnKey] = token
 
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: Self.autoCollapseDelayNanoseconds)
 
-            guard pendingAutoCollapseTokenByTurnID[turnID] == token else { return }
-            guard let turn = turns.first(where: { $0.id == turnID }),
+            guard pendingAutoCollapseTokenByTurnKey[turnKey] == token else { return }
+            guard let turnID = turnIDByTurnKey[turnKey],
+                  let turn = turns.first(where: { $0.id == turnID }),
                   !turn.isStreaming,
                   turn.finalAnswerItemID != nil else {
                 return
             }
 
             withAnimation(Self.autoCollapseAnimation) {
-                expandedTurnIDs.remove(turnID)
+                expandedTurnIDs.remove(turn.id)
             }
-            pendingAutoCollapseTokenByTurnID.removeValue(forKey: turnID)
-            finalizeTurnDurationIfNeeded(turnID: turnID, now: Date())
+            pendingAutoCollapseTokenByTurnKey.removeValue(forKey: turnKey)
+            finalizeTurnDurationIfNeeded(turnKey: turnKey, turnID: turn.id, now: Date())
         }
     }
 
-    private func finalizeTurnDurationIfNeeded(turnID: String, now: Date) {
-        guard finalizedDurationByID[turnID] == nil,
-              let startedAt = turnStartByID[turnID]
+    private func finalizeTurnDurationIfNeeded(turnKey: TurnKey, turnID: String, now: Date) {
+        guard finalizedDurationMsByTurnKey[turnKey] == nil,
+              let startedAt = startedAtByTurnKey[turnKey]
         else { return }
 
         let durationMs = max(0, Int(now.timeIntervalSince(startedAt) * 1_000))
         guard durationMs > 0 else { return }
-        finalizedDurationByID[turnID] = durationMs
+        finalizedDurationMsByTurnKey[turnKey] = durationMs
         onFinalizeTurnDuration(turnID, durationMs)
     }
 

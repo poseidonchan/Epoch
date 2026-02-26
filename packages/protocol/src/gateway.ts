@@ -2,6 +2,7 @@ export const operatorMethods = [
   "projects.list",
   "projects.create",
   "projects.rename",
+  "projects.update",
   "projects.delete",
   "sessions.list",
   "sessions.create",

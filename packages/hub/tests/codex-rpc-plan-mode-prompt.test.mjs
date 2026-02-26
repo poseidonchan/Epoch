@@ -110,10 +110,10 @@ test("buildPlanImplementationPromptParams emits deterministic implementation que
   assert.equal(params.questions[0].isOther, true);
   assert.equal(params.questions[0].options.length, 2);
   assert.equal(params.questions[0].options[0].label, "Yes, implement this plan");
-  assert.equal(params.questions[0].options[1].label, "Keep planning");
+  assert.equal(params.questions[0].options[1].label, "No, and tell Codex what to do differently");
 });
 
-test("decidePlanImplementationFollowup maps implement/plan/other answers", () => {
+test("decidePlanImplementationFollowup only maps implement answers", () => {
   const implement = decidePlanImplementationFollowup({
     answers: {
       labos_plan_implementation_decision: {
@@ -138,17 +138,14 @@ test("decidePlanImplementationFollowup maps implement/plan/other answers", () =>
     text: "Implement it",
   });
 
-  const keepPlanning = decidePlanImplementationFollowup({
+  const noImplement = decidePlanImplementationFollowup({
     answers: {
       labos_plan_implementation_decision: {
-        answers: ["Keep planning"],
+        answers: ["No, and tell Codex what to do differently"],
       },
     },
   });
-  assert.deepEqual(keepPlanning, {
-    planMode: true,
-    text: "Continue planning and refine the plan before implementation.",
-  });
+  assert.equal(noImplement, null);
 
   const custom = decidePlanImplementationFollowup({
     answers: {
@@ -157,8 +154,7 @@ test("decidePlanImplementationFollowup maps implement/plan/other answers", () =>
       },
     },
   });
-  assert.equal(custom?.planMode, true);
-  assert.match(custom?.text ?? "", /Add stronger constraints/);
+  assert.equal(custom, null);
 });
 
 test("extractPlanUpdateFromDynamicToolCall parses update_plan tool calls", () => {

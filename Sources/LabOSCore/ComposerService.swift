@@ -6,6 +6,8 @@ internal final class ComposerService {
 
     // Private state migrated from AppStore
     private var attachmentPayloadsBySessionMessageID: [UUID: [UUID: [ComposerAttachment]]] = [:]
+    private var pendingPermissionSyncTaskBySession: [UUID: Task<Void, Never>] = [:]
+    private var permissionSyncGenerationBySession: [UUID: Int] = [:]
 
     init(store: AppStore) {
         self.store = store
@@ -182,17 +184,126 @@ internal final class ComposerService {
 
     func setPermissionLevel(projectID: UUID, sessionID: UUID, level: SessionPermissionLevel) {
         store.permissionLevelBySession[sessionID] = level
-        guard store.isGatewayConfigured else { return }
-        Task { @MainActor [weak store] in
-            guard let store else { return }
-            let ok = await store.ensureGatewayConnectedForChat()
-            guard ok, store.isGatewayConnected, let gatewayClient = store.gatewayClient else { return }
+        store.codexFullAccessBySession[sessionID] = (level == .full)
+        store.projectService.applyProjectPermissionLevelLocally(projectID: projectID, level: level)
+
+        let generation = (permissionSyncGenerationBySession[sessionID] ?? 0) + 1
+        permissionSyncGenerationBySession[sessionID] = generation
+        let previousTask = pendingPermissionSyncTaskBySession[sessionID]
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if self.permissionSyncGenerationBySession[sessionID] == generation {
+                    self.pendingPermissionSyncTaskBySession[sessionID] = nil
+                }
+            }
+            if let previousTask {
+                _ = await previousTask.result
+            }
+            guard !Task.isCancelled else { return }
+            await self.syncPermissionRemotely(projectID: projectID, sessionID: sessionID, level: level)
+        }
+        pendingPermissionSyncTaskBySession[sessionID] = task
+    }
+
+    func handleSessionPermissionUpdated(_ payload: SessionPermissionUpdatedPayload) {
+        if let level = AppStore.parsePermissionLevel(payload.level) {
+            store.permissionLevelBySession[payload.sessionId] = level
+            store.codexFullAccessBySession[payload.sessionId] = (level == .full)
+        }
+    }
+
+    func awaitPendingPermissionSync(sessionID: UUID) async {
+        guard let task = pendingPermissionSyncTaskBySession[sessionID] else { return }
+        _ = await task.result
+    }
+
+    func clearPendingPermissionSync(sessionID: UUID) {
+        pendingPermissionSyncTaskBySession[sessionID]?.cancel()
+        pendingPermissionSyncTaskBySession[sessionID] = nil
+        permissionSyncGenerationBySession[sessionID] = nil
+    }
+
+    private func syncPermissionRemotely(projectID: UUID, sessionID: UUID, level: SessionPermissionLevel) async {
+        await syncSessionPermissionRemotely(projectID: projectID, sessionID: sessionID, level: level)
+        await syncSessionPermissionEventRemotely(projectID: projectID, sessionID: sessionID, level: level)
+        await store.projectService.syncProjectPermissionLevelRemotely(projectID: projectID, level: level)
+    }
+
+    private func syncSessionPermissionRemotely(projectID: UUID, sessionID: UUID, level: SessionPermissionLevel) async {
+        let codexSandbox = AppStore.codexSandbox(for: level)
+        let codexApprovalPolicy = AppStore.codexApprovalPolicyForPermissionChange
+
+        if store.shouldUseCodexRPC {
             struct Params: Codable, Sendable {
                 var projectId: String
                 var sessionId: String
-                var level: SessionPermissionLevel
+                var codexApprovalPolicy: String
+                var codexSandbox: JSONValue
             }
-            _ = try? await gatewayClient.request(
+            do {
+                let response = try await store.requestCodex(
+                    method: "labos/session/update",
+                    params: Params(
+                        projectId: AppStore.gatewayID(projectID),
+                        sessionId: AppStore.gatewayID(sessionID),
+                        codexApprovalPolicy: codexApprovalPolicy,
+                        codexSandbox: codexSandbox
+                    )
+                )
+                if let session: Session = try? store.decodeCodexResult(response.result, key: "session") {
+                    applyUpdatedSessionFromPermissionSync(session)
+                }
+                store.lastGatewayErrorMessage = nil
+                return
+            } catch {
+                store.lastGatewayErrorMessage = error.localizedDescription
+            }
+        }
+
+        guard store.isGatewayConfigured else { return }
+        let connected = await store.ensureGatewayConnectedForChat()
+        guard connected, store.isGatewayConnected, let gatewayClient = store.gatewayClient else { return }
+
+        struct Params: Codable, Sendable {
+            var projectId: String
+            var sessionId: String
+            var codexApprovalPolicy: String
+            var codexSandbox: JSONValue
+        }
+
+        do {
+            let response = try await gatewayClient.request(
+                method: "sessions.update",
+                params: Params(
+                    projectId: AppStore.gatewayID(projectID),
+                    sessionId: AppStore.gatewayID(sessionID),
+                    codexApprovalPolicy: codexApprovalPolicy,
+                    codexSandbox: codexSandbox
+                )
+            )
+            if let session: Session = try? store.decodeGatewayPayload(response.payload, key: "session") {
+                applyUpdatedSessionFromPermissionSync(session)
+            }
+            store.lastGatewayErrorMessage = nil
+        } catch {
+            store.lastGatewayErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func syncSessionPermissionEventRemotely(projectID: UUID, sessionID: UUID, level: SessionPermissionLevel) async {
+        guard store.isGatewayConfigured else { return }
+        let connected = await store.ensureGatewayConnectedForChat()
+        guard connected, store.isGatewayConnected, let gatewayClient = store.gatewayClient else { return }
+
+        struct Params: Codable, Sendable {
+            var projectId: String
+            var sessionId: String
+            var level: SessionPermissionLevel
+        }
+
+        do {
+            _ = try await gatewayClient.request(
                 method: "sessions.permission.set",
                 params: Params(
                     projectId: AppStore.gatewayID(projectID),
@@ -200,13 +311,34 @@ internal final class ComposerService {
                     level: level
                 )
             )
+        } catch {
+            store.lastGatewayErrorMessage = error.localizedDescription
         }
     }
 
-    func handleSessionPermissionUpdated(_ payload: SessionPermissionUpdatedPayload) {
-        if let level = AppStore.parsePermissionLevel(payload.level) {
-            store.permissionLevelBySession[payload.sessionId] = level
+    private func applyUpdatedSessionFromPermissionSync(_ session: Session) {
+        store.projectService.upsertSession(session)
+
+        let previousThreadId = store.codexThreadBySession[session.id]
+        if let rawThreadId = session.codexThreadId,
+           let threadId = store.normalizedOptionalString(rawThreadId),
+           !threadId.isEmpty {
+            if let previousThreadId, previousThreadId != threadId {
+                store.codexSessionByThread[previousThreadId] = nil
+            }
+            store.codexThreadBySession[session.id] = threadId
+            store.codexSessionByThread[threadId] = session.id
+            store.codexPendingThreadBindingSessions.remove(session.id)
+        } else {
+            store.codexThreadBySession[session.id] = nil
+            if let previousThreadId {
+                store.codexSessionByThread[previousThreadId] = nil
+            }
         }
+
+        let level = AppStore.permissionLevel(forCodexSandbox: session.codexSandbox) ?? .default
+        store.permissionLevelBySession[session.id] = level
+        store.codexFullAccessBySession[session.id] = (level == .full)
     }
 
     // MARK: - Plan mode

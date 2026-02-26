@@ -134,6 +134,61 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         XCTAssertEqual(store.codexPendingPrompt(for: sessionID)?.prompt, "Second prompt")
     }
 
+    func testRespondToCodexPromptMarksSessionAsStreaming() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+
+        store.projects = [Project(id: projectID, name: "Prompt Streaming Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Prompt Streaming Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_prompt_streaming"
+            ),
+        ]
+        store.codexSessionByThread["thread_prompt_streaming"] = sessionID
+
+        await store._receiveCodexServerRequestForTesting(
+            CodexRPCRequest(
+                id: .string("req_prompt_streaming"),
+                method: "item/tool/requestUserInput",
+                params: .object([
+                    "threadId": .string("thread_prompt_streaming"),
+                    "turnId": .string("turn_prompt_streaming"),
+                    "prompt": .string("Select a flow"),
+                    "questions": .array([
+                        .object([
+                            "id": .string("response"),
+                            "question": .string("Pick"),
+                            "options": .array([
+                                .object([
+                                    "label": .string("Continue"),
+                                    "description": .string("Proceed"),
+                                ]),
+                            ]),
+                        ]),
+                    ]),
+                ])
+            )
+        )
+
+        XCTAssertFalse(store.streamingSessions.contains(sessionID))
+
+        store.codexServerResponseOverrideForTests = { _, _, _ in }
+        store.respondToCodexPrompt(
+            sessionID: sessionID,
+            requestID: .string("req_prompt_streaming"),
+            answers: ["response": "Continue"]
+        )
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            store.streamingSessions.contains(sessionID)
+        }
+    }
+
     func testRequestUserInputParsesQuestionHeaderAndQuestionLevelIsOther() async throws {
         let store = AppStore(bootstrapDemo: false)
         let projectID = UUID()
@@ -448,6 +503,112 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         }
 
         XCTAssertEqual(store.planModeEnabled(for: sessionID), true)
+        XCTAssertNil(store.codexPendingPrompt(for: sessionID))
+    }
+
+    func testSendMessageDismissesImplementConfirmationPrompt() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        let threadID = "thread_prompt_dismiss_send"
+
+        store.projects = [Project(id: projectID, name: "Prompt Dismiss Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Prompt Dismiss Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: threadID
+            ),
+        ]
+        store.codexThreadBySession[sessionID] = threadID
+        store.codexSessionByThread[threadID] = sessionID
+        store.codexConnectionState = .connected
+        store.codexPendingPromptBySession[sessionID] = [
+            CodexPendingPrompt(
+                requestID: .string("req_impl_prompt_send"),
+                sessionID: sessionID,
+                threadId: threadID,
+                turnId: "turn_impl_prompt_send",
+                kind: "implement_confirmation",
+                prompt: "Implement this plan?",
+                questions: [],
+                rawParams: nil
+            ),
+        ]
+
+        var capturedMethod: String?
+        store.codexRequestOverrideForTests = { method, _ in
+            capturedMethod = method
+            return CodexRPCResponse(
+                id: .string("turn_start_ok"),
+                result: .object([
+                    "threadId": .string(threadID),
+                    "turn": .object([
+                        "id": .string("turn_after_prompt_send"),
+                        "status": .string("inProgress"),
+                    ]),
+                ]),
+                error: nil
+            )
+        }
+
+        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "continue manually")
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            capturedMethod == "turn/start"
+        }
+        XCTAssertNil(store.codexPendingPrompt(for: sessionID))
+    }
+
+    func testSteerQueuedCodexInputDismissesImplementConfirmationPrompt() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        let threadID = "thread_prompt_dismiss_steer"
+
+        store.projects = [Project(id: projectID, name: "Prompt Dismiss Steer Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Prompt Dismiss Steer Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: threadID
+            ),
+        ]
+        store.codexThreadBySession[sessionID] = threadID
+        store.codexSessionByThread[threadID] = sessionID
+        store.codexActiveTurnIDBySession[sessionID] = "turn_active_prompt_dismiss"
+        store.streamingSessions.insert(sessionID)
+        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "queued steer input")
+        let queued = try XCTUnwrap(store.codexQueuedInputs(for: sessionID).first)
+
+        store.codexPendingPromptBySession[sessionID] = [
+            CodexPendingPrompt(
+                requestID: .string("req_impl_prompt_steer"),
+                sessionID: sessionID,
+                threadId: threadID,
+                turnId: "turn_impl_prompt_steer",
+                kind: "implement_confirmation",
+                prompt: "Implement this plan?",
+                questions: [],
+                rawParams: nil
+            ),
+        ]
+
+        var capturedMethod: String?
+        store.codexRequestOverrideForTests = { method, _ in
+            capturedMethod = method
+            return CodexRPCResponse(id: .string("turn_steer_ok"), result: .object([:]), error: nil)
+        }
+
+        store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: queued.id)
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            capturedMethod == "turn/steer"
+        }
         XCTAssertNil(store.codexPendingPrompt(for: sessionID))
     }
 
@@ -983,6 +1144,189 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         )
     }
 
+    func testSetPermissionLevelInCodexModeSyncsSessionAndProjectDefaults() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        let threadID = "thread_permission_sync"
+        let now = "2026-02-25T00:00:00.000Z"
+
+        store.projects = [
+            Project(
+                id: projectID,
+                name: "Permission Sync Project",
+                backendEngine: "codex-app-server",
+                codexApprovalPolicy: "on-request",
+                codexSandbox: .object(["mode": .string("workspace-write")])
+            ),
+        ]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Permission Sync Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: threadID,
+                codexApprovalPolicy: "on-request",
+                codexSandbox: .object(["mode": .string("workspace-write")])
+            ),
+        ]
+        store.codexThreadBySession[sessionID] = threadID
+        store.codexSessionByThread[threadID] = sessionID
+        store.codexConnectionState = .connected
+
+        var calls: [(method: String, params: JSONValue?)] = []
+        store.codexRequestOverrideForTests = { method, params in
+            calls.append((method, params))
+            switch method {
+            case "labos/session/update":
+                return CodexRPCResponse(
+                    id: .string("session_update"),
+                    result: .object([
+                        "session": Self.codexSessionJSON(
+                            sessionID: sessionID,
+                            projectID: projectID,
+                            threadID: threadID,
+                            nowISO: now,
+                            sandboxMode: "danger-full-access"
+                        ),
+                    ]),
+                    error: nil
+                )
+            case "labos/project/update":
+                return CodexRPCResponse(
+                    id: .string("project_update"),
+                    result: .object([
+                        "project": Self.codexProjectJSON(
+                            projectID: projectID,
+                            nowISO: now,
+                            sandboxMode: "danger-full-access"
+                        ),
+                    ]),
+                    error: nil
+                )
+            default:
+                return CodexRPCResponse(id: .string("ok"), result: .object([:]), error: nil)
+            }
+        }
+
+        store.setPermissionLevel(projectID: projectID, sessionID: sessionID, level: .full)
+        XCTAssertEqual(store.permissionLevel(for: sessionID), .full)
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            Set(calls.map(\.method)).isSuperset(of: ["labos/session/update", "labos/project/update"])
+        }
+
+        let sessionParams = try XCTUnwrap(
+            calls.first(where: { $0.method == "labos/session/update" })?.params?.objectValue
+        )
+        XCTAssertEqual(sessionParams["projectId"]?.stringValue, projectID.uuidString.lowercased())
+        XCTAssertEqual(sessionParams["sessionId"]?.stringValue, sessionID.uuidString.lowercased())
+        XCTAssertEqual(sessionParams["codexApprovalPolicy"]?.stringValue, "on-request")
+        XCTAssertEqual(sessionParams["codexSandbox"]?.objectValue?["mode"]?.stringValue, "danger-full-access")
+
+        let projectParams = try XCTUnwrap(
+            calls.first(where: { $0.method == "labos/project/update" })?.params?.objectValue
+        )
+        XCTAssertEqual(projectParams["projectId"]?.stringValue, projectID.uuidString.lowercased())
+        XCTAssertEqual(projectParams["codexApprovalPolicy"]?.stringValue, "on-request")
+        XCTAssertEqual(projectParams["codexSandbox"]?.objectValue?["mode"]?.stringValue, "danger-full-access")
+    }
+
+    func testTurnStartWaitsForSessionPermissionSyncCompletion() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        let threadID = "thread_permission_order"
+        let now = "2026-02-25T00:00:00.000Z"
+
+        store.projects = [
+            Project(
+                id: projectID,
+                name: "Permission Order Project",
+                backendEngine: "codex-app-server",
+                codexApprovalPolicy: "on-request",
+                codexSandbox: .object(["mode": .string("workspace-write")])
+            ),
+        ]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Permission Order Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: threadID,
+                codexApprovalPolicy: "on-request",
+                codexSandbox: .object(["mode": .string("workspace-write")])
+            ),
+        ]
+        store.codexThreadBySession[sessionID] = threadID
+        store.codexSessionByThread[threadID] = sessionID
+        store.codexConnectionState = .connected
+
+        var events: [String] = []
+        store.codexRequestOverrideForTests = { method, _ in
+            switch method {
+            case "labos/session/update":
+                events.append("session-update:start")
+                try await Task.sleep(for: .milliseconds(150))
+                events.append("session-update:end")
+                return CodexRPCResponse(
+                    id: .string("session_update"),
+                    result: .object([
+                        "session": Self.codexSessionJSON(
+                            sessionID: sessionID,
+                            projectID: projectID,
+                            threadID: threadID,
+                            nowISO: now,
+                            sandboxMode: "danger-full-access"
+                        ),
+                    ]),
+                    error: nil
+                )
+            case "labos/project/update":
+                events.append("project-update")
+                return CodexRPCResponse(
+                    id: .string("project_update"),
+                    result: .object([
+                        "project": Self.codexProjectJSON(
+                            projectID: projectID,
+                            nowISO: now,
+                            sandboxMode: "danger-full-access"
+                        ),
+                    ]),
+                    error: nil
+                )
+            case "turn/start":
+                events.append("turn-start")
+                return CodexRPCResponse(
+                    id: .string("turn_start"),
+                    result: .object([
+                        "threadId": .string(threadID),
+                        "turn": .object([
+                            "id": .string("turn_permission_order"),
+                            "status": .string("inProgress"),
+                        ]),
+                    ]),
+                    error: nil
+                )
+            default:
+                return CodexRPCResponse(id: .string("ok"), result: .object([:]), error: nil)
+            }
+        }
+
+        store.setPermissionLevel(projectID: projectID, sessionID: sessionID, level: .full)
+        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "apply latest permission")
+
+        try await waitUntil(timeoutSeconds: 1.5) {
+            events.contains("turn-start")
+        }
+
+        let turnStartIndex = try XCTUnwrap(events.firstIndex(of: "turn-start"))
+        let sessionEndIndex = try XCTUnwrap(events.firstIndex(of: "session-update:end"))
+        XCTAssertGreaterThan(turnStartIndex, sessionEndIndex)
+    }
+
     func testCodexTurnPlanUpdatedHydratesLivePlanAndClearsOnCompletion() throws {
         let store = AppStore(bootstrapDemo: false)
         let projectID = UUID()
@@ -1053,5 +1397,52 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(Int(interval * 1000)))
         }
         XCTFail("Timed out after \(timeoutSeconds)s")
+    }
+
+    private static func codexProjectJSON(
+        projectID: UUID,
+        nowISO: String,
+        sandboxMode: String
+    ) -> JSONValue {
+        .object([
+            "id": .string(projectID.uuidString.lowercased()),
+            "name": .string("Permission Project"),
+            "createdAt": .string(nowISO),
+            "updatedAt": .string(nowISO),
+            "backendEngine": .string("codex-app-server"),
+            "codexModelProvider": .string("openai"),
+            "codexModel": .string("gpt-5.3-codex"),
+            "codexApprovalPolicy": .string("on-request"),
+            "codexSandbox": .object(["mode": .string(sandboxMode)]),
+            "hpcWorkspacePath": .null,
+            "hpcWorkspaceState": .string("queued"),
+        ])
+    }
+
+    private static func codexSessionJSON(
+        sessionID: UUID,
+        projectID: UUID,
+        threadID: String,
+        nowISO: String,
+        sandboxMode: String
+    ) -> JSONValue {
+        .object([
+            "id": .string(sessionID.uuidString.lowercased()),
+            "projectID": .string(projectID.uuidString.lowercased()),
+            "title": .string("Permission Session"),
+            "lifecycle": .string("active"),
+            "createdAt": .string(nowISO),
+            "updatedAt": .string(nowISO),
+            "backendEngine": .string("codex-app-server"),
+            "codexThreadId": .string(threadID),
+            "codexModel": .string("gpt-5.3-codex"),
+            "codexModelProvider": .string("openai"),
+            "codexApprovalPolicy": .string("on-request"),
+            "codexSandbox": .object(["mode": .string(sandboxMode)]),
+            "hpcWorkspaceState": .string("queued"),
+            "hasPendingUserInput": .bool(false),
+            "pendingUserInputCount": .number(0),
+            "pendingUserInputKind": .null,
+        ])
     }
 }

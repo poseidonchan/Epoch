@@ -818,6 +818,38 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
         broadcastEvent(state, "projects.updated", { project, change: "updated" });
         return;
       }
+      case "projects.update": {
+        const projectId = normalizeId(params.projectId);
+        if (!projectId) {
+          sendResError(ws, id, "BAD_REQUEST", "Missing projectId");
+          return;
+        }
+        const patch: {
+          codexApprovalPolicy?: string | null;
+          codexSandboxJson?: string | null;
+        } = {};
+        if (Object.prototype.hasOwnProperty.call(params, "codexApprovalPolicy")) {
+          patch.codexApprovalPolicy = normalizeOptionalString(params.codexApprovalPolicy);
+        }
+        if (Object.prototype.hasOwnProperty.call(params, "codexSandbox")) {
+          patch.codexSandboxJson = safeJsonString(params.codexSandbox);
+        }
+        if (
+          !Object.prototype.hasOwnProperty.call(params, "codexApprovalPolicy")
+          && !Object.prototype.hasOwnProperty.call(params, "codexSandbox")
+        ) {
+          sendResError(ws, id, "BAD_REQUEST", "No updatable fields were provided");
+          return;
+        }
+        const project = await updateProject(state, projectId, patch);
+        if (!project) {
+          sendResError(ws, id, "NOT_FOUND", "Project not found");
+          return;
+        }
+        sendResOk(ws, id, { project });
+        broadcastEvent(state, "projects.updated", { project, change: "updated" });
+        return;
+      }
       case "projects.delete": {
         const projectId = normalizeId(params.projectId);
         if (!projectId) {
@@ -1270,6 +1302,56 @@ async function renameProject(state: HubState, projectId: string, name: string) {
   if (res.rows.length === 0) return null;
   const r: any = res.rows[0];
   return { id: r.id, name: r.name, createdAt: toIso(r.created_at), updatedAt: toIso(r.updated_at) };
+}
+
+async function updateProject(
+  state: HubState,
+  projectId: string,
+  patch: {
+    codexApprovalPolicy?: string | null;
+    codexSandboxJson?: string | null;
+  }
+) {
+  const updates: string[] = [];
+  const args: any[] = [];
+  let idx = 1;
+
+  if (Object.prototype.hasOwnProperty.call(patch, "codexApprovalPolicy")) {
+    updates.push(`codex_approval_policy=$${idx++}`);
+    args.push(patch.codexApprovalPolicy ?? null);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "codexSandboxJson")) {
+    updates.push(`codex_sandbox_json=$${idx++}`);
+    args.push(patch.codexSandboxJson ?? null);
+  }
+  updates.push(`updated_at=$${idx++}`);
+  args.push(new Date().toISOString());
+  args.push(projectId);
+
+  const res = await state.pool.query(
+    `UPDATE projects
+     SET ${updates.join(", ")}
+     WHERE id=$${idx}
+     RETURNING id, name, created_at, updated_at, backend_engine,
+               codex_model_provider, codex_model_id, codex_approval_policy,
+               codex_sandbox_json, hpc_workspace_path, hpc_workspace_state`,
+    args
+  );
+  if (res.rows.length === 0) return null;
+  const r: any = res.rows[0];
+  return {
+    id: r.id,
+    name: r.name,
+    createdAt: toIso(r.created_at),
+    updatedAt: toIso(r.updated_at),
+    backendEngine: normalizeCodexEngine(r.backend_engine) ?? "codex-app-server",
+    codexModelProvider: normalizeOptionalString(r.codex_model_provider),
+    codexModel: normalizeOptionalString(r.codex_model_id),
+    codexApprovalPolicy: normalizeOptionalString(r.codex_approval_policy),
+    codexSandbox: safeJsonObject(r.codex_sandbox_json),
+    hpcWorkspacePath: normalizeOptionalString(r.hpc_workspace_path),
+    hpcWorkspaceState: normalizeOptionalString(r.hpc_workspace_state) ?? "queued",
+  };
 }
 
 async function deleteProject(state: HubState, projectId: string) {

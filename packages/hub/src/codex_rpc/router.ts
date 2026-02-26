@@ -8,6 +8,7 @@ import {
   handleLabosProjectDelete,
   handleLabosProjectList,
   handleLabosProjectRename,
+  handleLabosProjectUpdate,
   handleLabosRunGet,
   handleLabosRunList,
   handleLabosSessionCreate,
@@ -106,6 +107,7 @@ export class CodexRpcRouter {
           return;
         }
         case "turn/start": {
+          await this.cancelPendingImplementConfirmationForTurnRequest(params);
           const prepared = await handleTurnStart({ repository: this.repository, engines: this.engines }, params);
           this.turnPlanModeByScopedTurnId.set(scopedTurnId(prepared.threadId, prepared.turnId), prepared.planMode);
           this.connection.sendResult(request.id, {
@@ -131,6 +133,7 @@ export class CodexRpcRouter {
           return;
         }
         case "turn/steer": {
+          await this.cancelPendingImplementConfirmationForTurnRequest(params);
           const result = await handleTurnSteer({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
@@ -152,6 +155,11 @@ export class CodexRpcRouter {
         }
         case "labos/project/rename": {
           const result = await handleLabosProjectRename({ repository: this.repository, engines: this.engines }, params);
+          this.connection.sendResult(request.id, result);
+          return;
+        }
+        case "labos/project/update": {
+          const result = await handleLabosProjectUpdate({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
         }
@@ -254,6 +262,44 @@ export class CodexRpcRouter {
 
   async close() {
     await this.engines.close();
+  }
+
+  private async cancelPendingImplementConfirmationForTurnRequest(params: Record<string, unknown>) {
+    const sessionId = await this.resolveSessionIdForTurnRequest(params);
+    if (!sessionId) return;
+    await this.cancelPendingImplementConfirmationForSession(sessionId);
+  }
+
+  private async resolveSessionIdForTurnRequest(params: Record<string, unknown>): Promise<string | null> {
+    const sessionId = normalizeNonEmptyString(params.sessionId);
+    if (sessionId) return sessionId;
+
+    const threadId = normalizeNonEmptyString(params.threadId);
+    if (!threadId) return null;
+    const mapped = await this.repository.findSessionByThread(threadId);
+    return mapped?.sessionId ?? null;
+  }
+
+  private async cancelPendingImplementConfirmationForSession(sessionId: string) {
+    const pending = await this.repository.listPendingInputsForSession({
+      sessionId,
+      token: this.token,
+    });
+    const implementConfirmations = pending.filter((entry) => entry.kind === "implement_confirmation");
+    if (implementConfirmations.length === 0) return;
+
+    for (const entry of implementConfirmations) {
+      await this.repository.resolvePendingInput({
+        token: this.token,
+        requestId: entry.requestId,
+        status: "resolved",
+      });
+    }
+    this.connection.cancelPendingServerRequests({
+      sessionId,
+      kind: "implement_confirmation",
+      reason: "Implement confirmation superseded by new user turn input.",
+    });
   }
 
   private async consumeTurnEvents(args: {
@@ -586,6 +632,7 @@ export class CodexRpcRouter {
     const completedTurn = findTurnByIdVariants(thread, args.threadId, args.turnId);
     if (!completedTurn) return;
     if (!turnContainsImplementablePlan(completedTurn)) return;
+    if (threadHasNewerUserTurnAfter(thread, args.threadId, args.turnId)) return;
 
     const requestId = `labos_impl_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
     const params = buildPlanImplementationPromptParams({
@@ -771,6 +818,23 @@ function findTurnByIdVariants(thread: Thread, threadId: string, turnId: string):
   );
 }
 
+function threadHasNewerUserTurnAfter(thread: Thread, threadId: string, turnId: string): boolean {
+  const scopedId = scopedTurnId(threadId, turnId);
+  const completedIndex = thread.turns.findIndex((turn) => {
+    const id = turn.id.trim();
+    return id === turnId || id === scopedId;
+  });
+  if (completedIndex < 0) return false;
+
+  for (let index = completedIndex + 1; index < thread.turns.length; index += 1) {
+    const turn = thread.turns[index];
+    if (turn.items.some((item) => item.type === "userMessage")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function turnContainsProposedPlanBlock(turn: Turn): boolean {
   for (const item of turn.items) {
     if (item.type !== "agentMessage") continue;
@@ -824,8 +888,8 @@ export function buildPlanImplementationPromptParams(args: { threadId: string; tu
             description: "Start implementing the approved plan immediately.",
           },
           {
-            label: "Keep planning",
-            description: "Continue refining the plan before implementation.",
+            label: "No, and tell Codex what to do differently",
+            description: "Close this prompt and continue from the composer.",
           },
         ],
       },
@@ -868,16 +932,7 @@ export function decidePlanImplementationFollowup(
       text: "Implement it",
     };
   }
-  if (normalized === "keep planning") {
-    return {
-      planMode: true,
-      text: "Continue planning and refine the plan before implementation.",
-    };
-  }
-  return {
-    planMode: true,
-    text: `Continue planning and revise the plan based on this feedback: ${raw}`,
-  };
+  return null;
 }
 
 export function extractPlanUpdateFromDynamicToolCall(

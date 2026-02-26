@@ -2,9 +2,15 @@
 import LabOSCore
 import SwiftUI
 
+enum SessionShelfRenderMode {
+    case cards
+    case dock
+}
+
 struct SessionShelfView: View {
     let projectID: UUID
     let sessionID: UUID
+    let renderMode: SessionShelfRenderMode
 
     @EnvironmentObject private var store: AppStore
 
@@ -13,6 +19,12 @@ struct SessionShelfView: View {
     @State private var showRunningTerminals = false
     @State private var isRunProgressExpanded = false
     @State private var isPlanCardExpanded = false
+
+    init(projectID: UUID, sessionID: UUID, renderMode: SessionShelfRenderMode = .cards) {
+        self.projectID = projectID
+        self.sessionID = sessionID
+        self.renderMode = renderMode
+    }
 
     private var activeRun: RunRecord? {
         store.runs(for: projectID).first { run in
@@ -60,36 +72,69 @@ struct SessionShelfView: View {
         )
     }
 
-    var body: some View {
-        VStack(spacing: 8) {
-            if let diffSummary, let turnDiff {
-                diffCard(summary: diffSummary, diff: turnDiff.diff)
-                    .accessibilityIdentifier("session.shelf.diff")
-            }
+    private var shelfRows: [AnyView] {
+        var rows: [AnyView] = []
 
-            if !queuedInputs.isEmpty {
-                queueCard(items: queuedInputs)
-                    .accessibilityIdentifier("session.shelf.queue")
-            }
-
-            if runningTerminalsCount > 0 {
-                terminalsCard(count: runningTerminalsCount)
-                    .accessibilityIdentifier("session.shelf.terminals")
-            }
-
-            if let run = activeRun {
-                runProgressCard(run)
-            } else if let plan = store.livePlanBySession[sessionID] {
-                agentPlanCard(plan)
-            }
-
-            if !approvals.isEmpty {
-                approvalsCard(approvals)
-            }
-
-            // Placeholder slot for future Skills card.
+        if let diffSummary, let turnDiff {
+            rows.append(
+                AnyView(
+                    diffCard(summary: diffSummary, diff: turnDiff.diff)
+                        .accessibilityIdentifier("session.shelf.diff")
+                )
+            )
         }
-        .padding(.horizontal, 12)
+
+        if !queuedInputs.isEmpty {
+            rows.append(
+                AnyView(
+                    queueCard(items: queuedInputs)
+                        .accessibilityIdentifier("session.shelf.queue")
+                )
+            )
+        }
+
+        if runningTerminalsCount > 0 {
+            rows.append(
+                AnyView(
+                    terminalsCard(count: runningTerminalsCount)
+                        .accessibilityIdentifier("session.shelf.terminals")
+                )
+            )
+        }
+
+        if let run = activeRun {
+            rows.append(AnyView(runProgressCard(run)))
+        } else if let plan = store.livePlanBySession[sessionID] {
+            rows.append(AnyView(agentPlanCard(plan)))
+        }
+
+        if !approvals.isEmpty {
+            rows.append(AnyView(approvalsCard(approvals)))
+        }
+
+        return rows
+    }
+
+    var body: some View {
+        Group {
+            if renderMode == .dock {
+                VStack(alignment: .leading, spacing: CodexDockTokens.sectionSpacing) {
+                    ForEach(Array(shelfRows.enumerated()), id: \.offset) { index, row in
+                        if index > 0 {
+                            dockDivider
+                        }
+                        row
+                    }
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(shelfRows.enumerated()), id: \.offset) { _, row in
+                        row
+                    }
+                }
+                .padding(.horizontal, 12)
+            }
+        }
         .sheet(isPresented: $showQueueManager) {
             QueueManagerSheet(sessionID: sessionID)
                 .environmentObject(store)
@@ -105,19 +150,35 @@ struct SessionShelfView: View {
 
     // MARK: - Cards
 
+    private var dockDivider: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(CodexDockTokens.dividerOpacity))
+            .frame(height: CodexDockTokens.dividerThickness)
+            .padding(.horizontal, CodexDockTokens.dividerHorizontalInset)
+    }
+
+    @ViewBuilder
     private func cardContainer<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        content()
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color(.systemBackground))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.08))
-            )
+        switch renderMode {
+        case .cards:
+            content()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color(.systemBackground))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.08))
+                )
+        case .dock:
+            content()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private func diffCard(summary: DiffSummary, diff: String) -> some View {

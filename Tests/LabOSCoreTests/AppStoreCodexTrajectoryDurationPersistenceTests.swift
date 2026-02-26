@@ -3,6 +3,56 @@ import XCTest
 
 @MainActor
 final class AppStoreCodexTrajectoryDurationPersistenceTests: XCTestCase {
+    func testCodexTrajectoryDurationMigratesWhenLocalEchoIsReplaced() {
+        let suiteName = "LabOSCoreTests.CodexTrajectoryDuration.LocalEchoMigration.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            return XCTFail("Failed to create suite-backed defaults.")
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = AppStore(bootstrapDemo: false, userDefaults: defaults)
+        let sessionID = UUID()
+
+        let localTurnID = "\(AppStore.codexLocalUserItemPrefix)echo-1"
+        let remoteTurnID = "item_user_server"
+        let durationMs = 1_234
+
+        store.codexItemsBySession[sessionID] = [
+            .userMessage(
+                CodexUserMessageItem(
+                    type: "userMessage",
+                    id: localTurnID,
+                    content: [CodexUserInput(type: "text", text: "hello", url: nil, path: nil)]
+                )
+            ),
+        ]
+        store.setCodexTrajectoryDuration(sessionID: sessionID, turnID: localTurnID, durationMs: durationMs)
+
+        let incomingItem: JSONValue = .object([
+            "type": .string("userMessage"),
+            "id": .string(remoteTurnID),
+            "content": .array([
+                .object([
+                    "type": .string("text"),
+                    "text": .string("hello"),
+                ]),
+            ]),
+        ])
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "item/started",
+                params: .object([
+                    "sessionId": .string(sessionID.uuidString),
+                    "item": incomingItem,
+                ])
+            )
+        )
+
+        XCTAssertEqual(store.codexTrajectoryDuration(sessionID: sessionID, turnID: remoteTurnID), durationMs)
+        XCTAssertNil(store.codexTrajectoryDuration(sessionID: sessionID, turnID: localTurnID))
+    }
+
     func testCodexTrajectoryDurationPersistsAcrossStoreRecreate() {
         let suiteName = "LabOSCoreTests.CodexTrajectoryDuration.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {

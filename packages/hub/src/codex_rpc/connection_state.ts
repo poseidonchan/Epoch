@@ -147,6 +147,31 @@ export class CodexConnectionState {
     return summary;
   }
 
+  cancelPendingServerRequests(args: { sessionId?: string | null; kind?: string | null; reason?: string }): string[] {
+    const sessionId = normalizeNonEmptyString(args.sessionId);
+    const kind = normalizeNonEmptyString(args.kind);
+    if (!sessionId && !kind) return [];
+
+    const reason = normalizeNonEmptyString(args.reason);
+    const cancelled: string[] = [];
+    for (const [key, pending] of this.pendingServerRequests.entries()) {
+      const pendingSessionId = normalizeNonEmptyString(pending.metadata?.sessionId);
+      const pendingKind = normalizeNonEmptyString(pending.metadata?.kind);
+      if (sessionId && pendingSessionId !== sessionId) continue;
+      if (kind && pendingKind !== kind) continue;
+
+      if (pending.timeout) {
+        clearTimeout(pending.timeout);
+      }
+      this.pendingServerRequests.delete(key);
+      pending.reject(
+        new Error(reason ?? `Cancelled pending client response to ${pending.method}`)
+      );
+      cancelled.push(key);
+    }
+    return cancelled;
+  }
+
   handleClientResponse(response: JsonRpcResponse): boolean {
     const key = typeof response.id === "string" ? response.id : String(response.id);
     const pending = this.pendingServerRequests.get(key);

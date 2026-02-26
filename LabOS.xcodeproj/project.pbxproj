@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		011D68023AD4053A933540DD /* CodexRPCClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D42825ADE012752CB6232DF /* CodexRPCClient.swift */; };
+		02796E010E56CDFB81A34C85 /* CodexDockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACD8C027FC01CDC34F3C90E3 /* CodexDockView.swift */; };
 		03720ADF7EF0113521AD6711 /* CodexItemTimelineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F3C401E45106FD1C55C29FC /* CodexItemTimelineView.swift */; };
 		059175377FB51AE655C9900E /* KaTeX_Caligraphic-Bold.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 547E78AB6156D09E6412924C /* KaTeX_Caligraphic-Bold.woff2 */; };
 		05A61E4BB013E8BBC4ACE416 /* r.min.js in Resources */ = {isa = PBXBuildFile; fileRef = 9E91F2EFED08A9EAE52D3B0E /* r.min.js */; };
@@ -46,6 +47,7 @@
 		4EA2C3A78A8E5B15BF1EC4D4 /* PlanApprovalService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97A7E282A296EC2D7DA787CB /* PlanApprovalService.swift */; };
 		55DF02110B1A2C7471985040 /* DeepLinkCodecTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABC2F7238BE0457330703F6A /* DeepLinkCodecTests.swift */; };
 		56A2115CDBE138DB963C1A28 /* GatewayClientReliabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6C58EED796865ECDDBEDAA1 /* GatewayClientReliabilityTests.swift */; };
+		59BE3135E456D4BDE47DA8E8 /* CodexDockTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF222821F85A41CC20ACA499 /* CodexDockTokens.swift */; };
 		5A684A338B7C176F9EA3358C /* katex.min.css in Resources */ = {isa = PBXBuildFile; fileRef = DA8C11D2397443BB0731D0E8 /* katex.min.css */; };
 		5E987905566F09D4F180C266 /* AppStoreSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74FBD2DE522DB403555DE56A /* AppStoreSettingsTests.swift */; };
 		5F2A07D80E24B2E3EC04F84E /* E2ETestAttachmentFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D8629BBAB929B267ACA5A59 /* E2ETestAttachmentFactory.swift */; };
@@ -246,6 +248,7 @@
 		A6E262B87B8743CD4AA62E60 /* GatewayContract.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayContract.swift; sourceTree = "<group>"; };
 		AB2347E8F379C9E6FC6C5508 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		ABC2F7238BE0457330703F6A /* DeepLinkCodecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepLinkCodecTests.swift; sourceTree = "<group>"; };
+		ACD8C027FC01CDC34F3C90E3 /* CodexDockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexDockView.swift; sourceTree = "<group>"; };
 		AD563F42A3BAEB6EE80AE201 /* CodexTrajectoryLeafView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexTrajectoryLeafView.swift; sourceTree = "<group>"; };
 		AD868C2720E3412B2648601D /* MarkdownMathView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownMathView.swift; sourceTree = "<group>"; };
 		B91AA911BAEBDD15F8746A2F /* KaTeX_SansSerif-Bold.woff2 */ = {isa = PBXFileReference; path = "KaTeX_SansSerif-Bold.woff2"; sourceTree = "<group>"; };
@@ -276,6 +279,7 @@
 		F5F84A266D46D0F2D0F94F2C /* CodexTrajectorySummaryBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexTrajectorySummaryBar.swift; sourceTree = "<group>"; };
 		FB06F26440C88FE19E862F0E /* ProjectPageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectPageView.swift; sourceTree = "<group>"; };
 		FB9F6360C65BCE5F8F085497 /* HubIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubIntegrationTests.swift; sourceTree = "<group>"; };
+		FF222821F85A41CC20ACA499 /* CodexDockTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexDockTokens.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -387,6 +391,8 @@
 		3F5083945108B7CD4C76C89D /* Shared */ = {
 			isa = PBXGroup;
 			children = (
+				FF222821F85A41CC20ACA499 /* CodexDockTokens.swift */,
+				ACD8C027FC01CDC34F3C90E3 /* CodexDockView.swift */,
 				8D8629BBAB929B267ACA5A59 /* E2ETestAttachmentFactory.swift */,
 				73D4585BC5F5526EF14961E1 /* Formatters.swift */,
 				5C3D94B9823EF768A81B9B1E /* HighlightedCodeWebView.swift */,
@@ -843,6 +849,8 @@
 				3957E0AD6C9452ECFEE4098C /* ArtifactPreviewView.swift in Sources */,
 				B735E2ACF5D98D2B9FF2DB73 /* ArtifactsBrowserView.swift in Sources */,
 				3D4DED65796FE50645714174 /* CodexCommandExecutionCard.swift in Sources */,
+				59BE3135E456D4BDE47DA8E8 /* CodexDockTokens.swift in Sources */,
+				02796E010E56CDFB81A34C85 /* CodexDockView.swift in Sources */,
 				2FE8943FCB886AB0653E096B /* CodexFileChangeCard.swift in Sources */,
 				03720ADF7EF0113521AD6711 /* CodexItemTimelineView.swift in Sources */,
 				33B4DF1E9E09B000B2ECD4EE /* CodexTrajectoryGroupView.swift in Sources */,

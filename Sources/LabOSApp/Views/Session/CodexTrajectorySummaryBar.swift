@@ -57,7 +57,9 @@ struct CodexTrajectorySummaryBar: View {
     }
 
     private static func format(durationMs: Int) -> String {
-        let seconds = max(0, Int(round(Double(durationMs) / 1_000.0)))
+        let roundedSeconds = max(0, Int(round(Double(durationMs) / 1_000.0)))
+        // Avoid confusing "0s" labels for quick turns.
+        let seconds = durationMs > 0 && roundedSeconds == 0 ? 1 : roundedSeconds
         if seconds < 60 {
             return "\(seconds)s"
         }

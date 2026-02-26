@@ -10,5 +10,6 @@ export * from "./codex_rpc/router.js";
 export * from "./codex_rpc/repository.js";
 export * from "./codex_rpc/payload_shapes.js";
 export * from "./codex_rpc/handlers/initialize.js";
+export * from "./codex_rpc/handlers/labos.js";
 export * from "./codex_rpc/handlers/thread.js";
 export * from "./codex_rpc/handlers/turn.js";

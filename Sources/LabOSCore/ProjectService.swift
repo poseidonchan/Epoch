@@ -127,6 +127,83 @@ internal final class ProjectService {
         removeProjectLocally(projectID: projectID)
     }
 
+    func projectPermissionLevel(for projectID: UUID) -> SessionPermissionLevel {
+        guard let project = store.projects.first(where: { $0.id == projectID }) else { return .default }
+        return AppStore.permissionLevel(forCodexSandbox: project.codexSandbox) ?? .default
+    }
+
+    func setProjectPermissionLevel(projectID: UUID, level: SessionPermissionLevel) {
+        applyProjectPermissionLevelLocally(projectID: projectID, level: level)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.syncProjectPermissionLevelRemotely(projectID: projectID, level: level)
+        }
+    }
+
+    func applyProjectPermissionLevelLocally(projectID: UUID, level: SessionPermissionLevel) {
+        guard let index = store.projects.firstIndex(where: { $0.id == projectID }) else { return }
+        store.projects[index].codexApprovalPolicy = AppStore.codexApprovalPolicyForPermissionChange
+        store.projects[index].codexSandbox = AppStore.codexSandbox(for: level)
+        store.projects[index].updatedAt = .now
+    }
+
+    func syncProjectPermissionLevelRemotely(projectID: UUID, level: SessionPermissionLevel) async {
+        let codexApprovalPolicy = AppStore.codexApprovalPolicyForPermissionChange
+        let codexSandbox = AppStore.codexSandbox(for: level)
+
+        if store.shouldUseCodexRPC {
+            struct Params: Codable, Sendable {
+                var projectId: String
+                var codexApprovalPolicy: String
+                var codexSandbox: JSONValue
+            }
+            do {
+                let response = try await store.requestCodex(
+                    method: "labos/project/update",
+                    params: Params(
+                        projectId: AppStore.gatewayID(projectID),
+                        codexApprovalPolicy: codexApprovalPolicy,
+                        codexSandbox: codexSandbox
+                    )
+                )
+                if let project: Project = try? store.decodeCodexResult(response.result, key: "project") {
+                    upsertProject(project)
+                }
+                store.lastGatewayErrorMessage = nil
+                return
+            } catch {
+                store.lastGatewayErrorMessage = error.localizedDescription
+            }
+        }
+
+        guard store.isGatewayConfigured else { return }
+        let connected = await store.ensureGatewayConnectedForChat()
+        guard connected, store.isGatewayConnected, let gatewayClient = store.gatewayClient else { return }
+
+        struct Params: Codable, Sendable {
+            var projectId: String
+            var codexApprovalPolicy: String
+            var codexSandbox: JSONValue
+        }
+
+        do {
+            let response = try await gatewayClient.request(
+                method: "projects.update",
+                params: Params(
+                    projectId: AppStore.gatewayID(projectID),
+                    codexApprovalPolicy: codexApprovalPolicy,
+                    codexSandbox: codexSandbox
+                )
+            )
+            if let project: Project = try? store.decodeGatewayPayload(response.payload, key: "project") {
+                upsertProject(project)
+            }
+            store.lastGatewayErrorMessage = nil
+        } catch {
+            store.lastGatewayErrorMessage = error.localizedDescription
+        }
+    }
+
     func upsertProject(_ project: Project) {
         if let idx = store.projects.firstIndex(where: { $0.id == project.id }) {
             store.projects[idx] = project
@@ -151,6 +228,7 @@ internal final class ProjectService {
             store.codexStatusTextBySession[sessionID] = nil
             store.codexTokenUsageBySession[sessionID] = nil
             store.codexFullAccessBySession[sessionID] = nil
+            store.composerService.clearPendingPermissionSync(sessionID: sessionID)
             if let threadId = store.codexThreadBySession[sessionID] {
                 store.codexSessionByThread[threadId] = nil
                 store.codexThreadBySession[sessionID] = nil
@@ -504,6 +582,7 @@ internal final class ProjectService {
         }
         store.sessionsByProject[session.projectID] = sessions
         store.composerService.ensureComposerPrefs(sessionID: session.id)
+        normalizeSessionPermissionState(session)
     }
 
     func updateSessionBackend(projectID: UUID, sessionID: UUID, backendEngine: String) async {
@@ -626,6 +705,7 @@ internal final class ProjectService {
         store.codexTurnDiffBySession[sessionID] = nil
         store.codexTokenUsageBySession[sessionID] = nil
         store.codexFullAccessBySession[sessionID] = nil
+        store.composerService.clearPendingPermissionSync(sessionID: sessionID)
         if let threadId = store.codexThreadBySession[sessionID] {
             store.codexThreadBySession[sessionID] = nil
             store.codexSessionByThread[threadId] = nil
@@ -659,6 +739,7 @@ internal final class ProjectService {
         store.codexTurnDiffBySession[sessionID] = nil
         store.codexTokenUsageBySession[sessionID] = nil
         store.codexFullAccessBySession[sessionID] = nil
+        store.composerService.clearPendingPermissionSync(sessionID: sessionID)
         if let threadId = store.codexThreadBySession[sessionID] {
             store.codexSessionByThread[threadId] = nil
             store.codexThreadBySession[sessionID] = nil
@@ -706,6 +787,12 @@ internal final class ProjectService {
         store.sessionsByProject[projectID] = sessions
     }
 
+    private func normalizeSessionPermissionState(_ session: Session) {
+        let level = AppStore.permissionLevel(forCodexSandbox: session.codexSandbox) ?? .default
+        store.permissionLevelBySession[session.id] = level
+        store.codexFullAccessBySession[session.id] = (level == .full)
+    }
+
     func refreshProjectFromCodex(projectID: UUID) async {
         struct SessionsListParams: Codable, Sendable { var projectId: String; var includeArchived: Bool }
         struct ArtifactsListParams: Codable, Sendable { var projectId: String; var limit: Int }
@@ -720,6 +807,7 @@ internal final class ProjectService {
             store.sessionsByProject[projectID] = sessions
             for session in sessions {
                 store.composerService.ensureComposerPrefs(sessionID: session.id)
+                normalizeSessionPermissionState(session)
                 if let threadId = session.codexThreadId {
                     store.codexThreadBySession[session.id] = threadId
                     store.codexSessionByThread[threadId] = session.id
@@ -770,6 +858,7 @@ internal final class ProjectService {
             store.sessionsByProject[projectID] = sessions
             for session in sessions {
                 store.composerService.ensureComposerPrefs(sessionID: session.id)
+                normalizeSessionPermissionState(session)
                 if let threadId = session.codexThreadId {
                     store.codexThreadBySession[session.id] = threadId
                     store.codexSessionByThread[threadId] = session.id

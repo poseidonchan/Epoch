@@ -21,7 +21,6 @@ struct ProjectPageView: View {
     @State private var showFileImporter = false
     @State private var importErrorMessage: String?
     @State private var sendErrorMessage: String?
-    @State private var composerHeight: CGFloat = 0
     @State private var composerDraftSessionID = UUID()
     private let maxInlineAttachmentBytes = 900 * 1024
     private let maxInlinePhotoDimension: CGFloat = 1_536
@@ -91,16 +90,23 @@ struct ProjectPageView: View {
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             .background(Color(.systemGroupedBackground))
-            .safeAreaInset(edge: .bottom) {
-                Color.clear.frame(height: composerHeight + 8)
-            }
         }
         .background(Color(.systemGroupedBackground))
-        .overlay(alignment: .bottom) {
-            projectComposer
-                .shadow(color: Color.black.opacity(0.08), radius: 12, x: 0, y: 2)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            CodexDockView(
+                showsShelf: false,
+                showsFooter: false,
+                shelf: {
+                    EmptyView()
+                },
+                composer: {
+                    projectComposer
+                },
+                footer: {
+                    EmptyView()
+                }
+            )
         }
-        .onPreferenceChange(ComposerHeightPreferenceKey.self) { composerHeight = $0 }
         .sheet(isPresented: $renameProjectPresented) {
             NamePromptSheet(
                 title: "Rename Project",
@@ -347,11 +353,12 @@ struct ProjectPageView: View {
                 set: { store.setSelectedThinkingLevel(for: composerDraftSessionID, level: $0) }
             ),
             selectedPermissionLevel: Binding(
-                get: { store.permissionLevel(for: composerDraftSessionID) },
-                set: { store.setPermissionLevel(projectID: projectID, sessionID: composerDraftSessionID, level: $0) }
+                get: { store.projectPermissionLevel(for: projectID) },
+                set: { store.setProjectPermissionLevel(projectID: projectID, level: $0) }
             ),
             submitLabel: "Send",
             style: .chatGPT,
+            chatComposerChrome: .embeddedInDock,
             attachmentAction: {
                 showComposerAttachmentSheet = true
             },
@@ -372,7 +379,7 @@ struct ProjectPageView: View {
             let planModeEnabled = store.planModeEnabled(for: composerDraftSessionID)
             let modelId = store.selectedModelId(for: composerDraftSessionID)
             let thinkingLevel = store.selectedThinkingLevel(for: composerDraftSessionID)
-            let permissionLevel = store.permissionLevel(for: composerDraftSessionID)
+            let permissionLevel = store.projectPermissionLevel(for: projectID)
 
             // Clear immediately for snappy UI; if creation fails we restore it.
             seedPrompt = ""
@@ -398,11 +405,6 @@ struct ProjectPageView: View {
                 )
             }
         }
-        .background(
-            GeometryReader { proxy in
-                Color.clear.preference(key: ComposerHeightPreferenceKey.self, value: proxy.size.height)
-            }
-        )
     }
 
     private func handleImportResult(_ result: Result<[URL], Error>) {

@@ -254,6 +254,90 @@ final class AppStoreSettingsTests: XCTestCase {
         XCTAssertNil(store.latestRunCompletionSignal)
     }
 
+    func testSessionSandboxTypeDangerFullAccessMapsToFullPermissionState() {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+
+        store.projects = [Project(id: projectID, name: "Sandbox Parse Project")]
+
+        store._receiveGatewayEventForTesting(
+            .sessionsUpdated(
+                Session(
+                    id: sessionID,
+                    projectID: projectID,
+                    title: "Sandbox Parse Session",
+                    backendEngine: "codex-app-server",
+                    codexThreadId: "thread_sandbox_parse",
+                    codexSandbox: .object(["type": .string("dangerFullAccess")])
+                ),
+                change: "updated"
+            )
+        )
+
+        XCTAssertEqual(store.permissionLevel(for: sessionID), .full)
+        XCTAssertTrue(store.codexFullAccessEnabled(for: sessionID))
+    }
+
+    func testSetProjectPermissionLevelSyncsCodexProjectUpdateAndMutatesLocalState() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let now = "2026-02-25T00:00:00.000Z"
+
+        store.projects = [
+            Project(
+                id: projectID,
+                name: "Project Permission",
+                backendEngine: "codex-app-server",
+                codexApprovalPolicy: "on-request",
+                codexSandbox: .object(["mode": .string("workspace-write")])
+            ),
+        ]
+        store.codexConnectionState = .connected
+
+        var capturedMethod: String?
+        var capturedParams: JSONValue?
+        store.codexRequestOverrideForTests = { method, params in
+            capturedMethod = method
+            capturedParams = params
+            return CodexRPCResponse(
+                id: .string("project_update"),
+                result: .object([
+                    "project": .object([
+                        "id": .string(projectID.uuidString.lowercased()),
+                        "name": .string("Project Permission"),
+                        "createdAt": .string(now),
+                        "updatedAt": .string(now),
+                        "backendEngine": .string("codex-app-server"),
+                        "codexModelProvider": .string("openai"),
+                        "codexModel": .string("gpt-5.3-codex"),
+                        "codexApprovalPolicy": .string("on-request"),
+                        "codexSandbox": .object(["mode": .string("danger-full-access")]),
+                        "hpcWorkspacePath": .null,
+                        "hpcWorkspaceState": .string("queued"),
+                    ]),
+                ]),
+                error: nil
+            )
+        }
+
+        store.setProjectPermissionLevel(projectID: projectID, level: .full)
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            capturedMethod == "labos/project/update"
+        }
+
+        XCTAssertEqual(
+            capturedParams,
+            .object([
+                "projectId": .string(projectID.uuidString.lowercased()),
+                "codexApprovalPolicy": .string("on-request"),
+                "codexSandbox": .object(["mode": .string("danger-full-access")]),
+            ])
+        )
+        XCTAssertEqual(store.projectPermissionLevel(for: projectID), .full)
+    }
+
     private func waitUntil(
         timeoutSeconds: TimeInterval,
         pollEvery interval: TimeInterval = 0.05,
