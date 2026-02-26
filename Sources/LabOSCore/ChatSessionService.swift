@@ -152,6 +152,7 @@ internal final class ChatSessionService {
         store.selectedModelIdBySession[sessionID] = nil
         store.selectedThinkingLevelBySession[sessionID] = nil
         store.permissionLevelBySession[sessionID] = nil
+        store.clearCodexTurnLifecycleState(sessionID: sessionID, threadID: store.codexThreadBySession[sessionID])
         store.composerService.clearPendingPermissionSync(sessionID: sessionID)
         store.livePlanBySession[sessionID] = nil
         pendingLocalUserEchosBySession[sessionID] = nil

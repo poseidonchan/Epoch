@@ -7,8 +7,10 @@ struct CodexItemTimelineView: View {
     let items: [CodexThreadItem]
     let statusText: String?
     let persistedDurationByTurnID: [String: Int]
+    let startedAtByTurnID: [String: Date]
     let isPlanModeEnabled: Bool
     let interruptedTurnIDs: Set<String>
+    let proposedPlanTextByTurnID: [String: String]
     var isStreaming: Bool = false
     var showAssistantActionBar: Bool = true
     var onEditUserMessage: (CodexUserMessageItem) -> Void = { _ in }
@@ -58,10 +60,6 @@ struct CodexItemTimelineView: View {
         return map
     }
 
-    private var latestFinalTurnActionTarget: CodexAssistantActionTarget? {
-        CodexAssistantActionTargets.latestFinalTurnTarget(in: turns)
-    }
-
     private var preTurnItems: [CodexThreadItem] {
         guard let firstUserIndex = items.firstIndex(where: Self.isUserMessage) else {
             return items
@@ -102,6 +100,7 @@ struct CodexItemTimelineView: View {
         let shouldShowSummary = turn.hasTrajectorySummary
             || turn.isStreaming
             || (isPlanModeEnabled && (turn.hasThinkingStatus || turn.finalAnswerItemID != nil))
+        let proposedPlanText = inlineProposedPlanText(for: turn)
 
         VStack(alignment: .leading, spacing: 8) {
             userBubble(item: turn.userMessage)
@@ -130,7 +129,9 @@ struct CodexItemTimelineView: View {
             if let finalID = turn.finalAnswerItemID,
                let finalText = turn.finalAnswerText,
                !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                finalAnswerBlock(turn: turn, finalID: finalID, finalText: finalText)
+                finalAnswerBlock(turn: turn, finalID: finalID, finalText: finalText, proposedPlanText: proposedPlanText)
+            } else if let proposedPlanText {
+                proposedPlanCard(proposedPlanText)
             } else if turn.isStreaming || turn.hasThinkingStatus {
                 Text(pendingTurnStatus(for: turn))
                     .font(.subheadline)
@@ -144,27 +145,37 @@ struct CodexItemTimelineView: View {
         .accessibilityIdentifier("codex.turn.\(turn.id.lowercased())")
     }
 
-    private func finalAnswerBlock(turn: CodexTrajectoryTurn, finalID: String, finalText: String) -> some View {
+    private func finalAnswerBlock(
+        turn: CodexTrajectoryTurn,
+        finalID: String,
+        finalText: String,
+        proposedPlanText: String?
+    ) -> some View {
         let actionItem = agentMessageByID[finalID]
         let targetStreaming = turn.isStreaming && finalID == latestStreamingAgentMessageID
+        let copyText = finalAnswerCopyText(from: finalText)
+        let hasCopyText = !copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let canShowActions = showAssistantActionBar
             && actionItem != nil
-            && actionTargetIsActionable(turnID: turn.id, actionItem: actionItem)
             && !targetStreaming
 
         return VStack(alignment: .leading, spacing: 6) {
             finalAnswerContent(finalText, isStreaming: targetStreaming)
                 .accessibilityIdentifier("codex.final.answer.\(finalID.lowercased())")
 
+            if let proposedPlanText, !proposedPlanText.isEmpty {
+                proposedPlanCard(proposedPlanText)
+            }
+
             if canShowActions, let actionItem {
-                assistantActionBar(item: actionItem)
+                assistantActionBar(item: actionItem, copyText: copyText)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contextMenu {
-            if !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if hasCopyText {
                 Button {
-                    copyToPasteboard(finalText)
+                    copyToPasteboard(copyText)
                 } label: {
                     Label("Copy", systemImage: "doc.on.doc")
                 }
@@ -174,10 +185,28 @@ struct CodexItemTimelineView: View {
                 Button {
                     onBranchAgentMessage(actionItem)
                 } label: {
-                    Label("Fork", systemImage: "arrow.triangle.branch")
+                    Label("Branch", systemImage: "arrow.triangle.branch")
                 }
             }
         }
+    }
+
+    private func inlineProposedPlanText(for turn: CodexTrajectoryTurn) -> String? {
+        guard let raw = proposedPlanTextByTurnID[turn.id] else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let finalText = turn.finalAnswerText,
+           CodexProposedPlanParser.parse(from: finalText) != nil {
+            return nil
+        }
+
+        if let finalText = turn.finalAnswerText,
+           finalText.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed {
+            return nil
+        }
+
+        return trimmed
     }
 
     @ViewBuilder
@@ -199,9 +228,21 @@ struct CodexItemTimelineView: View {
 
     private func proposedPlanCard(_ planText: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Proposed plan")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+            HStack(alignment: .center, spacing: 8) {
+                Text("Proposed plan")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button {
+                    copyToPasteboard(planText)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Copy plan")
+            }
             codexMarkdownText(planText, isStreaming: false)
         }
         .padding(12)
@@ -323,14 +364,18 @@ struct CodexItemTimelineView: View {
             nextTurnKeyByTurnID[turn.id] = turnKey
             nextTurnIDByTurnKey[turnKey] = turn.id
 
-            if finalizedDurationMsByTurnKey[turnKey] == nil,
-               let persistedDurationMs = persistedDurationByTurnID[turn.id],
+            if let persistedDurationMs = persistedDurationByTurnID[turn.id],
                persistedDurationMs > 0 {
-                finalizedDurationMsByTurnKey[turnKey] = persistedDurationMs
+                let existingDurationMs = finalizedDurationMsByTurnKey[turnKey] ?? 0
+                if persistedDurationMs > existingDurationMs {
+                    finalizedDurationMsByTurnKey[turnKey] = persistedDurationMs
+                }
             }
 
-            if (turn.isStreaming || turn.hasTrajectorySummary),
-               startedAtByTurnKey[turnKey] == nil {
+            if let authoritativeStartedAt = startedAtByTurnID[turn.id] {
+                startedAtByTurnKey[turnKey] = authoritativeStartedAt
+            } else if (turn.isStreaming || turn.hasTrajectorySummary),
+                      startedAtByTurnKey[turnKey] == nil {
                 startedAtByTurnKey[turnKey] = now
             }
 
@@ -625,20 +670,23 @@ struct CodexItemTimelineView: View {
         .background(Color.secondary.opacity(0.09), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
-    private func assistantActionBar(item: CodexAgentMessageItem) -> some View {
+    private func assistantActionBar(item: CodexAgentMessageItem, copyText: String) -> some View {
         let itemID = item.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let hasCopyText = !copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
         return HStack(spacing: 14) {
-            actionIconButton(
-                title: "Copy",
-                systemImage: "doc.on.doc",
-                identifier: "codex.message.copy.\(itemID)"
-            ) {
-                copyToPasteboard(item.text)
+            if hasCopyText {
+                actionIconButton(
+                    title: "Copy",
+                    systemImage: "doc.on.doc",
+                    identifier: "codex.message.copy.\(itemID)"
+                ) {
+                    copyToPasteboard(copyText)
+                }
             }
 
             actionIconButton(
-                title: "Fork",
+                title: "Branch",
                 systemImage: "arrow.triangle.branch",
                 identifier: "codex.message.branch.\(itemID)"
             ) {
@@ -686,6 +734,19 @@ struct CodexItemTimelineView: View {
         unknown.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "reasoning"
     }
 
+    private func finalAnswerCopyText(from text: String) -> String {
+        guard let proposedPlan = CodexProposedPlanParser.parse(from: text) else {
+            return text
+        }
+
+        let parts = [proposedPlan.leadingText, proposedPlan.trailingText]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        guard !parts.isEmpty else { return "" }
+        return parts.joined(separator: "\n\n")
+    }
+
     private func copyToPasteboard(_ text: String) {
         UIPasteboard.general.string = text
     }
@@ -702,14 +763,6 @@ struct CodexItemTimelineView: View {
         default:
             return nil
         }
-    }
-
-    private func actionTargetIsActionable(turnID: String, actionItem: CodexAgentMessageItem?) -> Bool {
-        guard let actionItem,
-              let target = latestFinalTurnActionTarget else {
-            return false
-        }
-        return target.turnID == turnID && target.messageID == actionItem.id
     }
 
     private func userImageRowWidth(imageCount: Int) -> CGFloat {

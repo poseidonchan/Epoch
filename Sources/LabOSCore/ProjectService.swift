@@ -223,11 +223,13 @@ internal final class ProjectService {
         for sessionID in removedSessionIDs {
             store.messagesBySession[sessionID] = nil
             store.codexItemsBySession[sessionID] = nil
+            store.codexProposedPlanTextBySession[sessionID] = nil
             store.codexPendingApprovalsBySession[sessionID] = nil
             store.codexPendingPromptBySession[sessionID] = nil
             store.codexStatusTextBySession[sessionID] = nil
             store.codexTokenUsageBySession[sessionID] = nil
             store.codexFullAccessBySession[sessionID] = nil
+            store.clearCodexTurnLifecycleState(sessionID: sessionID, threadID: store.codexThreadBySession[sessionID])
             store.composerService.clearPendingPermissionSync(sessionID: sessionID)
             if let threadId = store.codexThreadBySession[sessionID] {
                 store.codexSessionByThread[threadId] = nil
@@ -685,6 +687,7 @@ internal final class ProjectService {
 
     private func clearCodexSessionState(_ sessionID: UUID) {
         store.codexItemsBySession[sessionID] = nil
+        store.codexProposedPlanTextBySession[sessionID] = nil
         store.codexPendingApprovalsBySession[sessionID] = nil
         store.codexPendingPromptBySession[sessionID] = nil
         store.ensureCodexQueuedInputsLoaded(sessionID: sessionID)
@@ -705,6 +708,7 @@ internal final class ProjectService {
         store.codexTurnDiffBySession[sessionID] = nil
         store.codexTokenUsageBySession[sessionID] = nil
         store.codexFullAccessBySession[sessionID] = nil
+        store.clearCodexTurnLifecycleState(sessionID: sessionID, threadID: store.codexThreadBySession[sessionID])
         store.composerService.clearPendingPermissionSync(sessionID: sessionID)
         if let threadId = store.codexThreadBySession[sessionID] {
             store.codexThreadBySession[sessionID] = nil
@@ -719,6 +723,7 @@ internal final class ProjectService {
 
         store.messagesBySession[sessionID] = nil
         store.codexItemsBySession[sessionID] = nil
+        store.codexProposedPlanTextBySession[sessionID] = nil
         store.codexPendingApprovalsBySession[sessionID] = nil
         store.codexPendingPromptBySession[sessionID] = nil
         store.ensureCodexQueuedInputsLoaded(sessionID: sessionID)
@@ -739,6 +744,7 @@ internal final class ProjectService {
         store.codexTurnDiffBySession[sessionID] = nil
         store.codexTokenUsageBySession[sessionID] = nil
         store.codexFullAccessBySession[sessionID] = nil
+        store.clearCodexTurnLifecycleState(sessionID: sessionID, threadID: store.codexThreadBySession[sessionID])
         store.composerService.clearPendingPermissionSync(sessionID: sessionID)
         if let threadId = store.codexThreadBySession[sessionID] {
             store.codexSessionByThread[threadId] = nil

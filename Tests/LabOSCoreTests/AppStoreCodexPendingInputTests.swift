@@ -176,6 +176,7 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         )
 
         XCTAssertFalse(store.streamingSessions.contains(sessionID))
+        store.codexActiveTurnIDBySession[sessionID] = "turn_prompt_streaming"
 
         store.codexServerResponseOverrideForTests = { _, _, _ in }
         store.respondToCodexPrompt(
@@ -187,6 +188,52 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         try await waitUntil(timeoutSeconds: 1.0) {
             store.streamingSessions.contains(sessionID)
         }
+    }
+
+    func testRequestUserInputPausesStreamingForSession() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        store.projects = [Project(id: projectID, name: "Prompt Pause Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Prompt Pause Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_prompt_pause"
+            ),
+        ]
+        store.codexSessionByThread["thread_prompt_pause"] = sessionID
+        store.streamingSessions.insert(sessionID)
+        store.codexActiveTurnIDBySession[sessionID] = "turn_prompt_pause"
+
+        await store._receiveCodexServerRequestForTesting(
+            CodexRPCRequest(
+                id: .string("req_prompt_pause"),
+                method: "item/tool/requestUserInput",
+                params: .object([
+                    "threadId": .string("thread_prompt_pause"),
+                    "turnId": .string("turn_prompt_pause"),
+                    "prompt": .string("Need input"),
+                    "questions": .array([
+                        .object([
+                            "id": .string("response"),
+                            "question": .string("Pick"),
+                            "options": .array([
+                                .object([
+                                    "label": .string("Continue"),
+                                    "description": .string("Proceed"),
+                                ]),
+                            ]),
+                        ]),
+                    ]),
+                ])
+            )
+        )
+
+        XCTAssertFalse(store.streamingSessions.contains(sessionID))
+        XCTAssertNotNil(store.codexPendingPrompt(for: sessionID))
     }
 
     func testRequestUserInputParsesQuestionHeaderAndQuestionLevelIsOther() async throws {
@@ -506,6 +553,52 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         XCTAssertNil(store.codexPendingPrompt(for: sessionID))
     }
 
+    func testRespondToImplementConfirmationPromptWithoutActiveTurnDoesNotMarkStreaming() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        store.projects = [Project(id: projectID, name: "Implement Streaming Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Implement Streaming Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_impl_streaming"
+            ),
+        ]
+        store.codexPendingPromptBySession[sessionID] = [
+            CodexPendingPrompt(
+                requestID: .string("req_impl_streaming"),
+                sessionID: sessionID,
+                threadId: "thread_impl_streaming",
+                turnId: "turn_impl_streaming",
+                kind: "implement_confirmation",
+                prompt: "Implement this plan?",
+                questions: [],
+                rawParams: nil
+            ),
+        ]
+
+        var captured: JSONValue?
+        store.codexServerResponseOverrideForTests = { _, result, _ in
+            captured = result
+        }
+
+        store.respondToCodexPrompt(
+            sessionID: sessionID,
+            requestID: .string("req_impl_streaming"),
+            answers: ["labos_plan_implementation_decision": "Yes, implement this plan"]
+        )
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            captured != nil
+        }
+
+        XCTAssertFalse(store.streamingSessions.contains(sessionID))
+        XCTAssertNil(store.codexPendingPrompt(for: sessionID))
+    }
+
     func testSendMessageDismissesImplementConfirmationPrompt() async throws {
         let store = AppStore(bootstrapDemo: false)
         let projectID = UUID()
@@ -806,6 +899,179 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
             )
         )
         XCTAssertNil(store.codexActiveTurnID(for: sessionID))
+    }
+
+    func testTurnCompletedPersistsDurationFromBackendTurnLifecycle() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        let threadID = "thread_duration_lifecycle"
+        let turnID = "turn_duration_lifecycle"
+        let userItemID = "user_duration_lifecycle"
+
+        store.projects = [Project(id: projectID, name: "Duration Lifecycle Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Duration Lifecycle Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: threadID
+            ),
+        ]
+        store.codexSessionByThread[threadID] = sessionID
+        store.codexThreadBySession[sessionID] = threadID
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "turn/started",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "turn": .object([
+                        "id": .string(turnID),
+                        "status": .string("inProgress"),
+                    ]),
+                ])
+            )
+        )
+
+        await store._receiveCodexServerRequestForTesting(
+            CodexRPCRequest(
+                id: .string("req_duration_lifecycle"),
+                method: "item/tool/requestUserInput",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "turnId": .string(turnID),
+                    "prompt": .string("Need confirmation"),
+                    "questions": .array([
+                        .object([
+                            "id": .string("response"),
+                            "question": .string("Continue?"),
+                            "options": .array([
+                                .object([
+                                    "label": .string("Continue"),
+                                ]),
+                            ]),
+                        ]),
+                    ]),
+                ])
+            )
+        )
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "item/started",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "turnId": .string(turnID),
+                    "item": .object([
+                        "type": .string("userMessage"),
+                        "id": .string(userItemID),
+                        "content": .array([
+                            .object([
+                                "type": .string("text"),
+                                "text": .string("hello"),
+                            ]),
+                        ]),
+                    ]),
+                ])
+            )
+        )
+
+        try await Task.sleep(for: .milliseconds(35))
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "turn/completed",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "turn": .object([
+                        "id": .string(turnID),
+                        "status": .string("completed"),
+                    ]),
+                ])
+            )
+        )
+
+        let duration = store.codexTrajectoryDuration(sessionID: sessionID, turnID: userItemID)
+        XCTAssertNotNil(duration)
+        XCTAssertTrue((duration ?? 0) > 0)
+    }
+
+    func testUserMessageArrivalTransfersPendingDurationToTrajectoryDuration() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        let threadID = "thread_duration_pending"
+        let turnID = "turn_duration_pending"
+        let userItemID = "user_duration_pending"
+
+        store.projects = [Project(id: projectID, name: "Pending Duration Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Pending Duration Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: threadID
+            ),
+        ]
+        store.codexSessionByThread[threadID] = sessionID
+        store.codexThreadBySession[sessionID] = threadID
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "turn/started",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "turn": .object([
+                        "id": .string(turnID),
+                        "status": .string("inProgress"),
+                    ]),
+                ])
+            )
+        )
+
+        try await Task.sleep(for: .milliseconds(35))
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "turn/completed",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "turn": .object([
+                        "id": .string(turnID),
+                        "status": .string("completed"),
+                    ]),
+                ])
+            )
+        )
+
+        XCTAssertNil(store.codexTrajectoryDuration(sessionID: sessionID, turnID: userItemID))
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "item/started",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "turnId": .string(turnID),
+                    "item": .object([
+                        "type": .string("userMessage"),
+                        "id": .string(userItemID),
+                        "content": .array([
+                            .object([
+                                "type": .string("text"),
+                                "text": .string("hello pending"),
+                            ]),
+                        ]),
+                    ]),
+                ])
+            )
+        )
+
+        let duration = store.codexTrajectoryDuration(sessionID: sessionID, turnID: userItemID)
+        XCTAssertNotNil(duration)
+        XCTAssertTrue((duration ?? 0) > 0)
     }
 
     func testSteerQueuedCodexInputSuccessRemovesOnlyClickedRow() async throws {
@@ -1608,6 +1874,118 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
 
         XCTAssertNil(store.contextWindowTokens(for: sessionID))
         XCTAssertNil(store.contextRemainingFraction(for: sessionID))
+    }
+
+    func testImplementConfirmationCapturesProposedPlanTextForTurn() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        let threadID = "thread_plan_capture"
+        let turnID = "turn_plan_capture"
+        let userItemID = "user_item_plan_capture"
+
+        store.projects = [Project(id: projectID, name: "Plan Capture Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Plan Capture Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: threadID
+            ),
+        ]
+        store.codexThreadBySession[sessionID] = threadID
+        store.codexSessionByThread[threadID] = sessionID
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "item/started",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "turnId": .string(turnID),
+                    "item": .object([
+                        "type": .string("userMessage"),
+                        "id": .string(userItemID),
+                        "content": .array([
+                            .object([
+                                "type": .string("text"),
+                                "text": .string("Make a plan"),
+                            ]),
+                        ]),
+                    ]),
+                ])
+            )
+        )
+
+        let proposedPlan = """
+        <proposed_plan>
+        - Step A
+        - Step B
+        - Step C
+        </proposed_plan>
+        """
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "item/started",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "turnId": .string(turnID),
+                    "item": .object([
+                        "type": .string("agentMessage"),
+                        "id": .string("agent_plan"),
+                        "text": .string(proposedPlan),
+                    ]),
+                ])
+            )
+        )
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "item/started",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "turnId": .string(turnID),
+                    "item": .object([
+                        "type": .string("agentMessage"),
+                        "id": .string("agent_final"),
+                        "text": .string("OK."),
+                    ]),
+                ])
+            )
+        )
+
+        await store._receiveCodexServerRequestForTesting(
+            CodexRPCRequest(
+                id: .string("req_impl_confirm"),
+                method: "item/tool/requestUserInput",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "turnId": .string(turnID),
+                    "prompt": .string("Implement this plan?"),
+                    "questions": .array([
+                        .object([
+                            "id": .string("labos_plan_implementation_decision"),
+                            "question": .string(""),
+                            "isOther": .bool(true),
+                            "options": .array([
+                                .object([
+                                    "label": .string("Yes, implement this plan"),
+                                    "description": .string("Start implementing the approved plan immediately."),
+                                ]),
+                                .object([
+                                    "label": .string("No, and tell Codex what to do differently"),
+                                    "description": .string("Close this prompt and continue from the composer."),
+                                ]),
+                            ]),
+                        ]),
+                    ]),
+                ])
+            )
+        )
+
+        let captured = store.codexProposedPlanTextBySession[sessionID]?[userItemID]
+        XCTAssertEqual(captured, "- Step A\n- Step B\n- Step C")
     }
 
     private func waitUntil(

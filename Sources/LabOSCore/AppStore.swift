@@ -111,6 +111,7 @@ public final class AppStore: ObservableObject {
     @Published public internal(set) var runsByProject: [UUID: [RunRecord]] = [:]
     @Published public internal(set) var messagesBySession: [UUID: [ChatMessage]] = [:]
     @Published public internal(set) var codexItemsBySession: [UUID: [CodexThreadItem]] = [:]
+    @Published public internal(set) var codexProposedPlanTextBySession: [UUID: [String: String]] = [:]
     @Published public internal(set) var codexPendingApprovalsBySession: [UUID: [CodexPendingApproval]] = [:]
     @Published public internal(set) var codexPendingPromptBySession: [UUID: [CodexPendingPrompt]] = [:]
     @Published public internal(set) var codexQueuedInputsBySession: [UUID: [CodexQueuedUserInputItem]] = [:]
@@ -119,6 +120,7 @@ public final class AppStore: ObservableObject {
     @Published public internal(set) var codexTurnDiffBySession: [UUID: CodexTurnDiffState] = [:]
     @Published public internal(set) var codexTokenUsageBySession: [UUID: CodexTokenUsage] = [:]
     @Published public internal(set) var codexFullAccessBySession: [UUID: Bool] = [:]
+    @Published public internal(set) var codexTrajectoryStartedAtBySession: [UUID: [String: Date]] = [:]
 
     @Published public internal(set) var streamingSessions: Set<UUID> = []
     @Published public internal(set) var streamingAssistantMessageIDBySession: [UUID: UUID] = [:]
@@ -145,6 +147,8 @@ public final class AppStore: ObservableObject {
     internal var codexQueuedInputsLoadedSessions: Set<UUID> = []
     private var codexSuppressedTurnIDsBySession: [UUID: Set<String>] = [:]
     private var codexFirstUserMessageIDByScopedBackendTurn: [String: String] = [:]
+    private var codexTurnStartedAtByScopedBackendTurn: [String: Date] = [:]
+    private var codexPendingDurationMsByScopedBackendTurn: [String: Int] = [:]
     private var codexInterruptedTurnIDsBySession: [UUID: Set<String>] = [:]
 
     @Published public var resourceStatus: ResourceStatus = .placeholder
@@ -728,6 +732,7 @@ public final class AppStore: ObservableObject {
         streamingSessions.removeAll()
         streamingAssistantMessageIDBySession.removeAll()
         codexItemsBySession.removeAll()
+        codexProposedPlanTextBySession.removeAll()
         codexPendingApprovalsBySession.removeAll()
         codexPendingPromptBySession.removeAll()
         codexQueuedInputsBySession.removeAll()
@@ -737,8 +742,11 @@ public final class AppStore: ObservableObject {
         codexTurnDiffBySession.removeAll()
         codexTokenUsageBySession.removeAll()
         codexFullAccessBySession.removeAll()
+        codexTrajectoryStartedAtBySession.removeAll()
         codexSuppressedTurnIDsBySession.removeAll()
         codexFirstUserMessageIDByScopedBackendTurn.removeAll()
+        codexTurnStartedAtByScopedBackendTurn.removeAll()
+        codexPendingDurationMsByScopedBackendTurn.removeAll()
         codexInterruptedTurnIDsBySession.removeAll()
         codexThreadBySession.removeAll()
         codexSessionByThread.removeAll()
@@ -919,6 +927,17 @@ public final class AppStore: ObservableObject {
                        let turnId = normalizedOptionalString(rawTurnID),
                        !turnId.isEmpty {
                         codexActiveTurnIDBySession[sessionID] = turnId
+                        if let threadId, !threadId.isEmpty {
+                            let scopedTurnKey = "\(threadId)|\(turnId)"
+                            let startedAt = Date()
+                            codexTurnStartedAtByScopedBackendTurn[scopedTurnKey] = startedAt
+                            codexPendingDurationMsByScopedBackendTurn[scopedTurnKey] = nil
+                            if let userMessageID = codexFirstUserMessageIDByScopedBackendTurn[scopedTurnKey] {
+                                var startedAtByTurnID = codexTrajectoryStartedAtBySession[sessionID] ?? [:]
+                                startedAtByTurnID[userMessageID] = startedAt
+                                codexTrajectoryStartedAtBySession[sessionID] = startedAtByTurnID
+                            }
+                        }
                     }
                 }
                 livePlanBySession[sessionID] = nil
@@ -927,6 +946,13 @@ public final class AppStore: ObservableObject {
         case "turn/completed":
             if let sessionID {
                 let turnId = params["turn"]?.objectValue?["id"]?.stringValue.flatMap(normalizedOptionalString)
+                var scopedTurnKey: String?
+                var scopedTurnStartedAt: Date?
+                if let threadId, !threadId.isEmpty, let turnId, !turnId.isEmpty {
+                    let key = "\(threadId)|\(turnId)"
+                    scopedTurnKey = key
+                    scopedTurnStartedAt = codexTurnStartedAtByScopedBackendTurn[key]
+                }
                 if let turn = params["turn"]?.objectValue,
                    let status = turn["status"]?.stringValue {
                     codexStatusTextBySession[sessionID] = status
@@ -943,6 +969,34 @@ public final class AppStore: ObservableObject {
                         codexInterruptedTurnIDsBySession[sessionID] = interrupted
                     }
                 }
+
+                if let scopedTurnKey,
+                   let scopedTurnStartedAt {
+                    let durationMs = max(0, Int(Date().timeIntervalSince(scopedTurnStartedAt) * 1_000))
+                    if let userMessageID = codexFirstUserMessageIDByScopedBackendTurn[scopedTurnKey] {
+                        var startedAtByTurnID = codexTrajectoryStartedAtBySession[sessionID] ?? [:]
+                        startedAtByTurnID[userMessageID] = scopedTurnStartedAt
+                        codexTrajectoryStartedAtBySession[sessionID] = startedAtByTurnID
+                    }
+                    if durationMs > 0 {
+                        if let userMessageID = codexFirstUserMessageIDByScopedBackendTurn[scopedTurnKey] {
+                            setCodexTrajectoryDuration(sessionID: sessionID, turnID: userMessageID, durationMs: durationMs)
+                        } else {
+                            codexPendingDurationMsByScopedBackendTurn[scopedTurnKey] = durationMs
+                        }
+                    }
+                }
+
+                if let scopedTurnKey {
+                    codexTurnStartedAtByScopedBackendTurn[scopedTurnKey] = nil
+                    if let userMessageID = codexFirstUserMessageIDByScopedBackendTurn[scopedTurnKey],
+                       let pendingDurationMs = codexPendingDurationMsByScopedBackendTurn[scopedTurnKey],
+                       pendingDurationMs > 0 {
+                        setCodexTrajectoryDuration(sessionID: sessionID, turnID: userMessageID, durationMs: pendingDurationMs)
+                        codexPendingDurationMsByScopedBackendTurn[scopedTurnKey] = nil
+                    }
+                }
+
                 codexActiveTurnIDBySession[sessionID] = nil
                 livePlanBySession[sessionID] = nil
                 codexTurnDiffBySession[sessionID] = nil
@@ -1107,9 +1161,19 @@ public final class AppStore: ObservableObject {
             if codexFirstUserMessageIDByScopedBackendTurn[key] == nil {
                 codexFirstUserMessageIDByScopedBackendTurn[key] = incomingUser.id
             }
+            if let startedAt = codexTurnStartedAtByScopedBackendTurn[key] {
+                var startedAtByTurnID = codexTrajectoryStartedAtBySession[sessionID] ?? [:]
+                startedAtByTurnID[incomingUser.id] = startedAt
+                codexTrajectoryStartedAtBySession[sessionID] = startedAtByTurnID
+            }
+            if let pendingDurationMs = codexPendingDurationMsByScopedBackendTurn[key], pendingDurationMs > 0 {
+                setCodexTrajectoryDuration(sessionID: sessionID, turnID: incomingUser.id, durationMs: pendingDurationMs)
+                codexPendingDurationMsByScopedBackendTurn[key] = nil
+            }
         }
         if case let .userMessage(incomingUser) = item,
            let localEchoID = Self.matchingLocalEchoUserItemID(for: incomingUser, in: existing) {
+            migrateCodexTrajectoryStartedAtIfNeeded(sessionID: sessionID, fromTurnID: localEchoID, toTurnID: incomingUser.id)
             migrateCodexTrajectoryDurationIfNeeded(sessionID: sessionID, fromTurnID: localEchoID, toTurnID: incomingUser.id)
         }
         codexItemsBySession[sessionID] = Self.upsertCodexItemPreservingLocalEchoes(
@@ -1148,6 +1212,23 @@ public final class AppStore: ObservableObject {
         turnDurations[fromKey] = nil
         codexTrajectoryDurationsBySession[sessionID] = turnDurations.isEmpty ? nil : turnDurations
         persistCodexTrajectoryDurations()
+    }
+
+    private func migrateCodexTrajectoryStartedAtIfNeeded(sessionID: UUID, fromTurnID: String, toTurnID: String) {
+        let fromKey = fromTurnID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let toKey = toTurnID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !fromKey.isEmpty, !toKey.isEmpty, fromKey != toKey else { return }
+        guard var startedAtByTurnID = codexTrajectoryStartedAtBySession[sessionID],
+              let startedAt = startedAtByTurnID[fromKey]
+        else { return }
+
+        if let existing = startedAtByTurnID[toKey] {
+            startedAtByTurnID[toKey] = min(existing, startedAt)
+        } else {
+            startedAtByTurnID[toKey] = startedAt
+        }
+        startedAtByTurnID[fromKey] = nil
+        codexTrajectoryStartedAtBySession[sessionID] = startedAtByTurnID.isEmpty ? nil : startedAtByTurnID
     }
 
     internal static func upsertCodexItemPreservingLocalEchoes(
@@ -1703,6 +1784,40 @@ public final class AppStore: ObservableObject {
         refreshSessionPendingUserInputMetadata(sessionID: sessionID)
     }
 
+    private func pauseStreamingForUserInput(sessionID: UUID) {
+        streamingSessions.remove(sessionID)
+        codexPendingThreadBindingSessions.remove(sessionID)
+        streamingAssistantMessageIDBySession[sessionID] = nil
+    }
+
+    private func hasActiveCodexTurn(sessionID: UUID) -> Bool {
+        guard let rawTurnID = codexActiveTurnIDBySession[sessionID] else { return false }
+        return normalizedOptionalString(rawTurnID) != nil
+    }
+
+    private func resumeStreamingForActiveTurnIfNeeded(sessionID: UUID) {
+        guard hasActiveCodexTurn(sessionID: sessionID) else {
+            pauseStreamingForUserInput(sessionID: sessionID)
+            return
+        }
+        streamingSessions.insert(sessionID)
+        codexStatusTextBySession[sessionID] = "in_progress"
+    }
+
+    private func shouldResumeStreamingAfterPromptResponse(
+        sessionID: UUID,
+        requestID: CodexRequestID,
+        answers: [String: String]
+    ) -> Bool {
+        let queuedPrompt = codexPendingPromptBySession[sessionID]?.first(where: { $0.requestID == requestID })
+        let isImplementConfirmation = queuedPrompt?.kind == "implement_confirmation"
+            || answers.keys.contains(Self.planImplementationDecisionQuestionID)
+        if isImplementConfirmation {
+            return false
+        }
+        return hasActiveCodexTurn(sessionID: sessionID)
+    }
+
     func refreshSessionPendingUserInputMetadata(sessionID: UUID) {
         let promptQueue = codexPendingPromptBySession[sessionID] ?? []
         let promptCount = promptQueue.count
@@ -1830,6 +1945,130 @@ public final class AppStore: ObservableObject {
         )
     }
 
+    private static let codexProposedPlanMaxCharacters = 4000
+
+    private func captureCodexProposedPlanTextIfNeeded(prompt: CodexPendingPrompt) {
+        guard prompt.kind == "implement_confirmation" else { return }
+        let threadId = prompt.threadId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !threadId.isEmpty,
+              let turnId = normalizedOptionalString(prompt.turnId ?? "")
+        else { return }
+
+        let key = "\(threadId)|\(turnId)"
+        guard let userTurnID = codexFirstUserMessageIDByScopedBackendTurn[key],
+              let normalizedUserTurnID = normalizedOptionalString(userTurnID),
+              let slice = codexTurnSliceItems(sessionID: prompt.sessionID, userMessageID: normalizedUserTurnID),
+              let extracted = Self.extractProposedPlanText(from: slice)
+        else { return }
+
+        var byTurn = codexProposedPlanTextBySession[prompt.sessionID] ?? [:]
+        byTurn[normalizedUserTurnID] = extracted
+        codexProposedPlanTextBySession[prompt.sessionID] = byTurn
+    }
+
+    private func codexTurnSliceItems(sessionID: UUID, userMessageID: String) -> ArraySlice<CodexThreadItem>? {
+        let items = codexItemsBySession[sessionID] ?? []
+        guard !items.isEmpty else { return nil }
+        guard let startIndex = items.firstIndex(where: { item in
+            guard case let .userMessage(user) = item else { return false }
+            return user.id == userMessageID
+        }) else { return nil }
+
+        let endIndex: Int = {
+            let nextStart = startIndex + 1
+            guard nextStart < items.count else { return items.count }
+            return items[nextStart...].firstIndex(where: { item in
+                guard case .userMessage = item else { return false }
+                return true
+            }) ?? items.count
+        }()
+
+        return items[startIndex..<endIndex]
+    }
+
+    private static func extractProposedPlanText(from slice: ArraySlice<CodexThreadItem>) -> String? {
+        for item in slice {
+            guard case let .agentMessage(agent) = item else { continue }
+            if let block = CodexProposedPlanParser.parse(from: agent.text),
+               let clipped = normalizeProposedPlanText(block.planText) {
+                return clipped
+            }
+        }
+
+        for item in slice {
+            guard case let .plan(plan) = item else { continue }
+            if let clipped = normalizeProposedPlanText(plan.text) {
+                return clipped
+            }
+        }
+
+        for item in slice {
+            guard case let .agentMessage(agent) = item else { continue }
+            let text = agent.text
+            guard textContainsPlanSteps(text) else { continue }
+            if let clipped = normalizeProposedPlanText(text) {
+                return clipped
+            }
+        }
+
+        return nil
+    }
+
+    private static func normalizeProposedPlanText(_ raw: String) -> String? {
+        let normalized = raw
+            .replacingOccurrences(of: "\u{0000}", with: "")
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+        if normalized.count <= codexProposedPlanMaxCharacters {
+            return normalized
+        }
+        let headCount = max(0, codexProposedPlanMaxCharacters - 20)
+        let prefix = normalized.prefix(headCount).trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(prefix)\n[...truncated...]"
+    }
+
+    private static func textContainsPlanSteps(_ text: String) -> Bool {
+        let normalized = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        var numberedCount = 0
+        var bulletCount = 0
+        for line in normalized.split(separator: "\n", omittingEmptySubsequences: false) {
+            if lineIsNumberedStep(line) { numberedCount += 1 }
+            if lineIsBulletStep(line) { bulletCount += 1 }
+        }
+        return numberedCount >= 3 || bulletCount >= 3
+    }
+
+    private static func lineIsNumberedStep(_ line: Substring) -> Bool {
+        let trimmed = line.drop(while: { $0.isWhitespace })
+        var index = trimmed.startIndex
+        var digitCount = 0
+        while index < trimmed.endIndex, trimmed[index].isNumber {
+            digitCount += 1
+            index = trimmed.index(after: index)
+        }
+        guard digitCount > 0 else { return false }
+        guard index < trimmed.endIndex, trimmed[index] == "." else { return false }
+        index = trimmed.index(after: index)
+        guard index < trimmed.endIndex, trimmed[index].isWhitespace else { return false }
+        while index < trimmed.endIndex, trimmed[index].isWhitespace {
+            index = trimmed.index(after: index)
+        }
+        return index < trimmed.endIndex
+    }
+
+    private static func lineIsBulletStep(_ line: Substring) -> Bool {
+        let trimmed = line.drop(while: { $0.isWhitespace })
+        guard let first = trimmed.first, first == "-" || first == "*" else { return false }
+        var rest = trimmed.dropFirst()
+        guard let after = rest.first, after.isWhitespace else { return false }
+        rest = rest.drop(while: { $0.isWhitespace })
+        return !rest.isEmpty
+    }
+
     private func handleCodexServerRequest(_ request: CodexRPCRequest) async {
         guard let params = request.params?.objectValue else {
             try? await codexClient?.respond(
@@ -1887,6 +2126,8 @@ public final class AppStore: ObservableObject {
                 requestID: request.id,
                 promptText: prompt.prompt
             )
+            captureCodexProposedPlanTextIfNeeded(prompt: prompt)
+            pauseStreamingForUserInput(sessionID: sessionID)
         case "item/tool/call":
             let toolName = normalizedOptionalString(params["tool"]?.stringValue ?? "")?.lowercased() ?? ""
             guard toolName == "update_plan" else {
@@ -2523,6 +2764,35 @@ public final class AppStore: ObservableObject {
         persistCodexTrajectoryDurations()
     }
 
+    internal func clearCodexTurnLifecycleState(sessionID: UUID, threadID: String? = nil) {
+        codexTrajectoryStartedAtBySession[sessionID] = nil
+
+        let resolvedThreadID: String? = {
+            if let threadID,
+               let normalizedThreadID = normalizedOptionalString(threadID) {
+                return normalizedThreadID
+            }
+            if let mappedThreadID = codexThreadBySession[sessionID],
+               let normalizedMappedThreadID = normalizedOptionalString(mappedThreadID) {
+                return normalizedMappedThreadID
+            }
+            return nil
+        }()
+
+        guard let resolvedThreadID else { return }
+        let prefix = "\(resolvedThreadID)|"
+
+        codexFirstUserMessageIDByScopedBackendTurn = codexFirstUserMessageIDByScopedBackendTurn.filter { key, _ in
+            !key.hasPrefix(prefix)
+        }
+        codexTurnStartedAtByScopedBackendTurn = codexTurnStartedAtByScopedBackendTurn.filter { key, _ in
+            !key.hasPrefix(prefix)
+        }
+        codexPendingDurationMsByScopedBackendTurn = codexPendingDurationMsByScopedBackendTurn.filter { key, _ in
+            !key.hasPrefix(prefix)
+        }
+    }
+
     public func codexFullAccessEnabled(for sessionID: UUID) -> Bool {
         codexFullAccessBySession[sessionID] ?? false
     }
@@ -2532,10 +2802,11 @@ public final class AppStore: ObservableObject {
         requestID: CodexRequestID,
         decision: String
     ) {
-        streamingSessions.insert(sessionID)
-        codexStatusTextBySession[sessionID] = "in_progress"
         Task { [weak self] in
-            guard let self, let codexClient = self.codexClient else { return }
+            guard let self else { return }
+            self.resumeStreamingForActiveTurnIfNeeded(sessionID: sessionID)
+
+            guard let codexClient = self.codexClient else { return }
             let result = JSONValue.object(["decision": .string(decision)])
             try? await codexClient.respond(result: result, for: requestID)
             var approvals = self.codexPendingApprovalsBySession[sessionID] ?? []
@@ -2550,8 +2821,6 @@ public final class AppStore: ObservableObject {
         requestID: CodexRequestID,
         answers: [String: String]
     ) {
-        streamingSessions.insert(sessionID)
-        codexStatusTextBySession[sessionID] = "in_progress"
         Task { [weak self] in
             guard let self else { return }
             self.applyPlanModeAfterCodexPromptResponseIfNeeded(
@@ -2559,6 +2828,15 @@ public final class AppStore: ObservableObject {
                 requestID: requestID,
                 answers: answers
             )
+            if self.shouldResumeStreamingAfterPromptResponse(
+                sessionID: sessionID,
+                requestID: requestID,
+                answers: answers
+            ) {
+                self.resumeStreamingForActiveTurnIfNeeded(sessionID: sessionID)
+            } else {
+                self.pauseStreamingForUserInput(sessionID: sessionID)
+            }
 
             var nestedAnswers: [String: JSONValue] = [:]
             for (questionID, answer) in answers {
