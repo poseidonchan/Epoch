@@ -11,8 +11,6 @@ export const operatorMethods = [
   "sessions.permission.set",
   "sessions.context.get",
   "chat.history",
-  "chat.send",
-  "exec.approval.resolve",
   "runs.list",
   "runs.get",
   "artifacts.list",
@@ -60,12 +58,6 @@ export const gatewayEventNames = [
   "sessions.permission.updated",
   "sessions.context.updated",
   "chat.message.created",
-  "agent.stream.lifecycle",
-  "agent.stream.assistant_delta",
-  "agent.stream.tool_event",
-  "agent.plan.updated",
-  "exec.approval.requested",
-  "exec.approval.resolved",
   "runs.updated",
   "runs.log.delta",
   "artifacts.updated",
@@ -90,8 +82,6 @@ export const gatewayErrorCodes = [
   "RATE_LIMITED",
   "INTERNAL",
   "NODE_OFFLINE",
-  "APPROVAL_REQUIRED",
-  "APPROVAL_EXPIRED",
 ] as const;
 
 export type GatewayErrorCode = (typeof gatewayErrorCodes)[number];

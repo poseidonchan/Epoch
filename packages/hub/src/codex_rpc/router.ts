@@ -1474,7 +1474,7 @@ function normalizeStringRecord(raw: unknown): Record<string, string> | null {
   return Object.fromEntries(entries);
 }
 
-function normalizeRuntimePolicyShape(raw: unknown): Partial<RuntimePolicyShape> | null {
+function normalizeRuntimePolicyShape(raw: unknown): { exec?: Partial<RuntimePolicyShape["exec"]>; slurm?: Partial<RuntimePolicyShape["slurm"]> } | null {
   const obj = normalizeObject(raw);
   if (!obj) return null;
 
