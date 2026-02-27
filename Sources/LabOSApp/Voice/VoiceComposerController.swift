@@ -11,6 +11,25 @@ final class VoiceComposerController: ObservableObject {
         case transcribing(progress: Double)
     }
 
+    enum CaptureMode: Equatable {
+        case none
+        case hold
+        case tapLocked
+    }
+
+    enum PendingReleaseAction: Equatable {
+        case keepRecording
+        case submit
+        case cancel
+    }
+
+    struct ReleaseDecision: Equatable {
+        var action: PendingReleaseAction
+        var nextMode: CaptureMode
+    }
+
+    static let tapVsHoldDecisionThreshold: TimeInterval = 0.22
+
     @Published private(set) var phase: Phase = .idle
     @Published var lastErrorMessage: String?
     @Published var lastErrorRequiresSystemSettings = false
@@ -22,12 +41,17 @@ final class VoiceComposerController: ObservableObject {
         return false
     }
 
+    private let tapVsHoldThreshold: TimeInterval = VoiceComposerController.tapVsHoldDecisionThreshold
+    private let fileReadyTimeoutSeconds: TimeInterval = 1.6
+
     private var recorder: AVAudioRecorder?
     private var activeAudioURL: URL?
     private var permissionTask: Task<Void, Never>?
     private var transcribeTask: Task<Void, Never>?
     private var progressTask: Task<Void, Never>?
-    private var pendingReleaseCancelledState: Bool?
+
+    private var captureMode: CaptureMode = .none
+    private var pendingReleaseAction: PendingReleaseAction?
 
     private var transcribeAction: ((URL) async throws -> String)?
     private var onTranscription: ((String) -> Void)?
@@ -42,9 +66,18 @@ final class VoiceComposerController: ObservableObject {
 
     func beginRecording() {
         guard case .idle = phase else { return }
+
+        guard hasMicrophoneUsageDescription() else {
+            phase = .idle
+            lastErrorRequiresSystemSettings = false
+            lastErrorMessage = "Microphone is not configured for this build. Reinstall the latest app build and try again."
+            return
+        }
+
         lastErrorMessage = nil
         lastErrorRequiresSystemSettings = false
-        pendingReleaseCancelledState = nil
+        captureMode = .hold
+        pendingReleaseAction = nil
         phase = .recording
 
         permissionTask?.cancel()
@@ -54,6 +87,7 @@ final class VoiceComposerController: ObservableObject {
             guard !Task.isCancelled else { return }
             guard permission.granted else {
                 self.phase = .idle
+                self.captureMode = .none
                 self.lastErrorRequiresSystemSettings = permission.requiresSystemSettings
                 self.lastErrorMessage = "Microphone permission is required for voice input."
                 return
@@ -61,11 +95,11 @@ final class VoiceComposerController: ObservableObject {
 
             do {
                 try self.startRecorder()
-                if let pendingCancel = self.pendingReleaseCancelledState {
-                    self.finalizeRecording(cancelledByGesture: pendingCancel)
-                }
+                self.applyPendingReleaseActionIfNeededAfterRecorderStart()
             } catch {
                 self.phase = .idle
+                self.captureMode = .none
+                self.pendingReleaseAction = nil
                 self.lastErrorRequiresSystemSettings = false
                 self.lastErrorMessage = error.localizedDescription
             }
@@ -73,6 +107,13 @@ final class VoiceComposerController: ObservableObject {
     }
 
     func setCancelArmed(_ armed: Bool) {
+        guard captureMode != .tapLocked else {
+            if phase != .recording {
+                phase = .recording
+            }
+            return
+        }
+
         switch phase {
         case .recording, .cancelArmed:
             phase = armed ? .cancelArmed : .recording
@@ -81,7 +122,7 @@ final class VoiceComposerController: ObservableObject {
         }
     }
 
-    func endRecording(cancelledByGesture: Bool) {
+    func endRecording(cancelledByGesture: Bool, pressDuration: TimeInterval) {
         switch phase {
         case .recording, .cancelArmed:
             break
@@ -89,15 +130,27 @@ final class VoiceComposerController: ObservableObject {
             return
         }
 
+        let releaseResolution = Self.resolveReleaseDecision(
+            captureMode: captureMode,
+            cancelledByGesture: cancelledByGesture,
+            pressDuration: pressDuration,
+            threshold: tapVsHoldThreshold
+        )
+        captureMode = releaseResolution.nextMode
+
         if recorder == nil {
-            pendingReleaseCancelledState = cancelledByGesture
+            pendingReleaseAction = releaseResolution.action
             if permissionTask == nil {
                 phase = .idle
+                captureMode = .none
+                pendingReleaseAction = nil
+            } else if releaseResolution.nextMode == .tapLocked {
+                phase = .recording
             }
             return
         }
 
-        finalizeRecording(cancelledByGesture: cancelledByGesture)
+        applyReleaseAction(releaseResolution.action)
     }
 
     func cancelAll() {
@@ -110,7 +163,8 @@ final class VoiceComposerController: ObservableObject {
         recorder?.stop()
         recorder = nil
         activeAudioURL = nil
-        pendingReleaseCancelledState = nil
+        captureMode = .none
+        pendingReleaseAction = nil
         lastErrorRequiresSystemSettings = false
         phase = .idle
     }
@@ -121,7 +175,7 @@ final class VoiceComposerController: ObservableObject {
         case .idle:
             return .idle
         case .recording:
-            return .recording
+            return captureMode == .tapLocked ? .recordingLocked : .recording
         case .cancelArmed:
             return .cancelArmed
         case let .transcribing(progress):
@@ -129,20 +183,60 @@ final class VoiceComposerController: ObservableObject {
         }
     }
 
+    static func resolveReleaseDecision(
+        captureMode: CaptureMode,
+        cancelledByGesture: Bool,
+        pressDuration: TimeInterval,
+        threshold: TimeInterval
+    ) -> ReleaseDecision {
+        switch captureMode {
+        case .tapLocked:
+            return ReleaseDecision(action: .submit, nextMode: .none)
+        case .hold, .none:
+            if cancelledByGesture {
+                return ReleaseDecision(action: .cancel, nextMode: .none)
+            }
+            if pressDuration < threshold {
+                return ReleaseDecision(action: .keepRecording, nextMode: .tapLocked)
+            }
+            return ReleaseDecision(action: .submit, nextMode: .none)
+        }
+    }
+
+    private func applyPendingReleaseActionIfNeededAfterRecorderStart() {
+        guard let action = pendingReleaseAction else { return }
+        pendingReleaseAction = nil
+        applyReleaseAction(action)
+    }
+
+    private func applyReleaseAction(_ action: PendingReleaseAction) {
+        switch action {
+        case .keepRecording:
+            phase = .recording
+        case .submit:
+            finalizeRecording(cancelledByGesture: false)
+        case .cancel:
+            finalizeRecording(cancelledByGesture: true)
+        }
+    }
+
     private func startRecorder() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+        try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
         try session.setActive(true, options: .notifyOthersOnDeactivation)
 
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("labos-voice-\(UUID().uuidString)")
-            .appendingPathExtension("m4a")
+            .appendingPathExtension("wav")
         activeAudioURL = outputURL
 
         let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 44_100,
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 16_000,
             AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsFloatKey: false,
             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
         ]
 
@@ -163,17 +257,19 @@ final class VoiceComposerController: ObservableObject {
         recorder = nil
         permissionTask?.cancel()
         permissionTask = nil
-        pendingReleaseCancelledState = nil
+        pendingReleaseAction = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
 
         guard let audioURL = activeAudioURL else {
             phase = .idle
+            captureMode = .none
             return
         }
 
         if cancelledByGesture {
             try? FileManager.default.removeItem(at: audioURL)
             activeAudioURL = nil
+            captureMode = .none
             phase = .idle
             return
         }
@@ -184,6 +280,7 @@ final class VoiceComposerController: ObservableObject {
     private func beginTranscription(for audioURL: URL) {
         guard let transcribeAction else {
             phase = .idle
+            captureMode = .none
             lastErrorMessage = "Voice transcription is not configured."
             return
         }
@@ -207,9 +304,11 @@ final class VoiceComposerController: ObservableObject {
             defer {
                 try? FileManager.default.removeItem(at: audioURL)
                 self.activeAudioURL = nil
+                self.captureMode = .none
             }
 
             do {
+                try await self.waitForRecordedFileReady(at: audioURL, timeout: self.fileReadyTimeoutSeconds)
                 let text = try await transcribeAction(audioURL)
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if trimmed.isEmpty {
@@ -225,10 +324,28 @@ final class VoiceComposerController: ObservableObject {
                 self.progressTask?.cancel()
                 self.progressTask = nil
                 self.phase = .idle
+                self.captureMode = .none
                 self.lastErrorRequiresSystemSettings = false
                 self.lastErrorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
         }
+    }
+
+    private func waitForRecordedFileReady(at url: URL, timeout: TimeInterval) async throws {
+        let deadline = Date().addingTimeInterval(max(0.2, timeout))
+        while Date() < deadline {
+            if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+               size > 0 {
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+
+        throw NSError(
+            domain: "VoiceComposerController",
+            code: -3,
+            userInfo: [NSLocalizedDescriptionKey: "Recording file was not ready. Please try again."]
+        )
     }
 
     private func completeProgressAndReset() async {
@@ -267,6 +384,11 @@ final class VoiceComposerController: ObservableObject {
     private struct MicrophonePermissionOutcome {
         var granted: Bool
         var requiresSystemSettings: Bool
+    }
+
+    private func hasMicrophoneUsageDescription() -> Bool {
+        let value = Bundle.main.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") as? String
+        return !(value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
     }
 
     private func requestMicrophonePermissionIfNeeded() async -> MicrophonePermissionOutcome {

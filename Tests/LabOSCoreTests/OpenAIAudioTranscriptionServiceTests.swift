@@ -45,6 +45,7 @@ final class OpenAIAudioTranscriptionServiceTests: XCTestCase {
         XCTAssertTrue(bodyText.contains("name=\"prompt\""))
         XCTAssertTrue(bodyText.contains("normalize spoken text"))
         XCTAssertTrue(bodyText.contains("name=\"file\"; filename=\"sample.m4a\""))
+        XCTAssertTrue(bodyText.contains("Content-Type: audio/mp4"))
     }
 
     func testTranscribeUsesSelectedModelInPayload() async throws {
@@ -137,6 +138,64 @@ final class OpenAIAudioTranscriptionServiceTests: XCTestCase {
         } catch {
             XCTFail("Unexpected error: \(error)")
         }
+    }
+
+    func testTranscribeMapsUnsupportedAudioResponseToDomainError() async throws {
+        let fileURL = try makeTempAudioFile(name: "bad-audio.wav", contents: "bad-audio")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        let httpClient = MockHTTPDataClient()
+        httpClient.responses = [
+            .success(data: Data("{\"error\":{\"message\":\"Audio file might be corrupted or unsupported\"}}".utf8), statusCode: 400),
+        ]
+        let service = OpenAIAudioTranscriptionService(
+            baseURL: URL(string: "https://api.openai.com")!,
+            httpClient: httpClient,
+            chunker: StubAudioChunker(urls: [fileURL]),
+            maxChunkByteCount: 1_024
+        )
+
+        do {
+            _ = try await service.transcribe(
+                audioFileURL: fileURL,
+                apiKey: "sk-test",
+                model: .gpt4oMiniTranscribe,
+                prompt: "prompt"
+            )
+            XCTFail("Expected transcription to fail with unsupported audio error")
+        } catch let error as OpenAIAudioTranscriptionError {
+            XCTAssertEqual(error, .unsupportedAudio)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testTranscribeUsesWAVMimeTypeWhenUploadingWAVFile() async throws {
+        let fileURL = try makeTempAudioFile(name: "voice.wav", contents: "wav-bytes")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        let httpClient = MockHTTPDataClient()
+        httpClient.responses = [
+            .success(data: Data("ok".utf8), statusCode: 200),
+        ]
+        let service = OpenAIAudioTranscriptionService(
+            baseURL: URL(string: "https://api.openai.com")!,
+            httpClient: httpClient,
+            chunker: StubAudioChunker(urls: [fileURL]),
+            maxChunkByteCount: 1_024
+        )
+
+        _ = try await service.transcribe(
+            audioFileURL: fileURL,
+            apiKey: "sk-test",
+            model: .gpt4oMiniTranscribe,
+            prompt: "prompt"
+        )
+
+        let request = try XCTUnwrap(httpClient.requests.first)
+        let body = String(decoding: try XCTUnwrap(request.httpBody), as: UTF8.self)
+        XCTAssertTrue(body.contains("filename=\"voice.wav\""))
+        XCTAssertTrue(body.contains("Content-Type: audio/wav"))
     }
 
     private func makeTempAudioFile(name: String, contents: String) throws -> URL {

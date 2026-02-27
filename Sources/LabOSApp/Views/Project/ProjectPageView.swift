@@ -178,7 +178,7 @@ struct ProjectPageView: View {
         }
         .onChange(of: voiceController.lastErrorMessage) { _, message in
             guard let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            voiceErrorMessage = message
+            voiceErrorMessage = normalizedVoiceErrorMessage(message)
             voiceErrorShowsSystemSettingsAction = voiceController.lastErrorRequiresSystemSettings
             voiceController.lastErrorMessage = nil
             voiceController.lastErrorRequiresSystemSettings = false
@@ -461,20 +461,6 @@ struct ProjectPageView: View {
             onRemoveAttachment: { attachmentID in
                 store.removePendingComposerAttachment(sessionID: composerDraftSessionID, attachmentID: attachmentID)
             },
-            modelOptions: store.availableModels,
-            thinkingLevelOptions: store.availableThinkingLevels.isEmpty ? ThinkingLevel.allCases : store.availableThinkingLevels,
-            skillOptions: projectComposerSkillOptions,
-            skillsAreLoading: projectCodexSkillsState.isLoading,
-            skillsErrorText: projectCodexSkillsState.error,
-            onRefreshSkills: {
-                store.refreshCodexSkills(
-                    sessionID: composerDraftSessionID,
-                    cwds: projectSkillLoadCwds,
-                    forceReload: true
-                )
-            },
-            contextRemainingFraction: store.contextRemainingFraction(for: composerDraftSessionID),
-            contextWindowTokens: store.contextWindowTokens(for: composerDraftSessionID) ?? 258_000,
             voiceState: voiceController.voiceState(isConfigured: store.openAIAPIKeyConfigured),
             onVoiceUnavailableTap: {
                 store.openSettings()
@@ -489,12 +475,26 @@ struct ProjectPageView: View {
             onVoiceCancelArmedChanged: { cancelArmed in
                 voiceController.setCancelArmed(cancelArmed)
             },
-            onVoicePressEnded: { cancelled in
-                voiceController.endRecording(cancelledByGesture: cancelled)
+            onVoicePressEnded: { cancelled, pressDuration in
+                voiceController.endRecording(cancelledByGesture: cancelled, pressDuration: pressDuration)
             },
             onCursorUTF16OffsetChanged: { offset in
                 composerCursorUTF16Offset = offset
-            }
+            },
+            modelOptions: store.availableModels,
+            thinkingLevelOptions: store.availableThinkingLevels.isEmpty ? ThinkingLevel.allCases : store.availableThinkingLevels,
+            skillOptions: projectComposerSkillOptions,
+            skillsAreLoading: projectCodexSkillsState.isLoading,
+            skillsErrorText: projectCodexSkillsState.error,
+            onRefreshSkills: {
+                store.refreshCodexSkills(
+                    sessionID: composerDraftSessionID,
+                    cwds: projectSkillLoadCwds,
+                    forceReload: true
+                )
+            },
+            contextRemainingFraction: store.contextRemainingFraction(for: composerDraftSessionID),
+            contextWindowTokens: store.contextWindowTokens(for: composerDraftSessionID) ?? 258_000
         ) {
             let pendingDraftAttachments = store.pendingComposerAttachments(for: composerDraftSessionID)
             let message = seedPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -562,6 +562,17 @@ struct ProjectPageView: View {
     private func openSystemSettings() {
         guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
         UIApplication.shared.open(url)
+    }
+
+    private func normalizedVoiceErrorMessage(_ message: String) -> String {
+        let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowercased = normalized.lowercased()
+        if lowercased.contains("corrupt")
+            || lowercased.contains("unsupported")
+            || lowercased.contains("recording file is invalid") {
+            return "Recording file is invalid or unsupported. Please retry and hold a bit longer before release."
+        }
+        return normalized
     }
 
     private func handleImportResult(_ result: Result<[URL], Error>) {

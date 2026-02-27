@@ -239,9 +239,15 @@ struct SessionShelfView: View {
     private func diffCard(summary: DiffSummary, diff: String) -> some View {
         cardContainer {
             HStack(alignment: .center, spacing: 10) {
-                Text("\(summary.fileCount) files changed +\(summary.additions) -\(summary.deletions)")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("\(summary.fileCount) files changed")
+                        .foregroundStyle(.secondary)
+                    Text("+\(summary.additions)")
+                        .foregroundStyle(.green)
+                    Text("-\(summary.deletions)")
+                        .foregroundStyle(.red)
+                }
+                .font(.subheadline.weight(.semibold))
 
                 Spacer(minLength: 0)
 

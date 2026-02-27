@@ -34,6 +34,7 @@ struct InlineComposerView: View {
         case unavailable
         case idle
         case recording
+        case recordingLocked
         case cancelArmed
         case transcribing(progress: Double)
     }
@@ -60,7 +61,7 @@ struct InlineComposerView: View {
     var onVoiceUnavailableTap: (() -> Void)? = nil
     var onVoicePressBegan: (() -> Void)? = nil
     var onVoiceCancelArmedChanged: ((Bool) -> Void)? = nil
-    var onVoicePressEnded: ((Bool) -> Void)? = nil
+    var onVoicePressEnded: ((Bool, TimeInterval) -> Void)? = nil
     var onCursorUTF16OffsetChanged: ((Int) -> Void)? = nil
     var modelOptions: [GatewayModelInfo] = []
     var thinkingLevelOptions: [ThinkingLevel] = ThinkingLevel.allCases
@@ -78,6 +79,7 @@ struct InlineComposerView: View {
     @State private var showsPlusMenu = false
     @State private var voiceGestureIsTracking = false
     @State private var voiceGestureCancelArmed = false
+    @State private var voiceGestureStartedAt: Date? = nil
 
     private var trimmedText: String {
         text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -97,7 +99,7 @@ struct InlineComposerView: View {
 
     private var voiceShowsStatusRow: Bool {
         switch voiceState {
-        case .recording, .cancelArmed, .transcribing:
+        case .recording, .recordingLocked, .cancelArmed, .transcribing:
             return true
         case .unavailable, .idle:
             return false
@@ -108,6 +110,8 @@ struct InlineComposerView: View {
         switch voiceState {
         case .recording:
             return "Recording… slide up to cancel"
+        case .recordingLocked:
+            return "Recording… tap mic to stop"
         case .cancelArmed:
             return "Release to cancel"
         case .transcribing:
@@ -405,7 +409,7 @@ struct InlineComposerView: View {
                 .buttonStyle(.plain)
             case .transcribing:
                 voiceButtonIcon(systemName: voiceButtonSystemImage)
-            case .idle, .recording, .cancelArmed:
+            case .idle, .recording, .recordingLocked, .cancelArmed:
                 voiceButtonIcon(systemName: voiceButtonSystemImage)
                     .contentShape(Circle())
                     .gesture(voicePressGesture)
@@ -421,9 +425,10 @@ struct InlineComposerView: View {
                 if case .transcribing = voiceState { return }
                 if !voiceGestureIsTracking {
                     voiceGestureIsTracking = true
+                    voiceGestureStartedAt = Date()
                     onVoicePressBegan?()
                 }
-                let cancelArmed = value.translation.height < -44
+                let cancelArmed = voiceState == .recordingLocked ? false : value.translation.height < -44
                 if cancelArmed != voiceGestureCancelArmed {
                     voiceGestureCancelArmed = cancelArmed
                     onVoiceCancelArmedChanged?(cancelArmed)
@@ -442,6 +447,8 @@ struct InlineComposerView: View {
             return "Hold to record voice input"
         case .recording:
             return "Recording voice input"
+        case .recordingLocked:
+            return "Recording voice input, tap to stop"
         case .cancelArmed:
             return "Release to cancel recording"
         case .transcribing:
@@ -456,6 +463,8 @@ struct InlineComposerView: View {
         case .idle:
             return "mic"
         case .recording:
+            return "waveform.circle.fill"
+        case .recordingLocked:
             return "waveform.circle.fill"
         case .cancelArmed:
             return "xmark.circle.fill"
@@ -483,6 +492,8 @@ struct InlineComposerView: View {
             return .white
         case .recording:
             return .white
+        case .recordingLocked:
+            return .white
         case .transcribing:
             return .blue
         case .idle:
@@ -498,6 +509,8 @@ struct InlineComposerView: View {
             return .red
         case .recording:
             return .orange
+        case .recordingLocked:
+            return .blue
         case .transcribing:
             return Color.blue.opacity(0.16)
         case .idle:
@@ -964,9 +977,12 @@ struct InlineComposerView: View {
     private func finishVoiceGesture(forceCancel: Bool) {
         guard voiceGestureIsTracking else { return }
         let cancelled = forceCancel || voiceGestureCancelArmed
-        onVoicePressEnded?(cancelled)
+        let startedAt = voiceGestureStartedAt ?? Date()
+        let pressDuration = max(0, Date().timeIntervalSince(startedAt))
+        onVoicePressEnded?(cancelled, pressDuration)
         voiceGestureIsTracking = false
         voiceGestureCancelArmed = false
+        voiceGestureStartedAt = nil
         onVoiceCancelArmedChanged?(false)
     }
 

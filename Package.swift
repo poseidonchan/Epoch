@@ -34,6 +34,11 @@ let package = Package(
             name: "LabOSCoreTests",
             dependencies: ["LabOSCore"],
             path: "Tests/LabOSCoreTests"
+        ),
+        .testTarget(
+            name: "LabOSAppTests",
+            dependencies: ["LabOSApp"],
+            path: "Tests/LabOSAppTests"
         )
     ]
 )

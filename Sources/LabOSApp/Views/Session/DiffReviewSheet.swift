@@ -77,31 +77,61 @@ private struct DiffFileRow: View {
     let file: DiffParser.DiffFile
 
     var body: some View {
+        let pathDisplay = PathDisplay.from(file.path)
+
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(file.path)
+                Text(pathDisplay.fileName)
                     .font(.subheadline.weight(.semibold))
-                    .lineLimit(2)
+                    .lineLimit(1)
 
-                if file.additions > 0 || file.deletions > 0 {
-                    HStack(spacing: 8) {
-                        if file.additions > 0 {
-                            Text("+\(file.additions)")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.green)
-                        }
-                        if file.deletions > 0 {
-                            Text("-\(file.deletions)")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.red)
-                        }
-                    }
+                if let directory = pathDisplay.directory {
+                    Text(directory)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                HStack(spacing: 8) {
+                    Text("+\(file.additions)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.green)
+                    Text("-\(file.deletions)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.red)
                 }
             }
 
             Spacer(minLength: 0)
         }
         .padding(.vertical, 4)
+    }
+
+    private struct PathDisplay {
+        let fileName: String
+        let directory: String?
+
+        static func from(_ rawPath: String) -> PathDisplay {
+            let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                return PathDisplay(fileName: rawPath, directory: nil)
+            }
+
+            guard let slash = trimmed.lastIndex(of: "/") else {
+                return PathDisplay(fileName: trimmed, directory: "Repo root")
+            }
+
+            let nameStart = trimmed.index(after: slash)
+            let fileName = String(trimmed[nameStart...])
+            let directory = String(trimmed[..<slash])
+
+            guard !fileName.isEmpty else {
+                return PathDisplay(fileName: rawPath, directory: nil)
+            }
+
+            let directoryLabel = directory.isEmpty ? "Repo root" : directory
+            return PathDisplay(fileName: fileName, directory: directoryLabel)
+        }
     }
 }
 

@@ -16,6 +16,7 @@ enum OpenAIAudioTranscriptionError: Error, Equatable, LocalizedError {
     case invalidResponse
     case unauthorized
     case rateLimited
+    case unsupportedAudio
     case server(statusCode: Int)
     case requestFailed(statusCode: Int, message: String?)
     case emptyTranscription
@@ -32,6 +33,8 @@ enum OpenAIAudioTranscriptionError: Error, Equatable, LocalizedError {
             return "OpenAI API key was rejected (401)."
         case .rateLimited:
             return "OpenAI rate limit reached (429)."
+        case .unsupportedAudio:
+            return "Recording file is invalid or unsupported. Please retry and hold a bit longer before release."
         case let .server(statusCode):
             return "OpenAI server error (\(statusCode))."
         case let .requestFailed(statusCode, message):
@@ -157,9 +160,14 @@ struct OpenAIAudioTranscriptionService {
                 case 500 ... 599:
                     throw OpenAIAudioTranscriptionError.server(statusCode: httpResponse.statusCode)
                 default:
+                    let message = parseErrorMessage(from: data)
+                    if httpResponse.statusCode == 400,
+                       isUnsupportedAudioMessage(message) {
+                        throw OpenAIAudioTranscriptionError.unsupportedAudio
+                    }
                     throw OpenAIAudioTranscriptionError.requestFailed(
                         statusCode: httpResponse.statusCode,
-                        message: parseErrorMessage(from: data)
+                        message: message
                     )
                 }
             }
@@ -233,10 +241,20 @@ struct OpenAIAudioTranscriptionService {
         case "mp3":
             return "audio/mpeg"
         case "m4a":
-            return "audio/m4a"
+            return "audio/mp4"
         default:
             return "application/octet-stream"
         }
+    }
+
+    private func isUnsupportedAudioMessage(_ message: String?) -> Bool {
+        guard let message else { return false }
+        let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return false }
+        return normalized.contains("corrupt")
+            || normalized.contains("unsupported")
+            || normalized.contains("invalid audio")
+            || normalized.contains("audio file might")
     }
 
     private func parseTranscriptionText(from data: Data) -> String {

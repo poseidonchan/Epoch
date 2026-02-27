@@ -325,7 +325,7 @@ struct SessionChatView: View {
         }
         .onChange(of: voiceController.lastErrorMessage) { _, message in
             guard let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-            voiceErrorMessage = message
+            voiceErrorMessage = normalizedVoiceErrorMessage(message)
             voiceErrorShowsSystemSettingsAction = voiceController.lastErrorRequiresSystemSettings
             voiceController.lastErrorMessage = nil
             voiceController.lastErrorRequiresSystemSettings = false
@@ -666,15 +666,6 @@ struct SessionChatView: View {
                 onRemoveAttachment: { attachmentID in
                     store.removePendingComposerAttachment(sessionID: sessionID, attachmentID: attachmentID)
                 },
-                modelOptions: store.availableModels,
-                thinkingLevelOptions: store.availableThinkingLevels.isEmpty ? ThinkingLevel.allCases : store.availableThinkingLevels,
-                skillOptions: composerSkillOptions,
-                skillsAreLoading: codexSkillsState.isLoading,
-                skillsErrorText: codexSkillsState.error,
-                onRefreshSkills: isCodexSession ? { store.refreshCodexSkills(sessionID: sessionID, forceReload: true) } : nil,
-                contextRemainingFraction: store.contextRemainingFraction(for: sessionID),
-                contextWindowTokens: store.contextWindowTokens(for: sessionID) ?? 258_000,
-                useEstimatedContextFallback: !isCodexSession,
                 voiceState: voiceController.voiceState(isConfigured: store.openAIAPIKeyConfigured),
                 onVoiceUnavailableTap: {
                     store.openSettings()
@@ -689,12 +680,21 @@ struct SessionChatView: View {
                 onVoiceCancelArmedChanged: { cancelArmed in
                     voiceController.setCancelArmed(cancelArmed)
                 },
-                onVoicePressEnded: { cancelled in
-                    voiceController.endRecording(cancelledByGesture: cancelled)
+                onVoicePressEnded: { cancelled, pressDuration in
+                    voiceController.endRecording(cancelledByGesture: cancelled, pressDuration: pressDuration)
                 },
                 onCursorUTF16OffsetChanged: { offset in
                     composerCursorUTF16Offset = offset
-                }
+                },
+                modelOptions: store.availableModels,
+                thinkingLevelOptions: store.availableThinkingLevels.isEmpty ? ThinkingLevel.allCases : store.availableThinkingLevels,
+                skillOptions: composerSkillOptions,
+                skillsAreLoading: codexSkillsState.isLoading,
+                skillsErrorText: codexSkillsState.error,
+                onRefreshSkills: isCodexSession ? { store.refreshCodexSkills(sessionID: sessionID, forceReload: true) } : nil,
+                contextRemainingFraction: store.contextRemainingFraction(for: sessionID),
+                contextWindowTokens: store.contextWindowTokens(for: sessionID) ?? 258_000,
+                useEstimatedContextFallback: !isCodexSession
             ) {
                 let attachments = store.pendingComposerAttachments(for: sessionID)
                 let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1594,6 +1594,17 @@ struct SessionChatView: View {
     private func openSystemSettings() {
         guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
         UIApplication.shared.open(url)
+    }
+
+    private func normalizedVoiceErrorMessage(_ message: String) -> String {
+        let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowercased = normalized.lowercased()
+        if lowercased.contains("corrupt")
+            || lowercased.contains("unsupported")
+            || lowercased.contains("recording file is invalid") {
+            return "Recording file is invalid or unsupported. Please retry and hold a bit longer before release."
+        }
+        return normalized
     }
 
     private var header: some View {
