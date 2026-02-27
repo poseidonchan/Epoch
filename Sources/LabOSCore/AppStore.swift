@@ -1108,6 +1108,25 @@ public final class AppStore: ObservableObject {
         return raw
     }
 
+    internal func normalizeGatewayErrorMessage(_ error: Error) -> String {
+        let raw = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return "Request failed." }
+
+        let lower = raw.lowercased()
+        let isMissingWorkspaceRoot =
+            lower.contains("capability_missing")
+            && (lower.contains("workspaceroot") || lower.contains("workspace root"))
+            && lower.contains("unavailable")
+        if isMissingWorkspaceRoot {
+            return """
+            HPC workspace is not available yet. Ensure HPC Bridge is connected, then retry.
+
+            Technical detail: \(raw)
+            """
+        }
+        return raw
+    }
+
     private func handleCodexNotification(_ notification: CodexRPCNotification) {
         guard let params = notification.params?.objectValue else { return }
         let threadId = normalizedOptionalString(params["threadId"]?.stringValue ?? "")
@@ -3567,20 +3586,6 @@ public final class AppStore: ObservableObject {
     ) {
         Task { [weak self] in
             guard let self else { return }
-            self.applyPlanModeAfterCodexPromptResponseIfNeeded(
-                sessionID: sessionID,
-                requestID: requestID,
-                answers: answers
-            )
-            if self.shouldResumeStreamingAfterPromptResponse(
-                sessionID: sessionID,
-                requestID: requestID,
-                answers: answers
-            ) {
-                self.resumeStreamingForActiveTurnIfNeeded(sessionID: sessionID)
-            } else {
-                self.pauseStreamingForUserInput(sessionID: sessionID)
-            }
 
             var nestedAnswers: [String: JSONValue] = [:]
             for (questionID, answerList) in answers {
@@ -3602,13 +3607,50 @@ public final class AppStore: ObservableObject {
 
             if let override = self.codexServerResponseOverrideForTests {
                 override(requestID, payload, nil)
+                self.applyPlanModeAfterCodexPromptResponseIfNeeded(
+                    sessionID: sessionID,
+                    requestID: requestID,
+                    answers: answers
+                )
+                if self.shouldResumeStreamingAfterPromptResponse(
+                    sessionID: sessionID,
+                    requestID: requestID,
+                    answers: answers
+                ) {
+                    self.resumeStreamingForActiveTurnIfNeeded(sessionID: sessionID)
+                } else {
+                    self.pauseStreamingForUserInput(sessionID: sessionID)
+                }
                 self.dequeueCodexPendingPrompt(sessionID: sessionID, requestID: requestID)
                 self.applyE2EPlanPromptFlowAfterResponseIfNeeded(sessionID: sessionID)
                 return
             }
 
-            if let codexClient = self.codexClient {
-                try? await codexClient.respond(result: payload, for: requestID)
+            guard let codexClient = self.codexClient else {
+                self.codexStatusTextBySession[sessionID] = "Failed to send response. Check Codex connection and retry."
+                return
+            }
+
+            do {
+                try await codexClient.respond(result: payload, for: requestID)
+            } catch {
+                self.codexStatusTextBySession[sessionID] = "Failed to send response. Check Codex connection and retry."
+                return
+            }
+
+            self.applyPlanModeAfterCodexPromptResponseIfNeeded(
+                sessionID: sessionID,
+                requestID: requestID,
+                answers: answers
+            )
+            if self.shouldResumeStreamingAfterPromptResponse(
+                sessionID: sessionID,
+                requestID: requestID,
+                answers: answers
+            ) {
+                self.resumeStreamingForActiveTurnIfNeeded(sessionID: sessionID)
+            } else {
+                self.pauseStreamingForUserInput(sessionID: sessionID)
             }
             self.dequeueCodexPendingPrompt(sessionID: sessionID, requestID: requestID)
             self.applyE2EPlanPromptFlowAfterResponseIfNeeded(sessionID: sessionID)

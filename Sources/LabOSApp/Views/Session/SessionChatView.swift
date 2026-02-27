@@ -738,8 +738,17 @@ struct SessionChatView: View {
         let displayOptions = codexPromptDisplayOptions(for: question)
         let selectedOptionID = codexPromptSelectedOptionByQuestionID[question.id]
         let selectedOption = displayOptions.first(where: { $0.id == selectedOptionID })
-        let allowsFreeform = displayOptions.isEmpty || selectedOption?.isOther == true
-        let currentQuestionAnswered = codexPromptAnswer(for: question, options: displayOptions) != nil
+        let allowsFreeform = CodexPromptAnswerBuilder.allowsFreeform(
+            promptKind: prompt.kind,
+            question: question,
+            selectedOptionID: selectedOptionID
+        )
+        let currentQuestionAnswered = CodexPromptAnswerBuilder.answer(
+            promptKind: prompt.kind,
+            question: question,
+            selectedOptionID: selectedOptionID,
+            freeformText: codexPromptFreeformByQuestionID[question.id]
+        ) != nil
         let allAnswers = codexPromptAnswerMap(prompt: prompt)
         let canSubmit = allAnswers != nil
         let isLastQuestion = safeIndex >= max(questions.count - 1, 0)
@@ -809,20 +818,29 @@ struct SessionChatView: View {
             }
 
             if allowsFreeform {
-                TextField(
-                    "Type your response",
-                    text: Binding(
-                        get: { codexPromptFreeformByQuestionID[question.id] ?? "" },
-                        set: { newValue in
-                            codexPromptFreeformByQuestionID[question.id] = newValue
-                            saveCodexPromptDraft(prompt: prompt)
-                        }
-                    ),
-                    axis: .vertical
-                )
-                .lineLimit(1...4)
-                .textFieldStyle(.roundedBorder)
-                .accessibilityIdentifier("session.codexPrompt.freeform")
+                VStack(alignment: .leading, spacing: 6) {
+                    if !displayOptions.isEmpty {
+                        Text("Other")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    TextField(
+                        displayOptions.isEmpty ? "Type your response" : "Type your response (or say \"stop\" to cancel)",
+                        text: Binding(
+                            get: { codexPromptFreeformByQuestionID[question.id] ?? "" },
+                            set: { newValue in
+                                codexPromptFreeformByQuestionID[question.id] = newValue
+                                saveCodexPromptDraft(prompt: prompt)
+                            }
+                        ),
+                        axis: .vertical
+                    )
+                    .lineLimit(1...4)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("session.codexPrompt.freeform")
+                }
             }
 
             HStack(spacing: 8) {
@@ -956,60 +974,18 @@ struct SessionChatView: View {
     }
 
     private func codexPromptDisplayOptions(for question: CodexPromptQuestion) -> [CodexPromptOption] {
-        if question.id == "labos_plan_implementation_decision" {
-            return question.options
-        }
-        var options = question.options
-        if options.contains(where: { $0.isOther }) {
-            return options
-        }
-        if options.isEmpty {
-            return options
-        }
-        options.append(
-            CodexPromptOption(
-                id: "__codex_other__",
-                label: "No, and tell Codex what to do differently",
-                description: nil,
-                isOther: true
-            )
-        )
-        return options
+        // Display prompt options exactly as provided (no synthetic "Other" injection).
+        question.options
     }
 
     private func codexPromptAnswerMap(prompt: CodexPendingPrompt) -> [String: [String]]? {
         let questions = codexPromptQuestions(prompt)
-        var answers: [String: [String]] = [:]
-        for question in questions {
-            let options = codexPromptDisplayOptions(for: question)
-            guard let answer = codexPromptAnswer(for: question, options: options) else {
-                return nil
-            }
-            answers[question.id] = answer
-        }
-        return answers.isEmpty ? nil : answers
-    }
-
-    private func codexPromptAnswer(
-        for question: CodexPromptQuestion,
-        options: [CodexPromptOption]
-    ) -> [String]? {
-        let selectedOption = options.first { $0.id == codexPromptSelectedOptionByQuestionID[question.id] }
-        if let selectedOption {
-            if selectedOption.isOther {
-                let typed = (codexPromptFreeformByQuestionID[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !typed.isEmpty else { return nil }
-                return [selectedOption.label, typed]
-            }
-            return [selectedOption.label]
-        }
-
-        if !options.isEmpty {
-            return nil
-        }
-
-        let typed = (codexPromptFreeformByQuestionID[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return typed.isEmpty ? nil : [typed]
+        return CodexPromptAnswerBuilder.answerMap(
+            promptKind: prompt.kind,
+            questions: questions,
+            selectedOptionIDByQuestionID: codexPromptSelectedOptionByQuestionID,
+            freeformByQuestionID: codexPromptFreeformByQuestionID
+        )
     }
 
     private func loadCodexPromptDraftIfNeeded(prompt: CodexPendingPrompt?) {

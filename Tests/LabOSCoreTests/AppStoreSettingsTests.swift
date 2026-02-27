@@ -439,6 +439,26 @@ final class AppStoreSettingsTests: XCTestCase {
         XCTAssertEqual(store.projectPermissionLevel(for: projectID), .full)
     }
 
+    func testNormalizeGatewayErrorMessageFormatsMissingWorkspaceRootError() {
+        let store = AppStore(bootstrapDemo: false)
+        let technicalDetail = "CAPABILITY_MISSING: node workspaceRoot is unavailable"
+        let formatted = store.normalizeGatewayErrorMessage(
+            NSError(
+                domain: "LabOS",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: technicalDetail]
+            )
+        )
+        XCTAssertEqual(
+            formatted,
+            """
+            HPC workspace is not available yet. Ensure HPC Bridge is connected, then retry.
+
+            Technical detail: \(technicalDetail)
+            """
+        )
+    }
+
     private func waitUntil(
         timeoutSeconds: TimeInterval,
         pollEvery interval: TimeInterval = 0.05,

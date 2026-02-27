@@ -151,6 +151,18 @@ test("decidePlanImplementationFollowup only maps implement answers", () => {
     text: "Implement it",
   });
 
+  const implementInSecondaryAnswer = decidePlanImplementationFollowup({
+    answers: {
+      labos_plan_implementation_decision: {
+        answers: ["No, and tell Codex what to do differently", "Implement it"],
+      },
+    },
+  });
+  assert.deepEqual(implementInSecondaryAnswer, {
+    planMode: false,
+    text: "Implement it",
+  });
+
   const noImplement = decidePlanImplementationFollowup({
     answers: {
       labos_plan_implementation_decision: {

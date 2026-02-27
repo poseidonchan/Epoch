@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import process from "node:process";
 
 import { buildProjectFileContextStream } from "../../indexing/projectIndexing.js";
 import { resolveHubProvider } from "../../model.js";
@@ -15,6 +16,8 @@ const PLAN_MODE_DEVELOPER_INSTRUCTIONS = [
   "Plan mode is active for this turn.",
   "Focus on planning and clarifying questions before implementation.",
   "Use request_user_input when user decisions are needed (prefer it over plain-text questions).",
+  "Ask one question at a time when using request_user_input; prefer a single question per prompt unless strictly necessary.",
+  "If the user indicates they want to stop or cancel (e.g. 'stop', 'stop the test', 'cancel', 'quit'), stop immediately and do not produce a <proposed_plan> block. If unclear, ask a single request_user_input confirmation (Continue vs Stop).",
   "When you present the final plan, wrap it in a <proposed_plan>...</proposed_plan> block with the opening and closing tags on their own lines; put the plan content between them in Markdown.",
   "Do not ask whether to implement the plan in plain text; the app will prompt the user after the plan.",
   "If asked whether plan mode is active, answer YES.",
@@ -68,6 +71,25 @@ export async function handleTurnStart(
   let historyTurns = threadSnapshot.turns;
 
   let settings = parseThreadSettings(threadRecord.statusJson, threadSnapshot);
+  const normalizedCwd = await normalizeThreadCwdForProject(ctx.repository, threadRecord.projectId, settings.cwd);
+  if (normalizedCwd !== settings.cwd) {
+    const nextStatusJson = withUpdatedThreadStatusCwd(threadRecord.statusJson, normalizedCwd, settings);
+    await ctx.repository.updateThread({
+      id: threadId,
+      cwd: normalizedCwd,
+      statusJson: nextStatusJson,
+      updatedAt: nowUnixSeconds(),
+    });
+    threadRecord = {
+      ...threadRecord,
+      cwd: normalizedCwd,
+      statusJson: nextStatusJson,
+    };
+    settings = {
+      ...settings,
+      cwd: normalizedCwd,
+    };
+  }
   const modelOverride = normalizeNonEmptyString(params.model);
   const planMode = normalizePlanMode(params.planMode);
   const approvalPolicyOverride = normalizeNonEmptyString(params.approvalPolicy);
@@ -779,6 +801,116 @@ function normalizeNonEmptyString(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+async function normalizeThreadCwdForProject(
+  repository: CodexRepository,
+  projectId: string | null,
+  cwd: string
+): Promise<string> {
+  if (!projectId) return cwd;
+  const projectWorkspace = await resolveProjectWorkspacePath(repository, projectId);
+  const normalizedCwd = normalizeNonEmptyString(cwd);
+  if (!normalizedCwd) return projectWorkspace;
+
+  const projectRelative = extractProjectRelativeCwd(normalizedCwd, projectId);
+  if (projectRelative != null) {
+    return projectRelative ? path.join(projectWorkspace, projectRelative) : projectWorkspace;
+  }
+
+  if (path.isAbsolute(normalizedCwd)) {
+    return projectWorkspace;
+  }
+
+  const candidate = path.resolve(projectWorkspace, normalizedCwd);
+  if (!candidate.startsWith(projectWorkspace + path.sep) && candidate !== projectWorkspace) {
+    return projectWorkspace;
+  }
+  return candidate;
+}
+
+function extractProjectRelativeCwd(rawCwd: string, projectId: string): string | null {
+  const segments = rawCwd
+    .replaceAll("\\", "/")
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    if (segments[index] !== "projects") continue;
+    if (segments[index + 1] !== projectId) continue;
+    return segments.slice(index + 2).join("/");
+  }
+  return null;
+}
+
+async function resolveProjectWorkspacePath(repository: CodexRepository, projectId: string): Promise<string> {
+  const workspaceRoot = await resolveWorkspaceRoot(repository);
+  if (!workspaceRoot) {
+    throw new Error("CAPABILITY_MISSING: node workspaceRoot is unavailable");
+  }
+  return path.join(workspaceRoot, "projects", projectId);
+}
+
+async function resolveWorkspaceRoot(repository: CodexRepository): Promise<string | null> {
+  const envRoot = normalizeNonEmptyString(process.env.LABOS_HPC_WORKSPACE_ROOT);
+  if (envRoot) return envRoot;
+
+  let rows: any[] = [];
+  try {
+    rows = await repository.query<any>(
+      `SELECT permissions
+       FROM nodes
+       ORDER BY last_seen_at DESC, created_at DESC
+       LIMIT 20`
+    );
+  } catch {
+    return null;
+  }
+
+  for (const row of rows) {
+    const parsed = parseJsonObject(row?.permissions);
+    const workspaceRoot = normalizeNonEmptyString(parsed?.workspaceRoot);
+    if (workspaceRoot) return workspaceRoot;
+  }
+
+  return null;
+}
+
+function parseJsonObject(raw: unknown): Record<string, unknown> | null {
+  if (!raw) return null;
+  if (typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  if (typeof raw !== "string") return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function withUpdatedThreadStatusCwd(
+  rawStatusJson: string | null | undefined,
+  cwd: string,
+  settings: {
+    modelProvider: string;
+    model: string | null;
+    approvalPolicy: string;
+    sandbox: Record<string, unknown>;
+    reasoningEffort: string | null;
+  }
+): string {
+  const base = parseJsonObject(rawStatusJson) ?? {
+    modelProvider: settings.modelProvider,
+    model: settings.model,
+    approvalPolicy: settings.approvalPolicy,
+    sandbox: settings.sandbox,
+    reasoningEffort: settings.reasoningEffort,
+  };
+  return JSON.stringify({
+    ...base,
+    cwd,
+  });
 }
 
 function normalizePlanMode(raw: unknown): boolean {

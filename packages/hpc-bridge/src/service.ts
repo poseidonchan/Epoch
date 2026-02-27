@@ -940,7 +940,13 @@ export class BridgeService {
     const policy = this.runtimePolicyFor(opts.permissionLevel, opts.policyOverride);
     const timeoutMs = Math.min(opts.timeoutMs ?? policy.exec.maxTimeoutMs, policy.exec.maxTimeoutMs);
     const projectRoot = path.resolve(this.projectRoot(opts.projectId));
-    const cwd = await this.resolveProjectPath(opts.projectId, opts.cwd ?? projectRoot, { forWrite: true });
+    const resolvedCwd = resolveRuntimeCommandCwd({
+      workspaceRoot: this.cfg.workspaceRoot,
+      projectRoot,
+      rawCwd: opts.cwd,
+      fallbackCwd: projectRoot,
+    });
+    const cwd = await this.resolveProjectPath(opts.projectId, resolvedCwd, { forWrite: true });
     this.assertAllowedProjectPath(opts.projectId, cwd);
 
     const startedAt = Date.now();
@@ -1438,15 +1444,12 @@ export class BridgeService {
     await mkdir(logsDir, { recursive: true });
     await mkdir(uploadsDir, { recursive: true });
 
-    const resolvedCwd = (() => {
-      const raw = normalizeOptionalString(opts.cwd);
-      if (!raw) return runRoot;
-      if (path.isAbsolute(raw)) return raw;
-      if (raw.startsWith(`projects${path.sep}`) || raw === "projects" || raw.startsWith("projects/")) {
-        return path.resolve(this.cfg.workspaceRoot, raw);
-      }
-      return path.resolve(projectRoot, raw);
-    })();
+    const resolvedCwd = resolveRuntimeCommandCwd({
+      workspaceRoot: this.cfg.workspaceRoot,
+      projectRoot,
+      rawCwd: opts.cwd,
+      fallbackCwd: runRoot,
+    });
 
     if (opts.permissionLevel === "default") {
       this.assertAllowedProjectPath(opts.projectId, resolvedCwd);
@@ -1681,6 +1684,25 @@ function normalizeOptionalString(v: unknown): string | undefined {
   if (typeof v !== "string") return undefined;
   const trimmed = v.trim();
   return trimmed ? trimmed : undefined;
+}
+
+export function resolveRuntimeCommandCwd(args: {
+  workspaceRoot: string;
+  projectRoot: string;
+  rawCwd?: string | null;
+  fallbackCwd: string;
+}): string {
+  const normalized = normalizeOptionalString(args.rawCwd ?? undefined);
+  if (!normalized) {
+    return path.resolve(args.fallbackCwd);
+  }
+  if (path.isAbsolute(normalized)) {
+    return path.resolve(normalized);
+  }
+  if (normalized === "projects" || normalized.startsWith("projects/") || normalized.startsWith(`projects${path.sep}`)) {
+    return path.resolve(args.workspaceRoot, normalized);
+  }
+  return path.resolve(args.projectRoot, normalized);
 }
 
 function normalizePositiveInt(raw: unknown, fallback: number): number {

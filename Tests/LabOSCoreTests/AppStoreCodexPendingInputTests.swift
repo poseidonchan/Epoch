@@ -410,6 +410,48 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         XCTAssertNil(store.codexPendingPrompt(for: sessionID))
     }
 
+    func testRespondToCodexPromptKeepsPromptWhenCodexClientUnavailable() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        store.projects = [Project(id: projectID, name: "Prompt Retry Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Prompt Retry Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_prompt_retry"
+            ),
+        ]
+        store.setPlanModeEnabled(for: sessionID, enabled: true)
+        store.codexPendingPromptBySession[sessionID] = [
+            CodexPendingPrompt(
+                requestID: .string("req_prompt_retry"),
+                sessionID: sessionID,
+                threadId: "thread_prompt_retry",
+                turnId: "turn_prompt_retry",
+                kind: "implement_confirmation",
+                prompt: "Implement this plan?",
+                questions: [],
+                rawParams: nil
+            ),
+        ]
+
+        store.respondToCodexPrompt(
+            sessionID: sessionID,
+            requestID: .string("req_prompt_retry"),
+            answers: ["labos_plan_implementation_decision": ["Yes, implement this plan"]]
+        )
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            store.codexStatusText(for: sessionID)?.contains("Failed to send response") == true
+        }
+
+        XCTAssertNotNil(store.codexPendingPrompt(for: sessionID))
+        XCTAssertEqual(store.planModeEnabled(for: sessionID), true)
+    }
+
     func testRespondToCodexPromptSendsSelectedOptionAndFreeformAnswer() async throws {
         let store = AppStore(bootstrapDemo: false)
         let sessionID = UUID()

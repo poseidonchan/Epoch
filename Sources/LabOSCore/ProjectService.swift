@@ -373,7 +373,7 @@ internal final class ProjectService {
                 store.activeSessionID = session.id
                 return session
             } catch {
-                store.lastGatewayErrorMessage = error.localizedDescription
+                store.lastGatewayErrorMessage = store.normalizeGatewayErrorMessage(error)
                 return nil
             }
         }

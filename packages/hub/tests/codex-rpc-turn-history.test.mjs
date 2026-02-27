@@ -3,6 +3,18 @@ import assert from "node:assert/strict";
 
 import { handleTurnStart } from "../dist/index.js";
 
+const originalWorkspaceRoot = process.env.LABOS_HPC_WORKSPACE_ROOT;
+test.before(() => {
+  process.env.LABOS_HPC_WORKSPACE_ROOT = "/tmp/labos";
+});
+test.after(() => {
+  if (originalWorkspaceRoot == null) {
+    delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+  } else {
+    process.env.LABOS_HPC_WORKSPACE_ROOT = originalWorkspaceRoot;
+  }
+});
+
 test("handleTurnStart forwards plan mode as collaborationMode=plan", async () => {
   const threadId = "123e4567-e89b-12d3-a456-426614174111";
   const thread = {
@@ -96,6 +108,327 @@ test("handleTurnStart forwards plan mode as collaborationMode=plan", async () =>
     capturedStartArgs.collaborationMode.settings.developer_instructions,
     /plan mode is active/i
   );
+  assert.match(
+    capturedStartArgs.collaborationMode.settings.developer_instructions,
+    /one question at a time/i
+  );
+  assert.match(
+    capturedStartArgs.collaborationMode.settings.developer_instructions,
+    /stop.*cancel/i
+  );
+});
+
+test("handleTurnStart fails fast when workspace root is unavailable for project threads", async () => {
+  const originalRoot = process.env.LABOS_HPC_WORKSPACE_ROOT;
+  delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+
+  const threadId = "123e4567-e89b-12d3-a456-426614174120";
+  const thread = {
+    id: threadId,
+    preview: "",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 1,
+    path: null,
+    cwd: "projects/proj_missing_root",
+    cliVersion: "@labos/hub/0.1.0",
+    source: "appServer",
+    gitInfo: null,
+    turns: [],
+  };
+
+  try {
+    const repository = {
+      async query(sql) {
+        const normalized = String(sql);
+        if (normalized.includes("FROM nodes")) return [];
+        return [];
+      },
+      async getThreadRecord(id) {
+        assert.equal(id, threadId);
+        return {
+          id: threadId,
+          projectId: "proj_missing_root",
+          cwd: "projects/proj_missing_root",
+          modelProvider: "openai",
+          modelId: "gpt-5.3-codex",
+          preview: "",
+          createdAt: 1,
+          updatedAt: 1,
+          archived: false,
+          statusJson: JSON.stringify({
+            modelProvider: "openai",
+            model: "gpt-5.3-codex",
+            cwd: "projects/proj_missing_root",
+            approvalPolicy: "on-request",
+            sandbox: { mode: "workspace-write" },
+            reasoningEffort: null,
+          }),
+          engine: "codex-app-server",
+        };
+      },
+      async readThread(id) {
+        assert.equal(id, threadId);
+        return JSON.parse(JSON.stringify(thread));
+      },
+      async updateThread() {},
+      async createTurn() {},
+      async upsertItem() {},
+    };
+
+    const engines = {
+      async getEngine() {
+        assert.fail("engine.startTurn should not be reached when workspace root is unavailable");
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        handleTurnStart(
+          {
+            repository,
+            engines,
+          },
+          {
+            threadId,
+            input: [{ type: "text", text: "plan this change" }],
+            planMode: true,
+          }
+        ),
+      /CAPABILITY_MISSING: node workspaceRoot is unavailable/
+    );
+  } finally {
+    if (originalRoot == null) {
+      delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+    } else {
+      process.env.LABOS_HPC_WORKSPACE_ROOT = originalRoot;
+    }
+  }
+});
+
+test("handleTurnStart resolves workspace root from nodes table when env is unavailable", async () => {
+  const originalRoot = process.env.LABOS_HPC_WORKSPACE_ROOT;
+  delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+
+  const threadId = "123e4567-e89b-12d3-a456-426614174122";
+  const projectId = "proj_from_nodes";
+  const workspaceRoot = "/tmp/labos-from-node";
+  const legacyCwd = `projects/${projectId}`;
+  const expectedCwd = `${workspaceRoot}/projects/${projectId}`;
+  const thread = {
+    id: threadId,
+    preview: "",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 1,
+    path: null,
+    cwd: legacyCwd,
+    cliVersion: "@labos/hub/0.1.0",
+    source: "appServer",
+    gitInfo: null,
+    turns: [],
+  };
+
+  let capturedStartArgs = null;
+  let updatedThread = null;
+
+  try {
+    const repository = {
+      async query(sql) {
+        const normalized = String(sql);
+        if (normalized.includes("FROM nodes")) {
+          return [
+            {
+              permissions: JSON.stringify({ workspaceRoot }),
+            },
+          ];
+        }
+        return [];
+      },
+      async getThreadRecord(id) {
+        assert.equal(id, threadId);
+        return {
+          id: threadId,
+          projectId,
+          cwd: legacyCwd,
+          modelProvider: "openai",
+          modelId: "gpt-5.3-codex",
+          preview: "",
+          createdAt: 1,
+          updatedAt: 1,
+          archived: false,
+          statusJson: JSON.stringify({
+            modelProvider: "openai",
+            model: "gpt-5.3-codex",
+            cwd: legacyCwd,
+            approvalPolicy: "on-request",
+            sandbox: { mode: "workspace-write" },
+            reasoningEffort: null,
+          }),
+          engine: "codex-app-server",
+        };
+      },
+      async readThread(id) {
+        assert.equal(id, threadId);
+        return JSON.parse(JSON.stringify(thread));
+      },
+      async updateThread(args) {
+        updatedThread = args;
+      },
+      async createTurn() {},
+      async upsertItem() {},
+    };
+
+    const engines = {
+      async getEngine(name) {
+        assert.equal(name, "codex-app-server");
+        return {
+          async startTurn(args) {
+            capturedStartArgs = args;
+            return {
+              turn: {
+                id: args.turnId,
+                items: [],
+                status: "inProgress",
+                error: null,
+              },
+              events: emptyEvents(),
+            };
+          },
+        };
+      },
+    };
+
+    await handleTurnStart(
+      {
+        repository,
+        engines,
+      },
+      {
+        threadId,
+        input: [{ type: "text", text: "hello from nodes root" }],
+      }
+    );
+
+    assert.ok(updatedThread);
+    assert.equal(updatedThread.cwd, expectedCwd);
+    assert.ok(capturedStartArgs);
+    assert.equal(capturedStartArgs.cwd, expectedCwd);
+  } finally {
+    if (originalRoot == null) {
+      delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+    } else {
+      process.env.LABOS_HPC_WORKSPACE_ROOT = originalRoot;
+    }
+  }
+});
+
+test("handleTurnStart normalizes stale project cwd before engine start", async () => {
+  const originalRoot = process.env.LABOS_HPC_WORKSPACE_ROOT;
+  process.env.LABOS_HPC_WORKSPACE_ROOT = "/tmp/labos";
+
+  const threadId = "123e4567-e89b-12d3-a456-426614174121";
+  const projectId = "proj_normalize";
+  const staleCwd = `/Users/example/projects/${projectId}/runs/run_42`;
+  const expectedCwd = `/tmp/labos/projects/${projectId}/runs/run_42`;
+  const thread = {
+    id: threadId,
+    preview: "",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 1,
+    path: null,
+    cwd: staleCwd,
+    cliVersion: "@labos/hub/0.1.0",
+    source: "appServer",
+    gitInfo: null,
+    turns: [],
+  };
+
+  let capturedStartArgs = null;
+  let capturedUpdateThread = null;
+
+  try {
+    const repository = {
+      async query() {
+        return [];
+      },
+      async getThreadRecord(id) {
+        assert.equal(id, threadId);
+        return {
+          id: threadId,
+          projectId,
+          cwd: staleCwd,
+          modelProvider: "openai",
+          modelId: "gpt-5.3-codex",
+          preview: "",
+          createdAt: 1,
+          updatedAt: 1,
+          archived: false,
+          statusJson: JSON.stringify({
+            modelProvider: "openai",
+            model: "gpt-5.3-codex",
+            cwd: staleCwd,
+            approvalPolicy: "on-request",
+            sandbox: { mode: "workspace-write" },
+            reasoningEffort: null,
+          }),
+          engine: "codex-app-server",
+        };
+      },
+      async readThread(id) {
+        assert.equal(id, threadId);
+        return JSON.parse(JSON.stringify(thread));
+      },
+      async updateThread(args) {
+        capturedUpdateThread = args;
+      },
+      async createTurn() {},
+      async upsertItem() {},
+    };
+
+    const engines = {
+      async getEngine(name) {
+        assert.equal(name, "codex-app-server");
+        return {
+          async startTurn(args) {
+            capturedStartArgs = args;
+            return {
+              turn: {
+                id: args.turnId,
+                items: [],
+                status: "inProgress",
+                error: null,
+              },
+              events: emptyEvents(),
+            };
+          },
+        };
+      },
+    };
+
+    await handleTurnStart(
+      {
+        repository,
+        engines,
+      },
+      {
+        threadId,
+        input: [{ type: "text", text: "normalize cwd" }],
+      }
+    );
+
+    assert.ok(capturedUpdateThread);
+    assert.equal(capturedUpdateThread.cwd, expectedCwd);
+    assert.ok(capturedStartArgs);
+    assert.equal(capturedStartArgs.cwd, expectedCwd);
+  } finally {
+    if (originalRoot == null) {
+      delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+    } else {
+      process.env.LABOS_HPC_WORKSPACE_ROOT = originalRoot;
+    }
+  }
 });
 
 test("handleTurnStart injects indexed project snippets into turn input", async () => {
@@ -276,6 +609,7 @@ test("handleTurnStart sends history fallback context via developer instructions 
   };
 
   let capturedStartArgs = null;
+  const updateThreadCalls = [];
 
   const repository = {
     async query() {
@@ -511,6 +845,7 @@ test("handleTurnStart normalizes legacy pi threads and starts with codex engine"
   };
 
   let capturedStartArgs = null;
+  const updateThreadCalls = [];
 
   const repository = {
     async query() {
@@ -545,7 +880,7 @@ test("handleTurnStart normalizes legacy pi threads and starts with codex engine"
     },
     async updateThread(args) {
       assert.equal(args.id, legacyThreadId);
-      assert.equal(args.engine, "codex-app-server");
+      updateThreadCalls.push(args);
     },
     async createTurn() {},
     async upsertItem() {},
@@ -588,6 +923,7 @@ test("handleTurnStart normalizes legacy pi threads and starts with codex engine"
   assert.equal(capturedStartArgs.input.length, 1);
   assert.equal(capturedStartArgs.historyTurns.length, 1);
   assert.equal(capturedStartArgs.historyTurns[0].id, "turn_prev");
+  assert.ok(updateThreadCalls.some((entry) => entry.engine === "codex-app-server"));
 });
 
 test("handleTurnStart seeds history via thread/resume when repairing codex thread ids", async () => {

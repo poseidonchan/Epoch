@@ -425,10 +425,10 @@ function normalizeApprovalPolicy(raw: unknown): string {
 async function resolveProjectWorkspacePath(repository: CodexRepository, projectId: string | null): Promise<string | null> {
   if (!projectId) return null;
   const workspaceRoot = await resolveWorkspaceRoot(repository);
-  if (workspaceRoot) {
-    return path.join(workspaceRoot, "projects", projectId);
+  if (!workspaceRoot) {
+    throw new Error("CAPABILITY_MISSING: node workspaceRoot is unavailable");
   }
-  return path.join("projects", projectId);
+  return path.join(workspaceRoot, "projects", projectId);
 }
 
 async function resolveWorkspaceRoot(repository: CodexRepository): Promise<string | null> {
