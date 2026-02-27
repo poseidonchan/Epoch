@@ -274,6 +274,23 @@ export const NodeHeartbeatPayload = Type.Object({
 });
 export type NodeHeartbeatPayload = Static<typeof NodeHeartbeatPayload>;
 
+export const OpenAISettingsStatus = Type.Object({
+  configured: Type.Boolean(),
+  updatedAt: Type.Optional(ISODateTime),
+  source: Type.Optional(Type.String()),
+  ocrModel: Type.Optional(Type.String()),
+});
+export type OpenAISettingsStatus = Static<typeof OpenAISettingsStatus>;
+
+export const SettingsOpenAIUpdatedPayload = Type.Object({
+  configured: Type.Boolean(),
+  updatedAt: Type.Optional(ISODateTime),
+  source: Type.Optional(Type.String()),
+  ocrModel: Type.Optional(Type.String()),
+  ts: ISODateTime,
+});
+export type SettingsOpenAIUpdatedPayload = Static<typeof SettingsOpenAIUpdatedPayload>;
+
 export const RunLogDeltaPayload = Type.Object({
   projectId: UUID,
   runId: UUID,
@@ -500,6 +517,8 @@ export const ProtocolSchema = Type.Object({
     HpcTres,
     HpcStatus,
     NodeHeartbeatPayload,
+    OpenAISettingsStatus,
+    SettingsOpenAIUpdatedPayload,
     RunLogDeltaPayload,
     RuntimePermissionLevel,
     RuntimeExecStartedPayload,

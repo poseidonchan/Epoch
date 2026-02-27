@@ -1,6 +1,6 @@
 import multipart from "@fastify/multipart";
 import Fastify, { type FastifyInstance } from "fastify";
-import { createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
 import { appendFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -15,6 +15,7 @@ import { isNodeMethod, isOperatorMethod, type NodeMethod } from "@labos/protocol
 import { saveHubConfig, type HubConfig } from "./config.js";
 import type { DbPool } from "./db/db.js";
 import { listHubModelsForProvider, resolveHubModelForRun, resolveHubProvider } from "./model.js";
+import { readOpenAISettingsStatus, resolveOpenAIApiKeyFromConfig, resolveOpenAIOcrModelFromConfig } from "./openai_settings.js";
 import { sendEvent, sendResError, sendResOk, broadcastEvent } from "./transport/frames.js";
 import {
   ensureHubDirs,
@@ -353,6 +354,7 @@ function createHubState(opts: HubStartOptions) {
     pendingNodeRequests: new Map<string, PendingNodeRequest>(),
     nodeEventSubscribers: new Set<NodeEventSubscriber>(),
     pendingApprovals: new Map<string, PendingApproval>(),
+    agentsSyncMemo: new Map<string, { hash: string; source: string; ts: number }>(),
     sessionLane: new Map<string, Promise<void>>(),
     oauthRefreshLocks: new Map<string, Promise<void>>(),
     resources: {
@@ -427,6 +429,7 @@ function registerHttpRoutes(fastify: FastifyInstance, state: HubState) {
       {
         pool: state.pool,
         getOpenAIApiKey: () => getApiKeyForProvider(state, "openai"),
+        getOpenAIOcrModel: async () => resolveOpenAIOcrModelFromConfig(state.config),
         onStatusChange: async () => {
           broadcastEvent(state, "artifacts.updated", {
             projectId,
@@ -1267,12 +1270,163 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
         sendResOk(ws, id, { ok: true });
         return;
       }
+      case "workspace.list": {
+        const projectId = normalizeId(params.projectId);
+        const inputPath = normalizeOptionalString(params.path) ?? ".";
+        const recursive = params.recursive == null ? true : Boolean(params.recursive);
+        const includeHidden = Boolean(params.includeHidden ?? false);
+        const limit = clampWorkspaceListLimit(params.limit);
+        if (!projectId) {
+          sendResError(ws, id, "BAD_REQUEST", "Missing projectId");
+          return;
+        }
+        await assertWorkspaceRuntimeReady(state, projectId);
+        await reconcileAgentsFromHpc(state, projectId, "workspace.list").catch(() => {
+          // best effort reconcile
+        });
+        const response = await callNode(state, "runtime.fs.list", {
+          projectId,
+          path: inputPath,
+          recursive,
+          includeHidden,
+          limit,
+        });
+        const entries = normalizeWorkspaceEntries((response as any)?.entries).filter((entry) => !isUploadsWorkspacePath(entry.path));
+        sendResOk(ws, id, { entries });
+        return;
+      }
+      case "workspace.content": {
+        const projectId = normalizeId(params.projectId);
+        const inputPath = normalizeRelativePath(String(params.path ?? ""));
+        const offset = Number.isFinite(Number(params.offset)) ? Math.max(0, Math.floor(Number(params.offset))) : 0;
+        const length = Number.isFinite(Number(params.length)) ? Math.max(1, Math.floor(Number(params.length))) : 512 * 1024;
+        if (!projectId || !inputPath) {
+          sendResError(ws, id, "BAD_REQUEST", "Missing projectId or path");
+          return;
+        }
+        if (isUploadsWorkspacePath(inputPath)) {
+          sendResError(ws, id, "FORBIDDEN", "uploads/ files are not exposed in workspace view");
+          return;
+        }
+        await assertWorkspaceRuntimeReady(state, projectId);
+        if (isAgentsPath(inputPath)) {
+          await reconcileAgentsFromHpc(state, projectId, "workspace.content").catch(() => {
+            // best effort reconcile
+          });
+        }
+        const result = await callNode(state, "runtime.fs.read", {
+          projectId,
+          path: inputPath,
+          offset,
+          length,
+          encoding: "utf8",
+        });
+        sendResOk(ws, id, {
+          path: normalizeRelativePath(String((result as any).path ?? inputPath)) ?? inputPath,
+          data: typeof (result as any).data === "string" ? (result as any).data : "",
+          eof: Boolean((result as any).eof),
+          encoding: "utf8",
+        });
+        return;
+      }
+      case "workspace.raw": {
+        const projectId = normalizeId(params.projectId);
+        const inputPath = normalizeRelativePath(String(params.path ?? ""));
+        if (!projectId || !inputPath) {
+          sendResError(ws, id, "BAD_REQUEST", "Missing projectId or path");
+          return;
+        }
+        if (isUploadsWorkspacePath(inputPath)) {
+          sendResError(ws, id, "FORBIDDEN", "uploads/ files are not exposed in workspace view");
+          return;
+        }
+        await assertWorkspaceRuntimeReady(state, projectId);
+        if (isAgentsPath(inputPath)) {
+          await reconcileAgentsFromHpc(state, projectId, "workspace.raw").catch(() => {
+            // best effort reconcile
+          });
+        }
+
+        const maxBytes = 10 * 1024 * 1024;
+        const chunkBytes = 256 * 1024;
+        const buffers: Buffer[] = [];
+        let offset = 0;
+        let total = 0;
+        let eof = false;
+
+        while (!eof) {
+          const result = await callNode(state, "runtime.fs.read", {
+            projectId,
+            path: inputPath,
+            offset,
+            length: chunkBytes,
+            encoding: "base64",
+          });
+          const chunkBase64 = String((result as any).data ?? "");
+          eof = Boolean((result as any).eof);
+          if (!chunkBase64) break;
+          const chunk = Buffer.from(chunkBase64, "base64");
+          if (chunk.length === 0) break;
+          total += chunk.length;
+          if (total > maxBytes) {
+            sendResError(ws, id, "BAD_REQUEST", "workspace.raw exceeds max preview size (10 MB)");
+            return;
+          }
+          buffers.push(chunk);
+          offset += chunk.length;
+          if (eof) break;
+        }
+
+        const data = Buffer.concat(buffers).toString("base64");
+        sendResOk(ws, id, {
+          path: inputPath,
+          data,
+          encoding: "base64",
+          sizeBytes: total,
+          eof,
+        });
+        return;
+      }
+      case "settings.openai.get": {
+        const status = readOpenAISettingsStatus(state.config);
+        sendResOk(ws, id, status);
+        return;
+      }
+      case "settings.openai.set": {
+        const hasApiKey = Object.prototype.hasOwnProperty.call(params, "apiKey");
+        const hasOcrModel = Object.prototype.hasOwnProperty.call(params, "ocrModel");
+        const clear = Boolean(params.clear ?? false);
+        const source = normalizeOptionalString(params.source) ?? "labos-app";
+        if (!hasApiKey && !hasOcrModel && !clear) {
+          sendResError(ws, id, "BAD_REQUEST", "settings.openai.set requires apiKey, ocrModel, or clear=true");
+          return;
+        }
+        const apiKey = hasApiKey ? normalizeOptionalString(params.apiKey) : null;
+        const ocrModel = hasOcrModel ? normalizeOptionalString(params.ocrModel) : undefined;
+        await updateOpenAISettings(state, {
+          apiKey: clear ? null : apiKey,
+          ocrModel,
+          hasOcrModel,
+          source,
+        });
+        const status = readOpenAISettingsStatus(state.config);
+        sendResOk(ws, id, status);
+        broadcastEvent(state, "settings.openai.updated", {
+          configured: status.configured,
+          updatedAt: status.updatedAt,
+          source: status.source,
+          ocrModel: status.ocrModel,
+          ts: new Date().toISOString(),
+        });
+        return;
+      }
       default:
         sendResError(ws, id, "BAD_REQUEST", `Unknown method: ${method}`);
         return;
     }
   } catch (err: any) {
-    sendResError(ws, id, "INTERNAL", err?.message ?? "internal error");
+    const classified = classifyGatewayError(err);
+    sendResError(ws, id, classified.code, classified.message);
   }
 }
 
@@ -3991,6 +4145,17 @@ async function updateBootstrapFile(state: HubState, projectId: string, name: str
   const dir = projectBootstrapDir(state, projectId);
   const target = normalized === "USERS.md" ? resolveUsersBootstrapPath(dir, { preferLegacyIfPresent: true }) : path.join(dir, normalized);
   await writeFile(target, content, "utf8");
+  if (normalized === "AGENTS.md") {
+    await syncAgentsHubToHpc(state, projectId, content, "workspace.bootstrap.update").catch((err) => {
+      void insertProjectAgentsSyncEvent(state, {
+        projectId,
+        source: "workspace.bootstrap.update",
+        action: "push_to_hpc",
+        hash: sha256(content),
+        error: String(err instanceof Error ? err.message : err ?? "unknown"),
+      });
+    });
+  }
   return true;
 }
 
@@ -4405,6 +4570,22 @@ async function handleNodeEvent(state: HubState, event: string, payload: any) {
       });
       return;
     }
+    case "runtime.fs.changed": {
+      const projectId = normalizeId(payload.projectId);
+      const changedPath = normalizeRelativePath(String(payload.path ?? ""));
+      if (!projectId || !changedPath) return;
+      if (!isAgentsPath(changedPath)) return;
+      await reconcileAgentsFromHpc(state, projectId, "runtime.fs.changed").catch((err) => {
+        void insertProjectAgentsSyncEvent(state, {
+          projectId,
+          source: "runtime.fs.changed",
+          action: "pull_from_hpc",
+          hash: "",
+          error: String(err instanceof Error ? err.message : err ?? "unknown"),
+        });
+      });
+      return;
+    }
     default:
       return;
   }
@@ -4549,6 +4730,19 @@ async function drainWorkspaceProvisioningQueue(state: HubState) {
          WHERE id=$3`,
         [resolvedWorkspacePath, new Date().toISOString(), projectId]
       );
+      const agentsPath = path.join(projectBootstrapDir(state, projectId), "AGENTS.md");
+      const agentsContent = await readFile(agentsPath, "utf8").catch(() => "");
+      if (agentsContent.trim()) {
+        await syncAgentsHubToHpc(state, projectId, agentsContent, "workspace.project.ensure").catch((err) => {
+          void insertProjectAgentsSyncEvent(state, {
+            projectId,
+            source: "workspace.project.ensure",
+            action: "push_to_hpc",
+            hash: sha256(agentsContent),
+            error: String(err instanceof Error ? err.message : err ?? "unknown"),
+          });
+        });
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err ?? "workspace provisioning failed");
       await state.pool.query(
@@ -4565,6 +4759,257 @@ async function drainWorkspaceProvisioningQueue(state: HubState) {
       );
     }
   }
+}
+
+type WorkspaceListEntry = {
+  path: string;
+  type: "file" | "dir";
+  sizeBytes?: number;
+  modifiedAt?: string;
+};
+
+function clampWorkspaceListLimit(raw: unknown): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return 3_000;
+  return Math.max(1, Math.min(20_000, Math.floor(parsed)));
+}
+
+function normalizeWorkspaceEntries(raw: unknown): WorkspaceListEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const out: WorkspaceListEntry[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const obj = entry as Record<string, unknown>;
+    const pathValue = normalizeRelativePath(String(obj.path ?? ""));
+    const typeRaw = String(obj.type ?? "").trim().toLowerCase();
+    if (!pathValue) continue;
+    if (typeRaw !== "file" && typeRaw !== "dir") continue;
+    const normalized: WorkspaceListEntry = {
+      path: pathValue,
+      type: typeRaw,
+    };
+    if (typeof obj.sizeBytes === "number" && Number.isFinite(obj.sizeBytes)) {
+      normalized.sizeBytes = Math.max(0, Math.floor(obj.sizeBytes));
+    }
+    if (typeof obj.modifiedAt === "string" && obj.modifiedAt.trim()) {
+      normalized.modifiedAt = obj.modifiedAt;
+    }
+    out.push(normalized);
+  }
+  out.sort((a, b) => a.path.localeCompare(b.path));
+  return out;
+}
+
+function isUploadsWorkspacePath(pathValue: string): boolean {
+  const normalized = normalizeRelativePath(pathValue);
+  if (!normalized) return false;
+  return normalized === "uploads" || normalized.startsWith("uploads/");
+}
+
+function isAgentsPath(pathValue: string): boolean {
+  const normalized = normalizeRelativePath(pathValue);
+  return normalized === "AGENTS.md";
+}
+
+function expectedWorkspacePathForProject(state: HubState, projectId: string): string | null {
+  const workspaceRoot = normalizeOptionalString(state.node?.ctx.permissions?.workspaceRoot);
+  if (!workspaceRoot) return null;
+  return path.join(workspaceRoot, "projects", projectId);
+}
+
+async function assertWorkspaceRuntimeReady(state: HubState, projectId: string) {
+  if (!state.node) {
+    throw new Error("NODE_OFFLINE: HPC bridge is not connected");
+  }
+  const commands = new Set((state.node.ctx.commands ?? []).map((entry) => String(entry)));
+  const required = ["runtime.fs.list", "runtime.fs.read", "runtime.fs.stat"];
+  const missing = required.filter((method) => !commands.has(method));
+  if (missing.length > 0) {
+    throw new Error(`CAPABILITY_MISSING: HPC bridge missing runtime methods (${missing.join(", ")})`);
+  }
+
+  const expectedPath = expectedWorkspacePathForProject(state, projectId);
+  if (!expectedPath) {
+    throw new Error("CAPABILITY_MISSING: node workspaceRoot is unavailable");
+  }
+  const row = await state.pool.query<{ hpc_workspace_path: string | null }>(
+    "SELECT hpc_workspace_path FROM projects WHERE id=$1 LIMIT 1",
+    [projectId]
+  );
+  if (row.rows.length === 0) {
+    throw new Error("NOT_FOUND: project not found");
+  }
+  const persistedPath = normalizeOptionalString(row.rows[0]?.hpc_workspace_path);
+  if (!persistedPath) {
+    throw new Error("BAD_REQUEST: project workspace is not provisioned");
+  }
+  const resolvedExpected = path.resolve(expectedPath);
+  const resolvedPersisted = path.resolve(persistedPath);
+  if (resolvedExpected !== resolvedPersisted) {
+    throw new Error(
+      `BAD_REQUEST: project workspace path mismatch (expected ${resolvedExpected}, got ${resolvedPersisted})`
+    );
+  }
+}
+
+function classifyGatewayError(err: unknown): { code: "NODE_OFFLINE" | "BAD_REQUEST" | "NOT_FOUND" | "INTERNAL"; message: string } {
+  const message = String(err instanceof Error ? err.message : err ?? "internal error");
+  if (message === "NODE_OFFLINE" || message.startsWith("NODE_OFFLINE:")) {
+    return { code: "NODE_OFFLINE", message: message === "NODE_OFFLINE" ? "HPC bridge is not connected" : message };
+  }
+  if (message.startsWith("NOT_FOUND:")) return { code: "NOT_FOUND", message: message.slice("NOT_FOUND:".length).trim() || message };
+  if (message.startsWith("CAPABILITY_MISSING:")) return { code: "BAD_REQUEST", message };
+  if (message.startsWith("BAD_REQUEST:")) return { code: "BAD_REQUEST", message: message.slice("BAD_REQUEST:".length).trim() || message };
+  return { code: "INTERNAL", message };
+}
+
+async function updateOpenAISettings(
+  state: HubState,
+  args: { apiKey: string | null; ocrModel?: string | null; hasOcrModel: boolean; source: string }
+) {
+  const providerApiKeys = { ...(state.config.providerApiKeys ?? {}) };
+  const providerApiKeyMetadata = { ...(state.config.providerApiKeyMetadata ?? {}) };
+  if (args.apiKey && args.apiKey.trim()) {
+    providerApiKeys.openai = args.apiKey.trim();
+  } else {
+    delete providerApiKeys.openai;
+  }
+  providerApiKeyMetadata.openai = {
+    updatedAt: new Date().toISOString(),
+    source: args.source,
+  };
+
+  if (Object.keys(providerApiKeys).length === 0) {
+    delete state.config.providerApiKeys;
+  } else {
+    state.config.providerApiKeys = providerApiKeys;
+  }
+
+  if (args.hasOcrModel) {
+    const nextOpenAISettings = { ...(state.config.openaiSettings ?? {}) };
+    const normalizedOcrModel = normalizeOptionalString(args.ocrModel);
+    if (normalizedOcrModel) {
+      nextOpenAISettings.ocrModel = normalizedOcrModel;
+    } else {
+      delete nextOpenAISettings.ocrModel;
+    }
+    if (Object.keys(nextOpenAISettings).length === 0) {
+      delete state.config.openaiSettings;
+    } else {
+      state.config.openaiSettings = nextOpenAISettings;
+    }
+  }
+
+  state.config.providerApiKeyMetadata = providerApiKeyMetadata;
+  await saveHubConfig({ stateDir: state.stateDir, config: state.config });
+}
+
+async function reconcileAgentsFromHpc(state: HubState, projectId: string, source: string) {
+  if (!state.node) return;
+  try {
+    await assertWorkspaceRuntimeReady(state, projectId);
+  } catch {
+    return;
+  }
+  const hubAgentsPath = path.join(projectBootstrapDir(state, projectId), "AGENTS.md");
+  const localContent = await readFile(hubAgentsPath, "utf8").catch(() => "");
+  const localHash = sha256(localContent);
+  const localStat = await stat(hubAgentsPath).catch(() => null);
+  const localMtime = localStat?.mtime?.toISOString() ?? null;
+
+  const remoteStatRes = await callNode(state, "runtime.fs.stat", { projectId, path: "AGENTS.md" }).catch(() => null);
+  if (!remoteStatRes || !(remoteStatRes as any).exists) return;
+  const remoteMtime = normalizeOptionalString((remoteStatRes as any).modifiedAt);
+
+  const remoteReadRes = await callNode(state, "runtime.fs.read", {
+    projectId,
+    path: "AGENTS.md",
+    offset: 0,
+    length: 2 * 1024 * 1024,
+    encoding: "utf8",
+  }).catch(() => null);
+  if (!remoteReadRes) return;
+  const remoteContent = String((remoteReadRes as any).data ?? "");
+  const remoteHash = sha256(remoteContent);
+  if (remoteHash === localHash) return;
+  if (shouldSkipAgentsSync(state, projectId, remoteHash, source)) return;
+
+  const localTs = localMtime ? Date.parse(localMtime) : 0;
+  const remoteTs = remoteMtime ? Date.parse(remoteMtime) : 0;
+  if (Number.isFinite(localTs) && Number.isFinite(remoteTs) && localTs >= remoteTs) {
+    // Hub wins, push current content to HPC.
+    await syncAgentsHubToHpc(state, projectId, localContent, source);
+    return;
+  }
+
+  await mkdir(projectBootstrapDir(state, projectId), { recursive: true });
+  await writeFile(hubAgentsPath, remoteContent, "utf8");
+  markAgentsSyncMemo(state, projectId, remoteHash, source);
+  await insertProjectAgentsSyncEvent(state, {
+    projectId,
+    source,
+    action: "pull_from_hpc",
+    hash: remoteHash,
+    error: null,
+  }).catch(() => {
+    // best effort
+  });
+}
+
+async function syncAgentsHubToHpc(state: HubState, projectId: string, content: string, source: string) {
+  if (!state.node) return;
+  const contentHash = sha256(content);
+  if (shouldSkipAgentsSync(state, projectId, contentHash, source)) {
+    return;
+  }
+  await callNode(state, "runtime.fs.write", {
+    projectId,
+    path: "AGENTS.md",
+    data: content,
+    encoding: "utf8",
+    permissionLevel: "full",
+  });
+  markAgentsSyncMemo(state, projectId, contentHash, source);
+  await insertProjectAgentsSyncEvent(state, {
+    projectId,
+    source,
+    action: "push_to_hpc",
+    hash: contentHash,
+    error: null,
+  }).catch(() => {
+    // best effort
+  });
+}
+
+async function insertProjectAgentsSyncEvent(
+  state: HubState,
+  args: { projectId: string; source: string; action: string; hash: string; error: string | null }
+) {
+  await state.pool.query(
+    `INSERT INTO project_agents_sync_events (id, project_id, source, action, hash, ts, error)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [uuidv4(), args.projectId, args.source, args.action, args.hash, new Date().toISOString(), args.error]
+  );
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function shouldSkipAgentsSync(state: HubState, projectId: string, hash: string, source: string): boolean {
+  const key = projectId;
+  const memo = state.agentsSyncMemo.get(key);
+  if (!memo) return false;
+  const withinTtl = Date.now() - memo.ts < 30_000;
+  return withinTtl && memo.hash === hash && memo.source === source;
+}
+
+function markAgentsSyncMemo(state: HubState, projectId: string, hash: string, source: string) {
+  state.agentsSyncMemo.set(projectId, {
+    hash,
+    source,
+    ts: Date.now(),
+  });
 }
 
 function clipForPrompt(text: string, maxChars: number): string {
@@ -4617,6 +5062,11 @@ function oauthProviderToModelProvider(oauthProviderId: string): string | null {
 async function getApiKeyForProvider(state: HubState, provider: string): Promise<string | undefined> {
   const p = String(provider ?? "").trim();
   if (!p) return undefined;
+
+  if (p === "openai") {
+    const openAIKey = resolveOpenAIApiKeyFromConfig(state.config);
+    if (openAIKey) return openAIKey;
+  }
 
   const configuredProviderKey = state.config.providerApiKeys?.[p];
   if (typeof configuredProviderKey === "string" && configuredProviderKey.trim().length > 0) {

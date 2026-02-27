@@ -50,7 +50,8 @@ export async function handleThreadStart(
 
   const engineName =
     normalizeEngineName(params.engine) ?? normalizeEngineName(sessionRecord?.backend_engine) ?? ctx.engines.defaultEngineName();
-  const cwd = normalizeNonEmptyString(params.cwd) ?? resolveProjectWorkspacePath(projectId) ?? process.cwd();
+  const resolvedProjectWorkspace = await resolveProjectWorkspacePath(ctx.repository, projectId);
+  const cwd = normalizeNonEmptyString(params.cwd) ?? resolvedProjectWorkspace ?? process.cwd();
   const modelProvider =
     normalizeNonEmptyString(params.modelProvider) ?? normalizeNonEmptyString(sessionRecord?.codex_model_provider) ?? provider.provider;
   const model = normalizeNonEmptyString(params.model) ?? normalizeNonEmptyString(sessionRecord?.codex_model) ?? provider.defaultModelId ?? null;
@@ -421,13 +422,38 @@ function normalizeApprovalPolicy(raw: unknown): string {
   }
 }
 
-function resolveProjectWorkspacePath(projectId: string | null): string | null {
+async function resolveProjectWorkspacePath(repository: CodexRepository, projectId: string | null): Promise<string | null> {
   if (!projectId) return null;
-  const workspaceRoot = normalizeNonEmptyString(process.env.LABOS_HPC_WORKSPACE_ROOT);
+  const workspaceRoot = await resolveWorkspaceRoot(repository);
   if (workspaceRoot) {
     return path.join(workspaceRoot, "projects", projectId);
   }
   return path.join("projects", projectId);
+}
+
+async function resolveWorkspaceRoot(repository: CodexRepository): Promise<string | null> {
+  const envRoot = normalizeNonEmptyString(process.env.LABOS_HPC_WORKSPACE_ROOT);
+  if (envRoot) return envRoot;
+
+  let rows: any[] = [];
+  try {
+    rows = await repository.query<any>(
+      `SELECT permissions
+       FROM nodes
+       ORDER BY last_seen_at DESC, created_at DESC
+       LIMIT 20`
+    );
+  } catch {
+    return null;
+  }
+
+  for (const row of rows) {
+    const parsed = parseJsonObject(row?.permissions);
+    const workspaceRoot = normalizeNonEmptyString(parsed?.workspaceRoot);
+    if (workspaceRoot) return workspaceRoot;
+  }
+
+  return null;
 }
 
 function parseJsonObject(raw: unknown): Record<string, unknown> | null {

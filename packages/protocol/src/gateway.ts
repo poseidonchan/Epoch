@@ -19,6 +19,11 @@ export const operatorMethods = [
   "artifacts.get",
   "workspace.bootstrap.get",
   "workspace.bootstrap.update",
+  "workspace.list",
+  "workspace.content",
+  "workspace.raw",
+  "settings.openai.get",
+  "settings.openai.set",
   "models.current",
   "hpc.prefs.set",
 ] as const;
@@ -37,6 +42,7 @@ export const nodeMethods = [
   "runtime.fs.stat",
   "runtime.fs.read",
   "runtime.fs.write",
+  "runtime.fs.list",
   "runtime.fs.diff",
   "runtime.fs.applyPatch",
   "artifact.scan",
@@ -70,6 +76,7 @@ export const gatewayEventNames = [
   "runtime.exec.completed",
   "runtime.fs.changed",
   "runtime.fs.patchCompleted",
+  "settings.openai.updated",
 ] as const;
 
 export type GatewayEventName = (typeof gatewayEventNames)[number];

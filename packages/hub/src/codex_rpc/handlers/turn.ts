@@ -1,9 +1,10 @@
 import { v4 as uuidv4 } from "uuid";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { buildProjectFileContextStream } from "../../indexing/projectIndexing.js";
 import { resolveHubProvider } from "../../model.js";
+import { loadOpenAIApiKeyFromStateDir } from "../../openai_settings.js";
 import type { CodexEngineRegistry } from "../engine_registry.js";
 import type { EngineStartTurnResult, EngineStreamEvent } from "../engines/types.js";
 import type { CodexRepository } from "../repository.js";
@@ -364,6 +365,7 @@ function toCodexSandboxMode(raw: unknown): "read-only" | "workspace-write" | "da
   return toCodexSandboxMode(normalizeNonEmptyString(obj.mode) ?? normalizeNonEmptyString(obj.type) ?? null);
 }
 
+const AGENTS_CONTEXT_MARKER = "[LABOS_AGENTS_CONTEXT]";
 const PROJECT_CONTEXT_MARKER = "[LABOS_PROJECT_CONTEXT]";
 const MAX_SNIPPET_CHARS = 2_200;
 const HISTORY_FALLBACK_MARKER = "[LABOS_SESSION_HISTORY_FALLBACK]";
@@ -378,33 +380,53 @@ async function buildTurnInputWithProjectContext(repository: CodexRepository, pro
     .join("\n")
     .trim();
 
-  if (!promptText || promptText.includes(PROJECT_CONTEXT_MARKER)) return input;
+  if (!promptText) return input;
+
+  const hasAgentsMarker = promptText.includes(AGENTS_CONTEXT_MARKER);
+  const hasProjectMarker = promptText.includes(PROJECT_CONTEXT_MARKER);
 
   let stream;
-  try {
-    stream = await buildProjectFileContextStream(repository.dbPool(), projectId, promptText, {
-      getOpenAIApiKey: async () => normalizeNonEmptyString(process.env.OPENAI_API_KEY) ?? undefined,
-      fileLimit: 40,
-      snippetLimit: 6,
-    });
-  } catch {
+  if (!hasProjectMarker) {
+    const stateDir = resolveRepositoryStateDirectory(repository);
+    try {
+      stream = await buildProjectFileContextStream(repository.dbPool(), projectId, promptText, {
+        getOpenAIApiKey: async () => (stateDir ? await loadOpenAIApiKeyFromStateDir(stateDir) : undefined),
+        fileLimit: 40,
+        snippetLimit: 6,
+      });
+    } catch {
+      stream = { files: [], snippets: [] };
+    }
+  } else {
+    stream = { files: [], snippets: [] };
+  }
+
+  const agentsContent = hasAgentsMarker ? "" : await readAgentsBootstrapFile(repository, projectId);
+  const snippets = stream.snippets.length > 0
+    ? [...stream.snippets]
+      .sort((a, b) => b.score - a.score)
+      .map((snippet, index) => {
+        const content = snippet.content.replace(/\s+/g, " ").trim().slice(0, MAX_SNIPPET_CHARS);
+        return `(${index + 1}) ${snippet.path}#${snippet.chunkIndex}\n${content}`;
+      })
+    : [];
+
+  if (!agentsContent && snippets.length === 0) {
     return input;
   }
 
-  if (!stream.snippets.length) {
-    return input;
+  const contextParts: string[] = [];
+  if (agentsContent) {
+    contextParts.push(`${AGENTS_CONTEXT_MARKER}
+Use this AGENTS.md context as authoritative project behavior guidance:
+${agentsContent}`);
   }
-
-  const snippets = [...stream.snippets]
-    .sort((a, b) => b.score - a.score)
-    .map((snippet, index) => {
-      const content = snippet.content.replace(/\s+/g, " ").trim().slice(0, MAX_SNIPPET_CHARS);
-      return `(${index + 1}) ${snippet.path}#${snippet.chunkIndex}\n${content}`;
-    });
-
-  const contextBlock = `${PROJECT_CONTEXT_MARKER}
+  if (snippets.length > 0) {
+    contextParts.push(`${PROJECT_CONTEXT_MARKER}
 Use these indexed project snippets as additional context:
-${snippets.join("\n\n")}`;
+${snippets.join("\n\n")}`);
+  }
+  const contextBlock = contextParts.join("\n\n");
 
   const next = input.map((part) => ({ ...part }));
   const firstTextIndex = next.findIndex((part) => part.type === "text");
@@ -423,6 +445,25 @@ ${snippets.join("\n\n")}`;
   }
 
   return next;
+}
+
+async function readAgentsBootstrapFile(repository: CodexRepository, projectId: string): Promise<string> {
+  const stateDir = resolveRepositoryStateDirectory(repository);
+  if (!stateDir) return "";
+  const agentsPath = path.join(stateDir, "projects", projectId, "bootstrap", "AGENTS.md");
+  try {
+    const content = await readFile(agentsPath, "utf8");
+    return String(content ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function resolveRepositoryStateDirectory(repository: CodexRepository): string | null {
+  const maybe = repository as unknown as { stateDirectory?: () => string };
+  if (typeof maybe.stateDirectory !== "function") return null;
+  const value = maybe.stateDirectory();
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function injectHistoryFallbackContext(input: UserInput[], turns: Turn[]): UserInput[] {

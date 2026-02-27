@@ -61,9 +61,9 @@ export function extractCodexAuthToken(request: IncomingMessage): string | null {
 }
 
 export function attachCodexTransport(options: CodexTransportOptions) {
-  const { ws, request, config, stateDir, pool } = options;
+  const { ws, request, config, stateDir, pool, runtimeBridge } = options;
   const token = extractCodexAuthToken(request) ?? "__labos_default_token__";
-  const runtime = getOrCreateRuntime({ token, ws, config, stateDir, pool });
+  const runtime = getOrCreateRuntime({ token, ws, config, stateDir, pool, runtimeBridge });
 
   if (runtime.activeSocket && runtime.activeSocket !== ws) {
     try {

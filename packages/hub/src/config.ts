@@ -21,7 +21,17 @@ export type HubConfig = {
   token: string;
   createdAt: string;
   ai?: HubAiConfig;
+  openaiSettings?: {
+    ocrModel?: string;
+  };
   providerApiKeys?: Record<string, string>;
+  providerApiKeyMetadata?: Record<
+    string,
+    {
+      updatedAt?: string;
+      source?: string;
+    }
+  >;
 };
 
 export function getStateDir(): string {
