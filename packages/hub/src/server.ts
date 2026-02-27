@@ -1280,6 +1280,9 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
           sendResError(ws, id, "BAD_REQUEST", "Missing projectId");
           return;
         }
+        await ensureBootstrapDefaults(state, projectId).catch(() => {
+          // best effort bootstrap defaults
+        });
         await assertWorkspaceRuntimeReady(state, projectId);
         await reconcileAgentsFromHpc(state, projectId, "workspace.list").catch(() => {
           // best effort reconcile
@@ -4912,13 +4915,30 @@ async function reconcileAgentsFromHpc(state: HubState, projectId: string, source
     return;
   }
   const hubAgentsPath = path.join(projectBootstrapDir(state, projectId), "AGENTS.md");
+  await ensureBootstrapDefaults(state, projectId).catch(() => {
+    // best effort bootstrap defaults
+  });
   const localContent = await readFile(hubAgentsPath, "utf8").catch(() => "");
   const localHash = sha256(localContent);
   const localStat = await stat(hubAgentsPath).catch(() => null);
   const localMtime = localStat?.mtime?.toISOString() ?? null;
 
   const remoteStatRes = await callNode(state, "runtime.fs.stat", { projectId, path: "AGENTS.md" }).catch(() => null);
-  if (!remoteStatRes || !(remoteStatRes as any).exists) return;
+  if (!remoteStatRes || !(remoteStatRes as any).exists) {
+    if (!localContent.trim()) return;
+    await syncAgentsHubToHpc(state, projectId, localContent, source).catch((err) => {
+      void insertProjectAgentsSyncEvent(state, {
+        projectId,
+        source,
+        action: "push_to_hpc",
+        hash: sha256(localContent),
+        error: String(err instanceof Error ? err.message : err ?? "unknown"),
+      }).catch(() => {
+        // best effort
+      });
+    });
+    return;
+  }
   const remoteMtime = normalizeOptionalString((remoteStatRes as any).modifiedAt);
 
   const remoteReadRes = await callNode(state, "runtime.fs.read", {
