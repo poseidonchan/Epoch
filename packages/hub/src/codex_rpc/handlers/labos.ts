@@ -68,7 +68,7 @@ export async function handleLabosProjectCreate(
 
   const projectId = uuidv4();
   const nowIso = new Date().toISOString();
-  const workspacePath = resolveProjectWorkspacePath(projectId);
+  const workspacePath = await resolveProjectWorkspacePath(ctx.repository, projectId);
 
   await ctx.repository.query(
     `INSERT INTO projects (
@@ -1055,7 +1055,7 @@ async function createMappedThreadForSession(
     sandbox: Record<string, unknown>;
   }
 ): Promise<Thread> {
-  const cwd = resolveProjectWorkspacePath(args.projectId);
+  const cwd = await resolveProjectWorkspacePath(repository, args.projectId);
   const status = {
     modelProvider: args.modelProvider,
     model: args.modelId,
@@ -1151,10 +1151,11 @@ async function ensureMappedThreadForSession(
     sandbox: Record<string, unknown>;
   }
 ): Promise<EnsureMappedThreadResult> {
+  const cwd = await resolveProjectWorkspacePath(ctx.repository, args.projectId);
   const settings = {
     modelProvider: args.modelProvider,
     model: args.modelId,
-    cwd: resolveProjectWorkspacePath(args.projectId),
+    cwd,
     approvalPolicy: args.approvalPolicy,
     sandbox: args.sandbox,
     reasoningEffort: null,
@@ -1164,7 +1165,9 @@ async function ensureMappedThreadForSession(
   if (args.currentThreadId) {
     const existing = await ctx.repository.getThreadRecord(args.currentThreadId);
     if (existing?.engine === "codex-app-server" && isValidCodexAppServerThreadId(existing.id)) {
-      const syncState = readThreadSyncState(existing.statusJson) ?? "ready";
+      const storedSyncState = readThreadSyncState(existing.statusJson) ?? "ready";
+      const cwdChanged = normalizeNonEmptyString(existing.cwd) !== settings.cwd;
+      const syncState: ThreadSyncState = cwdChanged ? "needsRemoteHydration" : storedSyncState;
       await ctx.repository.updateThread({
         id: existing.id,
         modelProvider: args.modelProvider,
@@ -1608,12 +1611,34 @@ async function enqueueWorkspaceProvisioning(
   );
 }
 
-function resolveProjectWorkspacePath(projectId: string): string {
-  const root = normalizeNonEmptyString(process.env.LABOS_HPC_WORKSPACE_ROOT);
-  if (root) {
-    return path.join(root, "projects", projectId);
-  }
+async function resolveProjectWorkspacePath(repository: CodexRepository, projectId: string): Promise<string> {
+  const root = await resolveWorkspaceRoot(repository);
+  if (root) return path.join(root, "projects", projectId);
   return path.join("projects", projectId);
+}
+
+async function resolveWorkspaceRoot(repository: CodexRepository): Promise<string | null> {
+  const envRoot = normalizeNonEmptyString(process.env.LABOS_HPC_WORKSPACE_ROOT);
+  if (envRoot) return envRoot;
+
+  let rows: any[] = [];
+  try {
+    rows = await repository.query<any>(
+      `SELECT permissions
+       FROM nodes
+       ORDER BY last_seen_at DESC, created_at DESC
+       LIMIT 20`
+    );
+  } catch {
+    return null;
+  }
+
+  for (const row of rows) {
+    const parsed = parseJsonObject(row?.permissions);
+    const workspaceRoot = normalizeNonEmptyString(parsed?.workspaceRoot);
+    if (workspaceRoot) return workspaceRoot;
+  }
+  return null;
 }
 
 function normalizeBackendEngine(raw: unknown): "codex-app-server" | null {

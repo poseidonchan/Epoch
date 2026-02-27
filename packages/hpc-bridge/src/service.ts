@@ -606,6 +606,24 @@ export class BridgeService {
           this.sendRes(id, true, result);
           return;
         }
+        case "runtime.fs.list": {
+          const projectId = String(params.projectId ?? "").trim();
+          const inputPath = String(params.path ?? ".");
+          const recursive = params.recursive == null ? true : Boolean(params.recursive);
+          const includeHidden = Boolean(params.includeHidden ?? false);
+          const limit = Number.isFinite(Number(params.limit)) ? Math.max(1, Math.floor(Number(params.limit))) : 3_000;
+          if (!projectId) {
+            this.sendRes(id, false, undefined, { code: "BAD_REQUEST", message: "runtime.fs.list requires projectId" });
+            return;
+          }
+          const result = await this.runtimeFsList(projectId, inputPath, {
+            recursive,
+            includeHidden,
+            limit,
+          });
+          this.sendRes(id, true, result);
+          return;
+        }
         case "runtime.fs.diff": {
           const projectId = String(params.projectId ?? "").trim();
           const paths = Array.isArray(params.paths) ? params.paths.map(String).filter(Boolean) : [];
@@ -1043,6 +1061,91 @@ export class BridgeService {
     return true;
   }
 
+  private async runtimeFsList(
+    projectId: string,
+    inputPath: string,
+    opts: { recursive: boolean; includeHidden: boolean; limit: number }
+  ) {
+    const projectRoot = path.resolve(this.projectRoot(projectId));
+    await this.ensureProjectWorkspaceDirs(projectRoot);
+    const startPath = await this.resolveProjectPath(projectId, inputPath || ".");
+    const maxEntries = Math.max(1, Math.min(20_000, Math.floor(opts.limit)));
+    const recursive = Boolean(opts.recursive);
+    const includeHidden = Boolean(opts.includeHidden);
+
+    const queue: string[] = [];
+    const entries: Array<{ path: string; type: "file" | "dir"; sizeBytes?: number; modifiedAt?: string }> = [];
+
+    const enqueueDirectory = async (absDir: string) => {
+      const list = await readdir(absDir, { withFileTypes: true });
+      for (const dirent of list) {
+        if (!includeHidden && dirent.name.startsWith(".")) continue;
+        const absPath = path.join(absDir, dirent.name);
+
+        let itemType: "file" | "dir";
+        let itemSizeBytes: number | undefined;
+        let itemModifiedAt: string | undefined;
+
+        if (dirent.isSymbolicLink()) {
+          const targetReal = await realpath(absPath);
+          this.assertAllowedProjectPath(projectId, targetReal);
+          const targetStat = await stat(targetReal);
+          itemType = targetStat.isDirectory() ? "dir" : "file";
+          itemSizeBytes = targetStat.isFile() ? targetStat.size : undefined;
+          itemModifiedAt = targetStat.mtime.toISOString();
+        } else if (dirent.isDirectory()) {
+          const dirStat = await stat(absPath);
+          itemType = "dir";
+          itemModifiedAt = dirStat.mtime.toISOString();
+        } else {
+          const fileStat = await stat(absPath);
+          itemType = "file";
+          itemSizeBytes = fileStat.size;
+          itemModifiedAt = fileStat.mtime.toISOString();
+        }
+
+        const relPath = path.relative(projectRoot, absPath).replaceAll(path.sep, "/");
+        if (!relPath || relPath.startsWith("..")) {
+          continue;
+        }
+        entries.push({
+          path: relPath,
+          type: itemType,
+          ...(itemSizeBytes != null ? { sizeBytes: itemSizeBytes } : {}),
+          ...(itemModifiedAt ? { modifiedAt: itemModifiedAt } : {}),
+        });
+
+        if (entries.length >= maxEntries) return;
+        if (itemType === "dir" && recursive) {
+          queue.push(absPath);
+        }
+      }
+    };
+
+    const startStat = await stat(startPath);
+    if (startStat.isDirectory()) {
+      queue.push(startPath);
+      while (queue.length > 0 && entries.length < maxEntries) {
+        const current = queue.shift();
+        if (!current) break;
+        await enqueueDirectory(current);
+      }
+    } else {
+      const relPath = path.relative(projectRoot, startPath).replaceAll(path.sep, "/");
+      if (relPath && !relPath.startsWith("..")) {
+        entries.push({
+          path: relPath,
+          type: "file",
+          sizeBytes: startStat.size,
+          modifiedAt: startStat.mtime.toISOString(),
+        });
+      }
+    }
+
+    entries.sort((a, b) => a.path.localeCompare(b.path));
+    return { entries };
+  }
+
   private async runtimeFsStat(projectId: string, inputPath: string) {
     const abs = await this.resolveProjectPath(projectId, inputPath);
     const st = await stat(abs);
@@ -1206,7 +1309,6 @@ export class BridgeService {
 
   private async ensureProjectWorkspaceDirs(projectRoot: string) {
     await mkdir(projectRoot, { recursive: true });
-    await mkdir(path.join(projectRoot, "uploads"), { recursive: true });
     await mkdir(path.join(projectRoot, "artifacts"), { recursive: true });
     await mkdir(path.join(projectRoot, "runs"), { recursive: true });
     await mkdir(path.join(projectRoot, "logs"), { recursive: true });
@@ -1237,21 +1339,27 @@ export class BridgeService {
 
     const projectRoot = this.projectRoot(opts.projectId);
     const runRoot = path.join(projectRoot, "runs", opts.runId);
+    const stagingRoot = path.join(runRoot, "staging");
     const artifactsDir = path.join(projectRoot, "artifacts");
     const logsDir = path.join(projectRoot, "logs");
-    const uploadsDir = path.join(projectRoot, "uploads");
     await mkdir(runRoot, { recursive: true });
+    await mkdir(stagingRoot, { recursive: true });
     await mkdir(artifactsDir, { recursive: true });
     await mkdir(logsDir, { recursive: true });
-    await mkdir(uploadsDir, { recursive: true });
 
-    // Stage uploads from Hub
+    // Stage transient input files from Hub into this run's staging directory.
     const uploads = Array.isArray(opts.staging?.uploads) ? opts.staging.uploads : [];
     for (const u of uploads) {
       const uploadId = String(u.uploadId ?? "");
-      const targetPath = String(u.targetPath ?? "");
-      if (!uploadId || !targetPath) continue;
-      await this.downloadUpload(opts.projectId, uploadId, path.join(projectRoot, targetPath));
+      const targetPathRaw = String(u.targetPath ?? "");
+      if (!uploadId) continue;
+      const normalizedTarget = sanitizeStagingRelativePath(targetPathRaw || path.basename(uploadId));
+      if (!normalizedTarget) continue;
+      const destination = path.resolve(stagingRoot, normalizedTarget);
+      if (!destination.startsWith(stagingRoot + path.sep) && destination !== stagingRoot) {
+        throw new Error(`Invalid staging target path: ${targetPathRaw}`);
+      }
+      await this.downloadUpload(opts.projectId, uploadId, destination);
     }
 
     const scriptPath = path.join(runRoot, "job.sbatch");
@@ -1788,6 +1896,19 @@ function addTres(a: HpcTres, b: HpcTres): HpcTres {
 function isTerminalSlurmState(state: string) {
   const s = state.toUpperCase();
   return s.includes("COMPLETED") || s.includes("FAILED") || s.includes("CANCELLED") || s.includes("TIMEOUT");
+}
+
+function sanitizeStagingRelativePath(raw: string): string | null {
+  const trimmed = String(raw ?? "").trim().replaceAll("\\", "/");
+  if (!trimmed) return null;
+  if (trimmed.startsWith("/") || trimmed.startsWith("../") || trimmed.includes("/../") || trimmed === "..") {
+    return null;
+  }
+  const normalized = path.posix.normalize(trimmed);
+  if (normalized.startsWith("../") || normalized === ".." || normalized === ".") {
+    return null;
+  }
+  return normalized;
 }
 
 async function writeFileAtomic(filePath: string, content: string | Buffer) {

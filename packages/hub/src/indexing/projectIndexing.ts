@@ -42,6 +42,7 @@ type IndexUploadInput = {
 type IndexUploadDeps = {
   pool: DbPool;
   getOpenAIApiKey: () => Promise<string | undefined>;
+  getOpenAIOcrModel?: () => Promise<string | undefined>;
   onStatusChange?: (status: ProjectFileIndexStatus) => Promise<void> | void;
 };
 
@@ -68,12 +69,17 @@ export async function runProjectUploadIndexing(input: IndexUploadInput, deps: In
   try {
     await deps.onStatusChange?.("processing");
 
-    const extraction = await extractFileTextForIndexing(input.storedPath, input.contentType);
+    const apiKey = await deps.getOpenAIApiKey();
+    const ocrModel = await deps.getOpenAIOcrModel?.();
+    const extraction = await extractFileTextForIndexing(input.storedPath, input.contentType, {
+      openAIApiKey: apiKey,
+      enablePdfOcrFallback: true,
+      ocrModel,
+    });
     const extractedText = extraction.text.slice(0, MAX_EXTRACTED_TEXT_CHARS);
     const chunks = chunkTextForRag(extractedText);
     if (chunks.length === 0) throw new Error("No chunks were generated for extracted text");
 
-    const apiKey = await deps.getOpenAIApiKey();
     let embeddingModel: string | null = null;
     let chunkEmbeddings: number[][] = [];
 

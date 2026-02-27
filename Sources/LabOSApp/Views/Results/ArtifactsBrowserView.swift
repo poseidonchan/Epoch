@@ -9,6 +9,9 @@ struct ArtifactsBrowserView: View {
     @EnvironmentObject private var store: AppStore
 
     @State private var searchText = ""
+    @State private var includeHidden = false
+    @State private var generatedOnly = false
+
     @State private var selectedArtifact: Artifact?
     @State private var selectedContent = ""
     @State private var selectedImage: UIImage?
@@ -16,63 +19,110 @@ struct ArtifactsBrowserView: View {
     @State private var loadingContent = false
     @State private var previewTask: Task<Void, Never>?
 
-    private var resultsArtifacts: [Artifact] {
-        store.generatedArtifacts(for: projectID)
+    private var workspaceEntries: [WorkspaceEntry] {
+        store.workspaceEntries(for: projectID)
     }
 
-    private func filterArtifacts(_ artifacts: [Artifact]) -> [Artifact] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return artifacts }
-        return artifacts.filter { $0.path.localizedCaseInsensitiveContains(query) }
+    private var artifactByPath: [String: Artifact] {
+        Dictionary(uniqueKeysWithValues: store.artifacts(for: projectID).map { ($0.path, $0) })
     }
 
-    private var filteredResults: [Artifact] {
-        filterArtifacts(resultsArtifacts)
-    }
+    private var visibleEntries: [WorkspaceEntry] {
+        var entries = workspaceEntries
 
-    private var resultSections: [ArtifactSection] {
-        let grouped = Dictionary(grouping: filteredResults) { artifact in
-            artifact.path.components(separatedBy: "/").first ?? "root"
+        if generatedOnly {
+            let generatedFiles = entries
+                .filter { $0.type == .file }
+                .filter { isGeneratedPath($0.path) }
+                .map(\.path)
+
+            let generatedSet = Set(generatedFiles)
+            var visibleDirs = Set<String>()
+            for filePath in generatedSet {
+                let components = filePath.split(separator: "/")
+                guard components.count > 1 else { continue }
+                var prefix = ""
+                for component in components.dropLast() {
+                    let value = String(component)
+                    prefix = prefix.isEmpty ? value : "\(prefix)/\(value)"
+                    visibleDirs.insert(prefix)
+                }
+            }
+
+            entries = entries.filter { entry in
+                if entry.type == .file {
+                    return generatedSet.contains(entry.path)
+                }
+                return visibleDirs.contains(entry.path)
+            }
         }
 
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !query.isEmpty {
+            entries = entries.filter { $0.path.localizedCaseInsensitiveContains(query) }
+        }
+
+        return entries.sorted { $0.path < $1.path }
+    }
+
+    private var fileEntries: [WorkspaceEntry] {
+        visibleEntries.filter { $0.type == .file }
+    }
+
+    private var sections: [WorkspaceSection] {
+        let grouped = Dictionary(grouping: visibleEntries) { entry in
+            entry.path.components(separatedBy: "/").first ?? "root"
+        }
         return grouped.keys.sorted().map { key in
-            ArtifactSection(folder: key, artifacts: grouped[key, default: []].sorted { $0.path < $1.path })
+            WorkspaceSection(name: key, entries: grouped[key, default: []].sorted { $0.path < $1.path })
         }
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Filter files...", text: $searchText)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
+            VStack(spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Filter workspace files...", text: $searchText)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(.secondarySystemBackground)))
+
+                HStack(spacing: 12) {
+                    Toggle("Generated only", isOn: $generatedOnly)
+                        .toggleStyle(.switch)
+                    Spacer()
+                    Toggle("Hidden", isOn: $includeHidden)
+                        .toggleStyle(.switch)
+                }
+                .font(.caption)
+                .padding(.horizontal, 4)
             }
-            .padding(10)
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(.secondarySystemBackground)))
             .padding(.horizontal, 12)
             .padding(.top, 10)
 
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
-                        if resultSections.isEmpty {
+                        if sections.isEmpty {
                             ContentUnavailableView(
-                                filteredResults.isEmpty && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                    ? "No generated results yet"
-                                    : "No matching results",
-                                systemImage: "sparkles.rectangle.stack",
+                                visibleEntries.isEmpty && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                    ? "No workspace files yet"
+                                    : "No matching files",
+                                systemImage: "folder",
                                 description: Text(
-                                    filteredResults.isEmpty && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                        ? "Run a plan to generate result files."
+                                    visibleEntries.isEmpty && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                        ? "Workspace is empty or bridge is not connected."
                                         : "Try a different filter."
                                 )
                             )
                             .padding(.top, 40)
                         } else {
-                            sourceHeader(title: "Generated Results", systemImage: "sparkles")
-                            sectionList(resultSections)
+                            sourceHeader(title: "Workspace Files", systemImage: "folder")
+                            sectionList(sections)
                         }
                     }
                     .padding(.horizontal, 8)
@@ -80,10 +130,14 @@ struct ArtifactsBrowserView: View {
                     .padding(.bottom, 12)
                 }
                 .onAppear {
+                    Task { await store.refreshWorkspace(projectID: projectID, includeHidden: includeHidden) }
                     handleDeepLinkSelection(proxy: proxy)
                 }
                 .onChange(of: store.selectedArtifactPath) { _, _ in
                     handleDeepLinkSelection(proxy: proxy)
+                }
+                .onChange(of: includeHidden) { _, value in
+                    Task { await store.refreshWorkspace(projectID: projectID, includeHidden: value) }
                 }
             }
 
@@ -111,41 +165,46 @@ struct ArtifactsBrowserView: View {
         }
     }
 
-    private func artifactRow(_ artifact: Artifact) -> some View {
-        Button {
-            selectArtifact(artifact)
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: icon(for: artifact.kind))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 20)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(URL(fileURLWithPath: artifact.path).lastPathComponent)
-                        .font(.subheadline)
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-
-                    HStack(spacing: 8) {
-                        Text(AppFormatters.shortDate.string(from: artifact.modifiedAt))
-                        if let sizeBytes = artifact.sizeBytes {
-                            Text(AppFormatters.byteCount.string(fromByteCount: Int64(sizeBytes)))
-                        }
-                    }
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(rowHighlightColor(for: artifact))
-            )
+    private func isGeneratedPath(_ path: String) -> Bool {
+        if let artifact = artifactByPath[path] {
+            return artifact.origin == .generated
         }
-        .buttonStyle(.plain)
+        return path.hasPrefix("artifacts/") || path.hasPrefix("runs/") || path.hasPrefix("logs/")
+    }
+
+    private func workspaceRow(_ entry: WorkspaceEntry) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon(for: entry))
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(URL(fileURLWithPath: entry.path).lastPathComponent)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                HStack(spacing: 8) {
+                    Text(entry.type == .dir ? "Directory" : "File")
+                    if let modifiedAt = entry.modifiedAt {
+                        Text(AppFormatters.shortDate.string(from: modifiedAt))
+                    }
+                    if let sizeBytes = entry.sizeBytes {
+                        Text(AppFormatters.byteCount.string(fromByteCount: Int64(sizeBytes)))
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(rowHighlightColor(for: entry.path))
+        )
     }
 
     private func sourceHeader(title: String, systemImage: String) -> some View {
@@ -160,10 +219,10 @@ struct ArtifactsBrowserView: View {
     }
 
     @ViewBuilder
-    private func sectionList(_ sections: [ArtifactSection]) -> some View {
+    private func sectionList(_ sections: [WorkspaceSection]) -> some View {
         ForEach(sections) { section in
             HStack {
-                Text("\(section.folder)/")
+                Text("\(section.name)/")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -171,26 +230,37 @@ struct ArtifactsBrowserView: View {
             .padding(.horizontal, 12)
             .padding(.top, 2)
 
-            ForEach(section.artifacts) { artifact in
-                artifactRow(artifact)
-                    .id(artifact.path)
+            ForEach(section.entries) { entry in
+                if entry.type == .file {
+                    Button {
+                        selectEntry(entry)
+                    } label: {
+                        workspaceRow(entry)
+                    }
+                    .buttonStyle(.plain)
+                    .id(entry.path)
+                } else {
+                    workspaceRow(entry)
+                        .id(entry.path)
+                }
             }
         }
     }
 
-    private func rowHighlightColor(for artifact: Artifact) -> Color {
-        if store.highlightedArtifactPath == artifact.path {
+    private func rowHighlightColor(for path: String) -> Color {
+        if store.highlightedArtifactPath == path {
             return Color.yellow.opacity(0.24)
         }
-        if selectedArtifact?.id == artifact.id {
+        if selectedArtifact?.path == path {
             return Color.blue.opacity(0.16)
         }
         return Color.clear
     }
 
-    private func selectArtifact(_ artifact: Artifact) {
+    private func selectEntry(_ entry: WorkspaceEntry) {
+        let artifact = syntheticArtifact(from: entry)
         selectedArtifact = artifact
-        store.selectedArtifactPath = artifact.path
+        store.selectedArtifactPath = entry.path
 
         loadingContent = true
         selectedContent = ""
@@ -198,7 +268,7 @@ struct ArtifactsBrowserView: View {
         selectedNotebook = nil
 
         previewTask?.cancel()
-        let requestedPath = artifact.path
+        let requestedPath = entry.path
         previewTask = Task {
             let preview = await loadPreview(artifact: artifact)
             guard !Task.isCancelled else { return }
@@ -213,10 +283,29 @@ struct ArtifactsBrowserView: View {
         }
     }
 
+    private func syntheticArtifact(from entry: WorkspaceEntry) -> Artifact {
+        if let known = artifactByPath[entry.path] {
+            return known
+        }
+        return Artifact(
+            projectID: projectID,
+            path: entry.path,
+            kind: ArtifactKind.infer(from: entry.path),
+            origin: isGeneratedPath(entry.path) ? .generated : .userUpload,
+            modifiedAt: entry.modifiedAt ?? .now,
+            sizeBytes: entry.sizeBytes,
+            createdBySessionID: nil,
+            createdByRunID: nil,
+            indexStatus: nil,
+            indexSummary: nil,
+            indexedAt: nil
+        )
+    }
+
     private func loadPreview(artifact: Artifact) async -> ArtifactPreviewPayload {
         switch artifact.kind {
         case .image:
-            let data = await store.fetchArtifactData(projectID: projectID, path: artifact.path)
+            let data = await store.fetchWorkspaceData(projectID: projectID, path: artifact.path)
             let image = data.flatMap { UIImage(data: $0) }
             return ArtifactPreviewPayload(text: artifact.path, image: image, notebook: nil)
 
@@ -230,24 +319,25 @@ struct ArtifactsBrowserView: View {
             return ArtifactPreviewPayload(text: source, image: nil, notebook: nil)
 
         case .text, .json, .log, .unknown:
-            let content = await store.fetchArtifactContent(projectID: projectID, path: artifact.path)
+            let content = await store.fetchWorkspaceContent(projectID: projectID, path: artifact.path)
             return ArtifactPreviewPayload(text: content, image: nil, notebook: nil)
         }
     }
 
     private func loadTextPreferRawIfLarge(artifact: Artifact) async -> String {
-        if let size = artifact.sizeBytes, size > 1_048_576, let data = await store.fetchArtifactData(projectID: projectID, path: artifact.path) {
+        if let size = artifact.sizeBytes, size > 1_048_576,
+           let data = await store.fetchWorkspaceData(projectID: projectID, path: artifact.path) {
             return String(decoding: data, as: UTF8.self)
         }
-        return await store.fetchArtifactContent(projectID: projectID, path: artifact.path)
+        return await store.fetchWorkspaceContent(projectID: projectID, path: artifact.path)
     }
 
     private func handleDeepLinkSelection(proxy: ScrollViewProxy) {
         guard let path = store.selectedArtifactPath,
-              let target = resultsArtifacts.first(where: { $0.path == path })
+              let target = fileEntries.first(where: { $0.path == path })
         else {
             if let selectedArtifact,
-               !resultsArtifacts.contains(where: { $0.id == selectedArtifact.id }) {
+               !fileEntries.contains(where: { $0.path == selectedArtifact.path }) {
                 self.selectedArtifact = nil
                 self.selectedContent = ""
                 self.selectedImage = nil
@@ -263,8 +353,15 @@ struct ArtifactsBrowserView: View {
         }
 
         if selectedArtifact?.path != path {
-            selectArtifact(target)
+            selectEntry(target)
         }
+    }
+
+    private func icon(for entry: WorkspaceEntry) -> String {
+        if entry.type == .dir {
+            return "folder"
+        }
+        return icon(for: ArtifactKind.infer(from: entry.path))
     }
 
     private func icon(for kind: ArtifactKind) -> String {
@@ -287,11 +384,11 @@ struct ArtifactsBrowserView: View {
     }
 }
 
-private struct ArtifactSection: Identifiable {
-    let folder: String
-    let artifacts: [Artifact]
+private struct WorkspaceSection: Identifiable {
+    let name: String
+    let entries: [WorkspaceEntry]
 
-    var id: String { folder }
+    var id: String { name }
 }
 
 private struct ArtifactPreviewPayload {

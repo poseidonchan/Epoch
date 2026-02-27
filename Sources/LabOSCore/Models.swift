@@ -184,6 +184,45 @@ public struct Artifact: Identifiable, Hashable, Codable, Sendable {
     }
 }
 
+public enum WorkspaceEntryType: String, Codable, CaseIterable, Sendable {
+    case file
+    case dir
+}
+
+public struct WorkspaceEntry: Identifiable, Hashable, Codable, Sendable {
+    public var id: String { path }
+    public var path: String
+    public var type: WorkspaceEntryType
+    public var sizeBytes: Int?
+    public var modifiedAt: Date?
+
+    public init(
+        path: String,
+        type: WorkspaceEntryType,
+        sizeBytes: Int? = nil,
+        modifiedAt: Date? = nil
+    ) {
+        self.path = path
+        self.type = type
+        self.sizeBytes = sizeBytes
+        self.modifiedAt = modifiedAt
+    }
+}
+
+public struct OpenAIHubSettingsStatus: Hashable, Codable, Sendable {
+    public var configured: Bool
+    public var updatedAt: Date?
+    public var source: String?
+    public var ocrModel: String?
+
+    public init(configured: Bool, updatedAt: Date? = nil, source: String? = nil, ocrModel: String? = nil) {
+        self.configured = configured
+        self.updatedAt = updatedAt
+        self.source = source
+        self.ocrModel = ocrModel
+    }
+}
+
 public enum RunStatus: String, Codable, CaseIterable, Sendable {
     case queued
     case running

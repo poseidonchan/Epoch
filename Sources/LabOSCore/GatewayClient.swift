@@ -23,6 +23,7 @@ public enum GatewayEvent: Sendable {
     case runsUpdated(projectID: UUID, run: RunRecord, change: String)
     case runsLogDelta(RunLogDeltaPayload)
     case artifactsUpdated(projectID: UUID, artifact: Artifact, change: String)
+    case settingsOpenAIUpdated(OpenAIHubSettingsStatus)
 }
 
 public struct AssistantDeltaPayload: Hashable, Codable, Sendable {
@@ -372,6 +373,10 @@ public final class GatewayClient: ObservableObject {
                let artifact: Artifact = try? decodeEventPayload(eventFrame.payload, key: "artifact"),
                let change: String = try? decodeEventPayload(eventFrame.payload, key: "change") {
                 eventsContinuation?.yield(.artifactsUpdated(projectID: projectID, artifact: artifact, change: change))
+            }
+        case "settings.openai.updated":
+            if let payload: OpenAIHubSettingsStatus = try? decodeEventPayload(eventFrame.payload) {
+                eventsContinuation?.yield(.settingsOpenAIUpdated(payload))
             }
         default:
             return

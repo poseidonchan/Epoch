@@ -8,6 +8,7 @@ internal final class ComposerService {
     private var attachmentPayloadsBySessionMessageID: [UUID: [UUID: [ComposerAttachment]]] = [:]
     private var pendingPermissionSyncTaskBySession: [UUID: Task<Void, Never>] = [:]
     private var permissionSyncGenerationBySession: [UUID: Int] = [:]
+    private var pendingOpenAIHubSync: (apiKey: String?, clear: Bool, ocrModel: String?, setOcrModel: Bool)?
 
     init(store: AppStore) {
         self.store = store
@@ -68,6 +69,95 @@ internal final class ComposerService {
                     qos: store.normalizedOptionalString(store.hpcQos)
                 )
             )
+        }
+    }
+
+    func refreshOpenAISettingsFromGateway() {
+        guard store.isGatewayConnected, let gatewayClient = store.gatewayClient else { return }
+        struct EmptyParams: Codable, Sendable {}
+        Task {
+            do {
+                let response = try await gatewayClient.request(method: "settings.openai.get", params: EmptyParams())
+                let status: OpenAIHubSettingsStatus = try store.decodeGatewayPayloadObject(response.payload)
+                store.openAIHubSettingsStatus = status
+                if let ocrModel = status.ocrModel?.trimmingCharacters(in: .whitespacesAndNewlines), !ocrModel.isEmpty {
+                    store.openAIOcrModel = ocrModel
+                    store.defaults.set(ocrModel, forKey: AppStore.DefaultsKey.openAIOcrModel)
+                }
+                store.lastGatewayErrorMessage = nil
+                await flushPendingOpenAIHubSyncIfNeeded()
+            } catch {
+                store.lastGatewayErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func syncOpenAISettingsToGateway(apiKey: String?, clear: Bool, ocrModel: String? = nil, setOcrModel: Bool = false) {
+        pendingOpenAIHubSync = (apiKey: apiKey, clear: clear, ocrModel: ocrModel, setOcrModel: setOcrModel)
+        Task {
+            await flushPendingOpenAIHubSyncIfNeeded()
+        }
+    }
+
+    @MainActor
+    private func flushPendingOpenAIHubSyncIfNeeded() async {
+        guard let pending = pendingOpenAIHubSync else { return }
+        guard store.isGatewayConnected, let gatewayClient = store.gatewayClient else { return }
+
+        struct Params: Encodable, Sendable {
+            var apiKey: String?
+            var clear: Bool?
+            var source: String
+            var ocrModel: String?
+            var setOcrModel: Bool
+
+            enum CodingKeys: String, CodingKey {
+                case apiKey
+                case clear
+                case source
+                case ocrModel
+            }
+
+            func encode(to encoder: Encoder) throws {
+                var container = encoder.container(keyedBy: CodingKeys.self)
+                if let apiKey {
+                    try container.encode(apiKey, forKey: .apiKey)
+                }
+                if let clear {
+                    try container.encode(clear, forKey: .clear)
+                }
+                try container.encode(source, forKey: .source)
+                if setOcrModel {
+                    if let ocrModel {
+                        try container.encode(ocrModel, forKey: .ocrModel)
+                    } else {
+                        try container.encodeNil(forKey: .ocrModel)
+                    }
+                }
+            }
+        }
+
+        do {
+            let response = try await gatewayClient.request(
+                method: "settings.openai.set",
+                params: Params(
+                    apiKey: pending.apiKey,
+                    clear: pending.clear ? true : nil,
+                    source: "labos-ios",
+                    ocrModel: pending.ocrModel,
+                    setOcrModel: pending.setOcrModel
+                )
+            )
+            let status: OpenAIHubSettingsStatus = try store.decodeGatewayPayloadObject(response.payload)
+            store.openAIHubSettingsStatus = status
+            if let ocrModel = status.ocrModel?.trimmingCharacters(in: .whitespacesAndNewlines), !ocrModel.isEmpty {
+                store.openAIOcrModel = ocrModel
+                store.defaults.set(ocrModel, forKey: AppStore.DefaultsKey.openAIOcrModel)
+            }
+            pendingOpenAIHubSync = nil
+            store.lastGatewayErrorMessage = nil
+        } catch {
+            store.lastGatewayErrorMessage = error.localizedDescription
         }
     }
 

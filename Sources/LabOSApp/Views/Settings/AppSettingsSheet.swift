@@ -13,10 +13,15 @@ struct AppSettingsSheet: View {
     @State private var openAIAPIKey = ""
     @State private var openAIVoiceModel: OpenAIVoiceTranscriptionModel = .gpt4oMiniTranscribe
     @State private var openAIVoicePrompt = OpenAIVoiceSettings.defaultTranscriptionPrompt
+    @State private var openAIOcrModelSelection = "gpt-5.2"
+    @State private var openAIOcrModelCustom = ""
     @State private var hpcPartition = ""
     @State private var hpcAccount = ""
     @State private var hpcQos = ""
     @State private var saveToastText: String?
+
+    private static let ocrPresetModels = ["gpt-5.2", "gpt-5.2-chat-latest", "gpt-5.2-pro"]
+    private static let ocrCustomSelection = "__custom__"
 
     var body: some View {
         NavigationStack {
@@ -65,7 +70,7 @@ struct AppSettingsSheet: View {
                     }
                 }
 
-                Section("OpenAI Voice") {
+                Section("OpenAI") {
                     SecureField("OpenAI API key", text: $openAIAPIKey)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -87,19 +92,40 @@ struct AppSettingsSheet: View {
                             .accessibilityIdentifier("settings.openai.prompt")
                     }
 
-                    LabeledContent("Status", value: store.openAIAPIKeyConfigured ? "Configured" : "Missing API key")
+                    Picker("OCR model", selection: $openAIOcrModelSelection) {
+                        ForEach(Self.ocrPresetModels, id: \.self) { model in
+                            Text(model).tag(model)
+                        }
+                        Text("Custom").tag(Self.ocrCustomSelection)
+                    }
+                    .accessibilityIdentifier("settings.openai.ocrModel")
+
+                    if openAIOcrModelSelection == Self.ocrCustomSelection {
+                        TextField("Custom OCR model id", text: $openAIOcrModelCustom)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .accessibilityIdentifier("settings.openai.ocrModel.custom")
+                    }
+
+                    LabeledContent("Local key", value: store.openAIAPIKeyConfigured ? "Configured" : "Missing API key")
                         .accessibilityIdentifier("settings.openai.status")
+                    LabeledContent("Hub sync", value: openAIHubStatusText)
+                        .accessibilityIdentifier("settings.openai.hubStatus")
+                    LabeledContent("Hub OCR model", value: openAIHubOcrModelStatusText)
+                        .accessibilityIdentifier("settings.openai.hubOcrModel")
 
                     Button("Save") {
                         store.saveOpenAIVoiceSettings(
                             apiKey: openAIAPIKey,
                             transcriptionModel: openAIVoiceModel,
-                            transcriptionPrompt: openAIVoicePrompt
+                            transcriptionPrompt: openAIVoicePrompt,
+                            ocrModel: selectedOcrModel
                         )
                         openAIAPIKey = ""
                         openAIVoiceModel = store.openAIVoiceTranscriptionModel
                         openAIVoicePrompt = store.openAIVoiceTranscriptionPrompt
-                        showToast("OpenAI voice settings saved")
+                        applyOcrModelSelection(store.openAIOcrModel)
+                        showToast("OpenAI settings saved")
                     }
                     .accessibilityIdentifier("settings.openai.save")
 
@@ -202,6 +228,7 @@ struct AppSettingsSheet: View {
                 openAIAPIKey = ""
                 openAIVoiceModel = store.openAIVoiceTranscriptionModel
                 openAIVoicePrompt = store.openAIVoiceTranscriptionPrompt
+                applyOcrModelSelection(store.openAIOcrModel)
                 hpcPartition = store.hpcPartition
                 hpcAccount = store.hpcAccount
                 hpcQos = store.hpcQos
@@ -246,6 +273,52 @@ struct AppSettingsSheet: View {
         case let .failed(message):
             return "Failed: \(message)"
         }
+    }
+
+    private var openAIHubStatusText: String {
+        guard let status = store.openAIHubSettingsStatus else {
+            return store.isGatewayConnected ? "Unknown" : "Gateway offline"
+        }
+        if status.configured {
+            if let updatedAt = status.updatedAt {
+                return "Configured • \(AppFormatters.shortDate.string(from: updatedAt))"
+            }
+            return "Configured"
+        }
+        return "Not configured"
+    }
+
+    private var selectedOcrModel: String {
+        if openAIOcrModelSelection == Self.ocrCustomSelection {
+            let custom = openAIOcrModelCustom.trimmingCharacters(in: .whitespacesAndNewlines)
+            return custom.isEmpty ? "gpt-5.2" : custom
+        }
+        let selected = openAIOcrModelSelection.trimmingCharacters(in: .whitespacesAndNewlines)
+        return selected.isEmpty ? "gpt-5.2" : selected
+    }
+
+    private var openAIHubOcrModelStatusText: String {
+        guard let status = store.openAIHubSettingsStatus else {
+            return store.isGatewayConnected ? "Unknown" : "Gateway offline"
+        }
+        let hubModel = status.ocrModel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedHubModel = (hubModel?.isEmpty == false) ? hubModel! : "gpt-5.2"
+        if normalizedHubModel.caseInsensitiveCompare(selectedOcrModel) == .orderedSame {
+            return "Synced • \(normalizedHubModel)"
+        }
+        return "Hub: \(normalizedHubModel) (not synced)"
+    }
+
+    private func applyOcrModelSelection(_ model: String) {
+        let normalizedRaw = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = normalizedRaw.isEmpty ? "gpt-5.2" : normalizedRaw
+        if Self.ocrPresetModels.contains(normalized) {
+            openAIOcrModelSelection = normalized
+            openAIOcrModelCustom = ""
+            return
+        }
+        openAIOcrModelSelection = Self.ocrCustomSelection
+        openAIOcrModelCustom = normalized
     }
 
     private func hpcScopeText(_ hpc: HPCStatus) -> String {

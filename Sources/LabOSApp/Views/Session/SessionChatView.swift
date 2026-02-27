@@ -1624,7 +1624,7 @@ struct SessionChatView: View {
 
             Spacer()
 
-            Button("Results") {
+            Button("Workspace") {
                 store.openResults()
             }
             .buttonStyle(.bordered)

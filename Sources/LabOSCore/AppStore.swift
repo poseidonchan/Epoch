@@ -17,6 +17,7 @@ public final class AppStore: ObservableObject {
         static let runCompletionNotificationsEnabled = "LabOS.notifications.runCompletion.enabled"
         static let openAIVoiceTranscriptionModel = "LabOS.openai.voice.transcriptionModel"
         static let openAIVoiceTranscriptionPrompt = "LabOS.openai.voice.transcriptionPrompt"
+        static let openAIOcrModel = "LabOS.openai.ocr.model"
         static let codexPromptDraftPrefix = "LabOS.codexPromptDraft"
         static let codexTrajectoryDurations = "LabOS.codexTrajectoryDurations"
         static let codexQueuedInputPrefix = "LabOS.codexQueuedInput"
@@ -113,6 +114,7 @@ public final class AppStore: ObservableObject {
     @Published public internal(set) var projects: [Project] = []
     @Published public internal(set) var sessionsByProject: [UUID: [Session]] = [:]
     @Published public internal(set) var artifactsByProject: [UUID: [Artifact]] = [:]
+    @Published public internal(set) var workspaceEntriesByProject: [UUID: [WorkspaceEntry]] = [:]
     @Published public internal(set) var runsByProject: [UUID: [RunRecord]] = [:]
     @Published public internal(set) var messagesBySession: [UUID: [ChatMessage]] = [:]
     @Published public internal(set) var codexItemsBySession: [UUID: [CodexThreadItem]] = [:]
@@ -189,7 +191,9 @@ public final class AppStore: ObservableObject {
     @Published public internal(set) var latestPendingUserInputSignal: PendingUserInputSignal?
     @Published public internal(set) var openAIVoiceTranscriptionModel: OpenAIVoiceTranscriptionModel = .gpt4oMiniTranscribe
     @Published public internal(set) var openAIVoiceTranscriptionPrompt: String = OpenAIVoiceSettings.defaultTranscriptionPrompt
+    @Published public internal(set) var openAIOcrModel: String = "gpt-5.2"
     @Published public internal(set) var openAIAPIKeyConfigured = false
+    @Published public internal(set) var openAIHubSettingsStatus: OpenAIHubSettingsStatus?
 
     // MARK: - Internal Services (initialized in init)
     internal var composerService: ComposerService!
@@ -221,6 +225,8 @@ public final class AppStore: ObservableObject {
     }
     internal var artifactContentCache: [String: String] = [:]
     internal var artifactDataCache: [String: Data] = [:]
+    internal var workspaceContentCache: [String: String] = [:]
+    internal var workspaceDataCache: [String: Data] = [:]
     internal let backend: BackendClient
     internal let defaults: UserDefaults
     internal let openAIAPIKeyStore: OpenAIAPIKeyStoring
@@ -392,6 +398,9 @@ public final class AppStore: ObservableObject {
         openAIVoiceTranscriptionPrompt = (rawPrompt?.isEmpty == false)
             ? rawPrompt!
             : OpenAIVoiceSettings.defaultTranscriptionPrompt
+        let rawOcrModel = defaults.string(forKey: DefaultsKey.openAIOcrModel)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        openAIOcrModel = (rawOcrModel?.isEmpty == false) ? rawOcrModel! : "gpt-5.2"
 
         openAIAPIKeyConfigured = openAIAPIKeyStore.loadAPIKey() != nil
     }
@@ -450,7 +459,8 @@ public final class AppStore: ObservableObject {
     public func saveOpenAIVoiceSettings(
         apiKey: String?,
         transcriptionModel: OpenAIVoiceTranscriptionModel,
-        transcriptionPrompt: String
+        transcriptionPrompt: String,
+        ocrModel: String? = nil
     ) {
         openAIVoiceTranscriptionModel = transcriptionModel
         defaults.set(transcriptionModel.rawValue, forKey: DefaultsKey.openAIVoiceTranscriptionModel)
@@ -459,10 +469,35 @@ public final class AppStore: ObservableObject {
         let normalizedPrompt = trimmedPrompt.isEmpty ? OpenAIVoiceSettings.defaultTranscriptionPrompt : trimmedPrompt
         openAIVoiceTranscriptionPrompt = normalizedPrompt
         defaults.set(normalizedPrompt, forKey: DefaultsKey.openAIVoiceTranscriptionPrompt)
+        let normalizedOcrModel = ocrModel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let normalizedOcrModel, !normalizedOcrModel.isEmpty {
+            openAIOcrModel = normalizedOcrModel
+            defaults.set(normalizedOcrModel, forKey: DefaultsKey.openAIOcrModel)
+        } else if ocrModel != nil {
+            openAIOcrModel = "gpt-5.2"
+            defaults.set("gpt-5.2", forKey: DefaultsKey.openAIOcrModel)
+        }
 
         let trimmedKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let shouldSyncOcrModel = (ocrModel != nil)
+        let requestedOcrModel = shouldSyncOcrModel ? openAIOcrModel : nil
         if !trimmedKey.isEmpty {
             _ = openAIAPIKeyStore.saveAPIKey(trimmedKey)
+            composerService.syncOpenAISettingsToGateway(
+                apiKey: trimmedKey,
+                clear: false,
+                ocrModel: requestedOcrModel,
+                setOcrModel: shouldSyncOcrModel
+            )
+        } else if shouldSyncOcrModel {
+            composerService.syncOpenAISettingsToGateway(
+                apiKey: nil,
+                clear: false,
+                ocrModel: requestedOcrModel,
+                setOcrModel: true
+            )
+        } else {
+            composerService.refreshOpenAISettingsFromGateway()
         }
         openAIAPIKeyConfigured = openAIAPIKeyStore.loadAPIKey() != nil
     }
@@ -470,6 +505,7 @@ public final class AppStore: ObservableObject {
     public func clearOpenAIAPIKey() {
         _ = openAIAPIKeyStore.deleteAPIKey()
         openAIAPIKeyConfigured = false
+        composerService.syncOpenAISettingsToGateway(apiKey: nil, clear: true)
     }
 
     public func transcribeOpenAIAudio(fileURL: URL) async throws -> String {
@@ -550,6 +586,7 @@ public final class AppStore: ObservableObject {
             lastGatewayErrorMessage = nil
             await composerService.refreshModelsFromGateway()
             composerService.pushHpcPreferencesToGateway()
+            composerService.refreshOpenAISettingsFromGateway()
             startGatewayEventLoop()
             startResourcePolling()
             startHomeRunsPolling()
@@ -611,6 +648,7 @@ public final class AppStore: ObservableObject {
             self.startHomeRunsPolling()
             await self.composerService.refreshModelsFromGateway()
             self.composerService.pushHpcPreferencesToGateway()
+            self.composerService.refreshOpenAISettingsFromGateway()
 
             self.lastGatewayErrorMessage = nil
             return self.isGatewayConnected
@@ -2609,6 +2647,13 @@ public final class AppStore: ObservableObject {
         case let .artifactsUpdated(projectID, artifact, change: _):
             upsertArtifact(projectID: projectID, artifact: artifact)
 
+        case let .settingsOpenAIUpdated(payload):
+            openAIHubSettingsStatus = payload
+            if let ocrModel = payload.ocrModel?.trimmingCharacters(in: .whitespacesAndNewlines), !ocrModel.isEmpty {
+                openAIOcrModel = ocrModel
+                defaults.set(ocrModel, forKey: DefaultsKey.openAIOcrModel)
+            }
+
         case let .lifecycle(payload):
             chatService.applyLifecycle(payload)
         }
@@ -2839,6 +2884,22 @@ public final class AppStore: ObservableObject {
 
     public func generatedArtifacts(for projectID: UUID) -> [Artifact] {
         projectService.generatedArtifacts(for: projectID)
+    }
+
+    public func workspaceEntries(for projectID: UUID) -> [WorkspaceEntry] {
+        projectService.workspaceEntries(for: projectID)
+    }
+
+    public func refreshWorkspace(projectID: UUID, includeHidden: Bool = false) async {
+        await projectService.refreshWorkspace(projectID: projectID, includeHidden: includeHidden)
+    }
+
+    public func fetchWorkspaceContent(projectID: UUID, path: String) async -> String {
+        await projectService.fetchWorkspaceContent(projectID: projectID, path: path)
+    }
+
+    public func fetchWorkspaceData(projectID: UUID, path: String) async -> Data? {
+        await projectService.fetchWorkspaceData(projectID: projectID, path: path)
     }
 
     public func runs(for projectID: UUID) -> [RunRecord] {
@@ -3979,6 +4040,11 @@ public final class AppStore: ObservableObject {
         rightPanelTab = .artifacts
         isLeftPanelOpen = false
         isRightPanelOpen = true
+        if let activeProjectID {
+            Task { [weak self] in
+                await self?.refreshWorkspace(projectID: activeProjectID)
+            }
+        }
     }
 
     public func openResults(tab: ResultsTab) {

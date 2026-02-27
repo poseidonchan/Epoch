@@ -917,7 +917,7 @@ struct ProjectPageView: View {
 
             Spacer(minLength: 0)
 
-            Button("Results") {
+            Button("Workspace") {
                 store.openResults()
             }
             .buttonStyle(.bordered)

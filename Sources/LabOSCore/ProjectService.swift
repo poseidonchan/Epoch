@@ -218,6 +218,7 @@ internal final class ProjectService {
         store.projects.removeAll { $0.id == projectID }
         store.sessionsByProject[projectID] = nil
         store.artifactsByProject[projectID] = nil
+        store.workspaceEntriesByProject[projectID] = nil
         store.runsByProject[projectID] = nil
 
         for sessionID in removedSessionIDs {
@@ -267,6 +268,9 @@ internal final class ProjectService {
             store.selectedArtifactPath = nil
             store.selectedRunID = nil
         }
+
+        store.workspaceContentCache = store.workspaceContentCache.filter { !$0.key.hasPrefix("\(projectID.uuidString)::") }
+        store.workspaceDataCache = store.workspaceDataCache.filter { !$0.key.hasPrefix("\(projectID.uuidString)::") }
     }
 
     func refreshProjectsFromGateway() async {
@@ -282,6 +286,7 @@ internal final class ProjectService {
 
             store.sessionsByProject = store.sessionsByProject.filter { projectIDs.contains($0.key) }
             store.artifactsByProject = store.artifactsByProject.filter { projectIDs.contains($0.key) }
+            store.workspaceEntriesByProject = store.workspaceEntriesByProject.filter { projectIDs.contains($0.key) }
             store.runsByProject = store.runsByProject.filter { projectIDs.contains($0.key) }
             for (prefetchProjectID, task) in store.chatService.sessionHistoryPrefetchTasksByProject where !projectIDs.contains(prefetchProjectID) {
                 task.cancel()
@@ -313,6 +318,7 @@ internal final class ProjectService {
 
             store.sessionsByProject = store.sessionsByProject.filter { projectIDs.contains($0.key) }
             store.artifactsByProject = store.artifactsByProject.filter { projectIDs.contains($0.key) }
+            store.workspaceEntriesByProject = store.workspaceEntriesByProject.filter { projectIDs.contains($0.key) }
             store.runsByProject = store.runsByProject.filter { projectIDs.contains($0.key) }
             for (prefetchProjectID, task) in store.chatService.sessionHistoryPrefetchTasksByProject where !projectIDs.contains(prefetchProjectID) {
                 task.cancel()
@@ -943,6 +949,35 @@ internal final class ProjectService {
         }
     }
 
+    func refreshWorkspace(projectID: UUID, includeHidden: Bool = false) async {
+        guard let gatewayClient = store.gatewayClient else { return }
+
+        struct WorkspaceListParams: Codable, Sendable {
+            var projectId: String
+            var path: String
+            var recursive: Bool
+            var includeHidden: Bool
+            var limit: Int
+        }
+
+        do {
+            let response = try await gatewayClient.request(
+                method: "workspace.list",
+                params: WorkspaceListParams(
+                    projectId: AppStore.gatewayID(projectID),
+                    path: ".",
+                    recursive: true,
+                    includeHidden: includeHidden,
+                    limit: 10_000
+                )
+            )
+            let entries: [WorkspaceEntry] = try store.decodeGatewayPayload(response.payload, key: "entries")
+            store.workspaceEntriesByProject[projectID] = entries.sorted { $0.path < $1.path }
+        } catch {
+            store.lastGatewayErrorMessage = error.localizedDescription
+        }
+    }
+
     // MARK: - Artifact management
 
     func uploadProjectFiles(projectID: UUID, files: [AppStore.ProjectUploadFile], createdBySessionID: UUID?) async {
@@ -1069,6 +1104,39 @@ internal final class ProjectService {
         let key = "\(projectID.uuidString)::\(path)"
         if let cached = store.artifactContentCache[key] { return cached }
 
+        if !path.lowercased().hasPrefix("uploads/"),
+           store.isGatewayConnected,
+           let gatewayClient = store.gatewayClient {
+            struct WorkspaceContentParams: Codable, Sendable {
+                var projectId: String
+                var path: String
+                var offset: Int?
+                var length: Int?
+            }
+            struct WorkspaceContentPayload: Codable, Sendable {
+                var path: String
+                var data: String
+                var eof: Bool
+                var encoding: String
+            }
+            do {
+                let response = try await gatewayClient.request(
+                    method: "workspace.content",
+                    params: WorkspaceContentParams(
+                        projectId: AppStore.gatewayID(projectID),
+                        path: path,
+                        offset: nil,
+                        length: nil
+                    )
+                )
+                let payload: WorkspaceContentPayload = try store.decodeGatewayPayloadObject(response.payload)
+                store.artifactContentCache[key] = payload.data
+                return payload.data
+            } catch {
+                // Fall through to legacy artifact endpoints.
+            }
+        }
+
         if store.isGatewayConnected, let base = store.gatewayHTTPBaseURL() {
             var components = URLComponents(
                 url: base.appendingPathComponent("projects/\(projectID.uuidString)/artifacts/content"),
@@ -1094,6 +1162,36 @@ internal final class ProjectService {
     func fetchArtifactData(projectID: UUID, path: String) async -> Data? {
         let key = "\(projectID.uuidString)::\(path)"
         if let cached = store.artifactDataCache[key] { return cached }
+
+        if !path.lowercased().hasPrefix("uploads/"),
+           store.isGatewayConnected,
+           let gatewayClient = store.gatewayClient {
+            struct WorkspaceRawParams: Codable, Sendable {
+                var projectId: String
+                var path: String
+            }
+            struct WorkspaceRawPayload: Codable, Sendable {
+                var path: String
+                var data: String
+                var encoding: String
+                var sizeBytes: Int?
+                var eof: Bool?
+            }
+            do {
+                let response = try await gatewayClient.request(
+                    method: "workspace.raw",
+                    params: WorkspaceRawParams(projectId: AppStore.gatewayID(projectID), path: path)
+                )
+                let payload: WorkspaceRawPayload = try store.decodeGatewayPayloadObject(response.payload)
+                if payload.encoding.lowercased() == "base64",
+                   let decoded = Data(base64Encoded: payload.data) {
+                    store.artifactDataCache[key] = decoded
+                    return decoded
+                }
+            } catch {
+                // Fall through to legacy artifact endpoints.
+            }
+        }
 
         guard store.isGatewayConnected, let base = store.gatewayHTTPBaseURL() else { return nil }
 
@@ -1211,6 +1309,77 @@ internal final class ProjectService {
 
     func generatedArtifacts(for projectID: UUID) -> [Artifact] {
         artifacts(for: projectID).filter { $0.origin == .generated }
+    }
+
+    func workspaceEntries(for projectID: UUID) -> [WorkspaceEntry] {
+        (store.workspaceEntriesByProject[projectID] ?? []).sorted { $0.path < $1.path }
+    }
+
+    func fetchWorkspaceContent(projectID: UUID, path: String) async -> String {
+        let key = "\(projectID.uuidString)::\(path)"
+        if let cached = store.workspaceContentCache[key] { return cached }
+
+        guard store.isGatewayConnected, let gatewayClient = store.gatewayClient else { return "" }
+
+        struct WorkspaceContentParams: Codable, Sendable {
+            var projectId: String
+            var path: String
+        }
+        struct WorkspaceContentPayload: Codable, Sendable {
+            var path: String
+            var data: String
+            var eof: Bool
+            var encoding: String
+        }
+
+        do {
+            let response = try await gatewayClient.request(
+                method: "workspace.content",
+                params: WorkspaceContentParams(projectId: AppStore.gatewayID(projectID), path: path)
+            )
+            let payload: WorkspaceContentPayload = try store.decodeGatewayPayloadObject(response.payload)
+            store.workspaceContentCache[key] = payload.data
+            return payload.data
+        } catch {
+            store.lastGatewayErrorMessage = error.localizedDescription
+            return ""
+        }
+    }
+
+    func fetchWorkspaceData(projectID: UUID, path: String) async -> Data? {
+        let key = "\(projectID.uuidString)::\(path)"
+        if let cached = store.workspaceDataCache[key] { return cached }
+
+        guard store.isGatewayConnected, let gatewayClient = store.gatewayClient else { return nil }
+
+        struct WorkspaceRawParams: Codable, Sendable {
+            var projectId: String
+            var path: String
+        }
+        struct WorkspaceRawPayload: Codable, Sendable {
+            var path: String
+            var data: String
+            var encoding: String
+            var sizeBytes: Int?
+            var eof: Bool?
+        }
+
+        do {
+            let response = try await gatewayClient.request(
+                method: "workspace.raw",
+                params: WorkspaceRawParams(projectId: AppStore.gatewayID(projectID), path: path)
+            )
+            let payload: WorkspaceRawPayload = try store.decodeGatewayPayloadObject(response.payload)
+            guard payload.encoding.lowercased() == "base64",
+                  let data = Data(base64Encoded: payload.data) else {
+                return nil
+            }
+            store.workspaceDataCache[key] = data
+            return data
+        } catch {
+            store.lastGatewayErrorMessage = error.localizedDescription
+            return nil
+        }
     }
 
     func runs(for projectID: UUID) -> [RunRecord] {

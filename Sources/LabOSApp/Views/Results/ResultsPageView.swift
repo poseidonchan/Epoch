@@ -19,7 +19,7 @@ struct ResultsPageView: View {
                     )
                 }
             }
-            .navigationTitle("Results")
+            .navigationTitle("Workspace")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
