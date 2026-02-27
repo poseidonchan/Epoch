@@ -72,7 +72,9 @@ export async function handleTurnStart(
   const planMode = normalizePlanMode(params.planMode);
   const approvalPolicyOverride = normalizeNonEmptyString(params.approvalPolicy);
   const input = await normalizeUserInputList(ctx.repository, threadRecord.projectId, threadId, params.input);
-  let engineInput = await buildTurnInputWithProjectContext(ctx.repository, threadRecord.projectId, input);
+  let projectContext = await buildTurnInputWithProjectContext(ctx.repository, threadRecord.projectId, input);
+  let engineInput = projectContext.input;
+  let projectContextDeveloperInstructions = projectContext.developerInstructions;
   if (threadRecord.engine !== "codex-app-server") {
     await ctx.repository.updateThread({
       id: threadId,
@@ -220,7 +222,9 @@ export async function handleTurnStart(
       modelProvider: effectiveModelProvider,
     };
     historyTurns = (await ctx.repository.readThread(threadId, true))?.turns ?? historyTurns;
-    engineInput = await buildTurnInputWithProjectContext(ctx.repository, threadRecord?.projectId ?? null, input);
+    projectContext = await buildTurnInputWithProjectContext(ctx.repository, threadRecord?.projectId ?? null, input);
+    engineInput = projectContext.input;
+    projectContextDeveloperInstructions = projectContext.developerInstructions;
     engine = await ctx.engines.getEngine("codex-app-server");
   };
 
@@ -232,15 +236,18 @@ export async function handleTurnStart(
     await repairCodexThreadMapping();
   }
 
-  if (shouldInjectHistoryFallbackContext) {
-    engineInput = injectHistoryFallbackContext(engineInput, historyTurns);
-  }
+  const historyFallbackDeveloperInstructions = shouldInjectHistoryFallbackContext
+    ? injectHistoryFallbackContext(engineInput, historyTurns)
+    : null;
+  const contextDeveloperInstructions = [projectContextDeveloperInstructions, historyFallbackDeveloperInstructions]
+    .filter((value): value is string => Boolean(value && value.trim()))
+    .join("\n\n");
 
   const provisionalTurnId = `turn_${uuidv4()}`;
   let started: EngineStartTurnResult;
   const providerDefaults = resolveHubProvider(null);
   const effectiveModel = modelOverride ?? settings.model ?? providerDefaults.defaultModelId ?? null;
-  const collaborationMode = buildCollaborationMode(planMode, effectiveModel);
+  const collaborationMode = buildCollaborationMode(planMode, effectiveModel, contextDeveloperInstructions);
   try {
     started = await engine.startTurn({
       threadId,
@@ -259,12 +266,22 @@ export async function handleTurnStart(
     }
 
     await repairCodexThreadMapping();
-    if (shouldInjectHistoryFallbackContext) {
-      engineInput = injectHistoryFallbackContext(engineInput, historyTurns);
-    }
+    const repairedHistoryFallbackDeveloperInstructions = shouldInjectHistoryFallbackContext
+      ? injectHistoryFallbackContext(engineInput, historyTurns)
+      : null;
+    const repairedContextDeveloperInstructions = [
+      projectContextDeveloperInstructions,
+      repairedHistoryFallbackDeveloperInstructions,
+    ]
+      .filter((value): value is string => Boolean(value && value.trim()))
+      .join("\n\n");
     const repairedProviderDefaults = resolveHubProvider(null);
     const repairedEffectiveModel = modelOverride ?? settings.model ?? repairedProviderDefaults.defaultModelId ?? null;
-    const repairedCollaborationMode = buildCollaborationMode(planMode, repairedEffectiveModel);
+    const repairedCollaborationMode = buildCollaborationMode(
+      planMode,
+      repairedEffectiveModel,
+      repairedContextDeveloperInstructions
+    );
     started = await engine.startTurn({
       threadId,
       turnId: provisionalTurnId,
@@ -370,9 +387,20 @@ const PROJECT_CONTEXT_MARKER = "[LABOS_PROJECT_CONTEXT]";
 const MAX_SNIPPET_CHARS = 2_200;
 const HISTORY_FALLBACK_MARKER = "[LABOS_SESSION_HISTORY_FALLBACK]";
 const MAX_HISTORY_FALLBACK_CHARS = 9_000;
+const MAX_CONTEXT_DEVELOPER_INSTRUCTIONS_CHARS = 16_000;
 
-async function buildTurnInputWithProjectContext(repository: CodexRepository, projectId: string | null, input: UserInput[]): Promise<UserInput[]> {
-  if (!projectId || !input.length) return input;
+type TurnInputWithProjectContext = {
+  input: UserInput[];
+  developerInstructions: string | null;
+};
+
+async function buildTurnInputWithProjectContext(
+  repository: CodexRepository,
+  projectId: string | null,
+  input: UserInput[]
+): Promise<TurnInputWithProjectContext> {
+  const clonedInput = input.map((part) => ({ ...part }));
+  if (!projectId || !input.length) return { input: clonedInput, developerInstructions: null };
 
   const promptText = input
     .map((part) => (part.type === "text" ? part.text : ""))
@@ -380,7 +408,7 @@ async function buildTurnInputWithProjectContext(repository: CodexRepository, pro
     .join("\n")
     .trim();
 
-  if (!promptText) return input;
+  if (!promptText) return { input: clonedInput, developerInstructions: null };
 
   const hasAgentsMarker = promptText.includes(AGENTS_CONTEXT_MARKER);
   const hasProjectMarker = promptText.includes(PROJECT_CONTEXT_MARKER);
@@ -411,9 +439,7 @@ async function buildTurnInputWithProjectContext(repository: CodexRepository, pro
       })
     : [];
 
-  if (!agentsContent && snippets.length === 0) {
-    return input;
-  }
+  if (!agentsContent && snippets.length === 0) return { input: clonedInput, developerInstructions: null };
 
   const contextParts: string[] = [];
   if (agentsContent) {
@@ -426,25 +452,11 @@ ${agentsContent}`);
 Use these indexed project snippets as additional context:
 ${snippets.join("\n\n")}`);
   }
-  const contextBlock = contextParts.join("\n\n");
-
-  const next = input.map((part) => ({ ...part }));
-  const firstTextIndex = next.findIndex((part) => part.type === "text");
-  if (firstTextIndex >= 0) {
-    const firstText = next[firstTextIndex] as Extract<UserInput, { type: "text" }>;
-    next[firstTextIndex] = {
-      ...firstText,
-      text: `${contextBlock}\n\nUser request:\n${firstText.text}`,
-    };
-  } else {
-    next.unshift({
-      type: "text",
-      text: `${contextBlock}\n\nUser request:\n${promptText}`,
-      text_elements: [],
-    });
-  }
-
-  return next;
+  const contextBlock = contextParts.join("\n\n").trim();
+  return {
+    input: clonedInput,
+    developerInstructions: contextBlock || null,
+  };
 }
 
 async function readAgentsBootstrapFile(repository: CodexRepository, projectId: string): Promise<string> {
@@ -466,37 +478,22 @@ function resolveRepositoryStateDirectory(repository: CodexRepository): string | 
   return typeof value === "string" && value.trim() ? value : null;
 }
 
-function injectHistoryFallbackContext(input: UserInput[], turns: Turn[]): UserInput[] {
-  if (!input.length || turns.length === 0) return input;
+function injectHistoryFallbackContext(input: UserInput[], turns: Turn[]): string | null {
+  if (!input.length || turns.length === 0) return null;
+
+  const promptText = input
+    .map((part) => (part.type === "text" ? part.text : ""))
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  if (promptText.includes(HISTORY_FALLBACK_MARKER)) return null;
 
   const transcript = buildHistoryFallbackTranscript(turns);
-  if (!transcript) return input;
+  if (!transcript) return null;
 
-  const contextBlock = `${HISTORY_FALLBACK_MARKER}
+  return `${HISTORY_FALLBACK_MARKER}
 Remote thread history hydration failed. Use this conversation transcript context:
-${transcript}`;
-
-  const next = input.map((part) => ({ ...part }));
-  const firstTextIndex = next.findIndex((part) => part.type === "text");
-  if (firstTextIndex >= 0) {
-    const part = next[firstTextIndex] as Extract<UserInput, { type: "text" }>;
-    const existingText = String(part.text ?? "");
-    if (existingText.includes(HISTORY_FALLBACK_MARKER)) {
-      return next;
-    }
-    next[firstTextIndex] = {
-      ...part,
-      text: `${contextBlock}\n\nUser request:\n${existingText}`,
-    };
-    return next;
-  }
-
-  next.unshift({
-    type: "text",
-    text: `${contextBlock}\n\nUser request:\n`,
-    text_elements: [],
-  });
-  return next;
+${transcript}`.trim();
 }
 
 function buildHistoryFallbackTranscript(turns: Turn[]): string {
@@ -796,7 +793,8 @@ function normalizePlanMode(raw: unknown): boolean {
 
 function buildCollaborationMode(
   planMode: boolean,
-  model: string | null
+  model: string | null,
+  contextDeveloperInstructions?: string | null
 ): {
   mode: "plan" | "default";
   settings: {
@@ -807,13 +805,20 @@ function buildCollaborationMode(
 } | null {
   const normalizedModel = normalizeNonEmptyString(model);
   if (!normalizedModel) return null;
-  const developerInstructions = planMode ? PLAN_MODE_DEVELOPER_INSTRUCTIONS : null;
+  const instructionsParts = [
+    planMode ? PLAN_MODE_DEVELOPER_INSTRUCTIONS : null,
+    normalizeNonEmptyString(contextDeveloperInstructions),
+  ].filter((part): part is string => Boolean(part && part.trim()));
+  const developerInstructions = instructionsParts.join("\n\n").trim();
+  const clippedDeveloperInstructions = developerInstructions
+    ? developerInstructions.slice(0, MAX_CONTEXT_DEVELOPER_INSTRUCTIONS_CHARS)
+    : null;
   return {
     mode: planMode ? "plan" : "default",
     settings: {
       model: normalizedModel,
       reasoning_effort: null,
-      developer_instructions: developerInstructions,
+      developer_instructions: clippedDeveloperInstructions,
     },
   };
 }

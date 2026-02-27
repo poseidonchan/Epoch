@@ -224,11 +224,14 @@ test("handleTurnStart injects indexed project snippets into turn input", async (
     );
 
     assert.ok(capturedStartArgs);
+    assert.equal(capturedStartArgs.input.length, 1);
     const firstText = capturedStartArgs.input.find((part) => part.type === "text")?.text ?? "";
-    assert.ok(firstText.includes("[LABOS_PROJECT_CONTEXT]"));
-    assert.ok(firstText.includes("uploads/experiment-notes.txt#0"));
-    assert.ok(firstText.includes("RED-PLANT-8842"));
-    assert.ok(firstText.includes("User request:"));
+    assert.equal(firstText, "What is the launch code in the uploaded experiment notes?");
+    const developerInstructions = capturedStartArgs.collaborationMode?.settings?.developer_instructions ?? "";
+    assert.ok(developerInstructions.includes("[LABOS_PROJECT_CONTEXT]"));
+    assert.ok(developerInstructions.includes("uploads/experiment-notes.txt#0"));
+    assert.ok(developerInstructions.includes("RED-PLANT-8842"));
+    assert.equal(developerInstructions.includes("User request:"), false);
   } finally {
     if (originalApiKey == null) {
       delete process.env.OPENAI_API_KEY;
@@ -236,6 +239,127 @@ test("handleTurnStart injects indexed project snippets into turn input", async (
       process.env.OPENAI_API_KEY = originalApiKey;
     }
   }
+});
+
+test("handleTurnStart sends history fallback context via developer instructions only", async () => {
+  const threadId = "123e4567-e89b-12d3-a456-426614174155";
+  const thread = {
+    id: threadId,
+    preview: "continue",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 1,
+    path: null,
+    cwd: "/tmp/project",
+    cliVersion: "@labos/hub/0.1.0",
+    source: "appServer",
+    gitInfo: null,
+    turns: [
+      {
+        id: "turn_prev",
+        status: "completed",
+        error: null,
+        items: [
+          {
+            type: "userMessage",
+            id: "item_user_prev",
+            content: [{ type: "text", text: "prior request", text_elements: [] }],
+          },
+          {
+            type: "agentMessage",
+            id: "item_agent_prev",
+            text: "prior answer",
+          },
+        ],
+      },
+    ],
+  };
+
+  let capturedStartArgs = null;
+
+  const repository = {
+    async query() {
+      return [];
+    },
+    async getThreadRecord(id) {
+      assert.equal(id, threadId);
+      return {
+        id: threadId,
+        projectId: "proj_1",
+        cwd: "/tmp/project",
+        modelProvider: "openai",
+        modelId: "gpt-5.3-codex",
+        preview: "continue",
+        createdAt: 1,
+        updatedAt: 1,
+        archived: false,
+        statusJson: JSON.stringify({
+          modelProvider: "openai",
+          model: "gpt-5.3-codex",
+          cwd: "/tmp/project",
+          approvalPolicy: "on-request",
+          sandbox: { mode: "workspace-write" },
+          reasoningEffort: null,
+          syncState: "needsRemoteHydration",
+        }),
+        engine: "codex-app-server",
+      };
+    },
+    async readThread(id) {
+      assert.equal(id, threadId);
+      return JSON.parse(JSON.stringify(thread));
+    },
+    async updateThread() {},
+    async createTurn() {},
+    async upsertItem() {},
+    async findSessionByThread() {
+      return null;
+    },
+    async assignThreadToSession() {},
+  };
+
+  const engines = {
+    async getEngine(name) {
+      assert.equal(name, "codex-app-server");
+      return {
+        async threadStart() {
+          return { thread };
+        },
+        async startTurn(args) {
+          capturedStartArgs = args;
+          return {
+            turn: {
+              id: args.turnId,
+              items: [],
+              status: "inProgress",
+              error: null,
+            },
+            events: emptyEvents(),
+          };
+        },
+      };
+    },
+  };
+
+  await handleTurnStart(
+    {
+      repository,
+      engines,
+    },
+    {
+      threadId,
+      input: [{ type: "text", text: "continue" }],
+    }
+  );
+
+  assert.ok(capturedStartArgs);
+  const firstText = capturedStartArgs.input.find((part) => part.type === "text")?.text ?? "";
+  assert.equal(firstText, "continue");
+  const developerInstructions = capturedStartArgs.collaborationMode?.settings?.developer_instructions ?? "";
+  assert.ok(developerInstructions.includes("[LABOS_SESSION_HISTORY_FALLBACK]"));
+  assert.ok(developerInstructions.includes("User: prior request"));
+  assert.ok(developerInstructions.includes("Assistant: prior answer"));
+  assert.equal(developerInstructions.includes("User request:"), false);
 });
 
 test("handleTurnStart still forwards collaborationMode when stored model is missing", async () => {

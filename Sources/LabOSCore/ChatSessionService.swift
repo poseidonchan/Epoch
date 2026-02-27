@@ -1532,7 +1532,7 @@ internal final class ChatSessionService {
                 }
                 store.codexThreadBySession[sessionID] = thread.id
                 store.codexSessionByThread[thread.id] = sessionID
-                let fetchedItems = Self.flattenCodexTurns(thread.turns)
+                let fetchedItems = AppStore.sanitizeCodexItemsForDisplay(Self.flattenCodexTurns(thread.turns))
                 let existingItems = store.codexItemsBySession[sessionID] ?? []
                 let latestTurnStatus = thread.turns.last?.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 let fetchedTurnInProgress = latestTurnStatus == "inprogress" || latestTurnStatus == "in_progress"
@@ -1857,7 +1857,7 @@ internal final class ChatSessionService {
             switch item {
             case let .userMessage(user):
                 if !user.content.isEmpty {
-                    mostRecentUserInput = user.content
+                    mostRecentUserInput = AppStore.sanitizeCodexUserContentForDisplay(user.content)
                 }
             case let .agentMessage(agent):
                 if agent.id.trimmingCharacters(in: .whitespacesAndNewlines) == assistantItemID,
@@ -1877,7 +1877,7 @@ internal final class ChatSessionService {
         for turn in priorTurns.reversed() {
             for item in turn.items.reversed() {
                 if case let .userMessage(user) = item, !user.content.isEmpty {
-                    return user.content
+                    return AppStore.sanitizeCodexUserContentForDisplay(user.content)
                 }
             }
         }
@@ -1887,7 +1887,7 @@ internal final class ChatSessionService {
 
     private static func codexTurnInputParts(from inputs: [CodexUserInput]) -> [CodexTurnInputPart] {
         var parts: [CodexTurnInputPart] = []
-        for input in inputs {
+        for input in AppStore.sanitizeCodexUserContentForDisplay(inputs) {
             let type = input.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             switch type {
             case "text":

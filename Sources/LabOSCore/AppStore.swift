@@ -1437,15 +1437,16 @@ public final class AppStore: ObservableObject {
         guard let itemData = try? gatewayJSONEncoder.encode(itemValue),
               let item = try? gatewayJSONDecoder.decode(CodexThreadItem.self, from: itemData)
         else { return }
+        let sanitizedItem = Self.sanitizeCodexThreadItemForDisplay(item)
 
-        if case let .commandExecution(command) = item {
+        if case let .commandExecution(command) = sanitizedItem {
             trackCodexNoResultCommand(sessionID: sessionID, command: command, now: .now)
         }
 
         let existing = codexItemsBySession[sessionID] ?? []
         if let threadId,
            let turnId,
-           case let .userMessage(incomingUser) = item {
+           case let .userMessage(incomingUser) = sanitizedItem {
             let key = "\(threadId)|\(turnId)"
             if codexFirstUserMessageIDByScopedBackendTurn[key] == nil {
                 codexFirstUserMessageIDByScopedBackendTurn[key] = incomingUser.id
@@ -1460,16 +1461,16 @@ public final class AppStore: ObservableObject {
                 codexPendingDurationMsByScopedBackendTurn[key] = nil
             }
         }
-        if case let .userMessage(incomingUser) = item,
+        if case let .userMessage(incomingUser) = sanitizedItem,
            let localEchoID = Self.matchingLocalEchoUserItemID(for: incomingUser, in: existing) {
             migrateCodexTrajectoryStartedAtIfNeeded(sessionID: sessionID, fromTurnID: localEchoID, toTurnID: incomingUser.id)
             migrateCodexTrajectoryDurationIfNeeded(sessionID: sessionID, fromTurnID: localEchoID, toTurnID: incomingUser.id)
         }
         codexItemsBySession[sessionID] = Self.upsertCodexItemPreservingLocalEchoes(
             items: existing,
-            incoming: item
+            incoming: sanitizedItem
         )
-        if case let .imageView(imageItem) = item {
+        if case let .imageView(imageItem) = sanitizedItem {
             stageCodexImageForDisplay(sessionID: sessionID, rawPath: imageItem.path)
         }
     }
@@ -1528,8 +1529,9 @@ public final class AppStore: ObservableObject {
         incoming: CodexThreadItem
     ) -> [CodexThreadItem] {
         var next = items
+        let sanitizedIncoming = sanitizeCodexThreadItemForDisplay(incoming)
 
-        if case let .userMessage(incomingUser) = incoming {
+        if case let .userMessage(incomingUser) = sanitizedIncoming {
             let incomingSignature = codexUserContentSignature(incomingUser.content)
             if !incomingSignature.isEmpty,
                let localEchoIndex = next.firstIndex(where: { item in
@@ -1541,16 +1543,64 @@ public final class AppStore: ObservableObject {
             }
         }
 
-        if let existingIndex = next.firstIndex(where: { $0.id == incoming.id }) {
-            next[existingIndex] = incoming
+        if let existingIndex = next.firstIndex(where: { $0.id == sanitizedIncoming.id }) {
+            next[existingIndex] = sanitizedIncoming
         } else {
-            next.append(incoming)
+            next.append(sanitizedIncoming)
         }
         return next
     }
 
+    private static let codexInjectedContextMarkerPrefix = "[LABOS_"
+    private static let codexInjectedUserRequestDelimiter = "User request:"
+
+    static func sanitizeCodexItemsForDisplay(_ items: [CodexThreadItem]) -> [CodexThreadItem] {
+        items.map(sanitizeCodexThreadItemForDisplay)
+    }
+
+    static func sanitizeCodexThreadItemForDisplay(_ item: CodexThreadItem) -> CodexThreadItem {
+        guard case let .userMessage(user) = item else { return item }
+        let sanitizedContent = sanitizeCodexUserContentForDisplay(user.content)
+        guard sanitizedContent != user.content else { return item }
+        return .userMessage(
+            CodexUserMessageItem(
+                type: user.type,
+                id: user.id,
+                content: sanitizedContent
+            )
+        )
+    }
+
+    static func sanitizeCodexUserContentForDisplay(_ content: [CodexUserInput]) -> [CodexUserInput] {
+        content.map(sanitizeCodexUserInputForDisplay)
+    }
+
+    private static func sanitizeCodexUserInputForDisplay(_ input: CodexUserInput) -> CodexUserInput {
+        let type = input.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard type == "text",
+              let text = input.text,
+              let sanitizedText = extractCodexInjectedUserRequestText(text)
+        else {
+            return input
+        }
+        var next = input
+        next.text = sanitizedText
+        return next
+    }
+
+    private static func extractCodexInjectedUserRequestText(_ rawText: String) -> String? {
+        guard rawText.contains(codexInjectedContextMarkerPrefix) else { return nil }
+        guard let markerRange = rawText.range(
+            of: codexInjectedUserRequestDelimiter,
+            options: [.caseInsensitive, .backwards]
+        ) else { return nil }
+        let extracted = rawText[markerRange.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !extracted.isEmpty else { return nil }
+        return String(extracted)
+    }
+
     public static func codexUserContentSignature(_ content: [CodexUserInput]) -> String {
-        let signature = content
+        let signature = sanitizeCodexUserContentForDisplay(content)
             .map { input in
                 let type = input.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 let text = input.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
