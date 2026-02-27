@@ -11,6 +11,7 @@ struct ArtifactsBrowserView: View {
     @State private var searchText = ""
     @State private var includeHidden = false
     @State private var generatedOnly = false
+    @State private var currentDirectoryPath = "."
 
     @State private var selectedArtifact: Artifact?
     @State private var selectedContent = ""
@@ -27,55 +28,63 @@ struct ArtifactsBrowserView: View {
         Dictionary(uniqueKeysWithValues: store.artifacts(for: projectID).map { ($0.path, $0) })
     }
 
+    private var workspaceRefreshKey: String {
+        "\(projectID.uuidString)|\(normalizedDirectoryPath(currentDirectoryPath))|\(includeHidden)"
+    }
+
     private var visibleEntries: [WorkspaceEntry] {
         var entries = workspaceEntries
 
         if generatedOnly {
-            let generatedFiles = entries
-                .filter { $0.type == .file }
-                .filter { isGeneratedPath($0.path) }
-                .map(\.path)
-
-            let generatedSet = Set(generatedFiles)
-            var visibleDirs = Set<String>()
-            for filePath in generatedSet {
-                let components = filePath.split(separator: "/")
-                guard components.count > 1 else { continue }
-                var prefix = ""
-                for component in components.dropLast() {
-                    let value = String(component)
-                    prefix = prefix.isEmpty ? value : "\(prefix)/\(value)"
-                    visibleDirs.insert(prefix)
-                }
-            }
-
-            entries = entries.filter { entry in
-                if entry.type == .file {
-                    return generatedSet.contains(entry.path)
-                }
-                return visibleDirs.contains(entry.path)
-            }
+            entries = entries.filter { isGeneratedEntry($0) }
         }
 
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !query.isEmpty {
-            entries = entries.filter { $0.path.localizedCaseInsensitiveContains(query) }
+            entries = entries.filter { entry in
+                displayName(for: entry).localizedCaseInsensitiveContains(query)
+                    || entry.path.localizedCaseInsensitiveContains(query)
+            }
         }
 
-        return entries.sorted { $0.path < $1.path }
+        return entries.sorted { lhs, rhs in
+            if lhs.type != rhs.type {
+                return lhs.type == .dir
+            }
+            return displayName(for: lhs).localizedCaseInsensitiveCompare(displayName(for: rhs)) == .orderedAscending
+        }
+    }
+
+    private var directoryEntries: [WorkspaceEntry] {
+        visibleEntries.filter { $0.type == .dir }
     }
 
     private var fileEntries: [WorkspaceEntry] {
         visibleEntries.filter { $0.type == .file }
     }
 
-    private var sections: [WorkspaceSection] {
-        let grouped = Dictionary(grouping: visibleEntries) { entry in
-            entry.path.components(separatedBy: "/").first ?? "root"
+    private var allFileEntriesInCurrentDirectory: [WorkspaceEntry] {
+        workspaceEntries.filter { $0.type == .file }
+    }
+
+    private var breadcrumbSegments: [WorkspaceBreadcrumbSegment] {
+        let normalizedPath = normalizedDirectoryPath(currentDirectoryPath)
+        var segments: [WorkspaceBreadcrumbSegment] = [
+            WorkspaceBreadcrumbSegment(path: ".", title: "Workspace")
+        ]
+        guard normalizedPath != "." else { return segments }
+
+        var prefix = ""
+        for component in normalizedPath.split(separator: "/") {
+            let value = String(component)
+            prefix = prefix.isEmpty ? value : "\(prefix)/\(value)"
+            segments.append(WorkspaceBreadcrumbSegment(path: prefix, title: value))
         }
-        return grouped.keys.sorted().map { key in
-            WorkspaceSection(name: key, entries: grouped[key, default: []].sorted { $0.path < $1.path })
-        }
+        return segments
+    }
+
+    private var canNavigateBack: Bool {
+        normalizedDirectoryPath(currentDirectoryPath) != "."
     }
 
     var body: some View {
@@ -84,12 +93,14 @@ struct ArtifactsBrowserView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(.secondary)
-                    TextField("Filter workspace files...", text: $searchText)
+                    TextField("Filter files in this folder...", text: $searchText)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 }
                 .padding(10)
                 .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(.secondarySystemBackground)))
+
+                folderNavigationBar
 
                 HStack(spacing: 12) {
                     Toggle("Generated only", isOn: $generatedOnly)
@@ -104,41 +115,50 @@ struct ArtifactsBrowserView: View {
             .padding(.horizontal, 12)
             .padding(.top, 10)
 
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        if sections.isEmpty {
-                            ContentUnavailableView(
-                                visibleEntries.isEmpty && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                    ? "No workspace files yet"
-                                    : "No matching files",
-                                systemImage: "folder",
-                                description: Text(
-                                    visibleEntries.isEmpty && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                        ? "Workspace is empty or bridge is not connected."
-                                        : "Try a different filter."
-                                )
-                            )
-                            .padding(.top, 40)
-                        } else {
-                            sourceHeader(title: "Workspace Files", systemImage: "folder")
-                            sectionList(sections)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if visibleEntries.isEmpty {
+                        emptyState
+                    } else {
+                        if !directoryEntries.isEmpty {
+                            sourceHeader(title: "Folders", systemImage: "folder")
+                            directoryList(directoryEntries)
+                        }
+
+                        if !fileEntries.isEmpty {
+                            sourceHeader(title: "Files", systemImage: "doc")
+                            fileList(fileEntries)
                         }
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.top, 10)
-                    .padding(.bottom, 12)
                 }
-                .onAppear {
-                    Task { await store.refreshWorkspace(projectID: projectID, includeHidden: includeHidden) }
-                    handleDeepLinkSelection(proxy: proxy)
-                }
-                .onChange(of: store.selectedArtifactPath) { _, _ in
-                    handleDeepLinkSelection(proxy: proxy)
-                }
-                .onChange(of: includeHidden) { _, value in
-                    Task { await store.refreshWorkspace(projectID: projectID, includeHidden: value) }
-                }
+                .padding(.horizontal, 8)
+                .padding(.top, 10)
+                .padding(.bottom, 12)
+            }
+            .task(id: workspaceRefreshKey) {
+                await store.refreshWorkspace(
+                    projectID: projectID,
+                    includeHidden: includeHidden,
+                    path: normalizedDirectoryPath(currentDirectoryPath),
+                    recursive: false,
+                    limit: 2_000
+                )
+                reconcileSelectionForCurrentDirectory()
+                syncSelectionWithExternalPath()
+            }
+            .onAppear {
+                syncSelectionWithExternalPath()
+            }
+            .onChange(of: store.selectedArtifactPath) { _, _ in
+                syncSelectionWithExternalPath()
+            }
+            .onChange(of: workspaceEntries) { _, _ in
+                reconcileSelectionForCurrentDirectory()
+                syncSelectionWithExternalPath()
+            }
+            .onChange(of: projectID) { _, _ in
+                currentDirectoryPath = "."
+                clearSelection()
             }
 
             Divider()
@@ -165,45 +185,73 @@ struct ArtifactsBrowserView: View {
         }
     }
 
-    private func isGeneratedPath(_ path: String) -> Bool {
-        if let artifact = artifactByPath[path] {
-            return artifact.origin == .generated
-        }
-        return path.hasPrefix("artifacts/") || path.hasPrefix("runs/") || path.hasPrefix("logs/")
-    }
+    private var folderNavigationBar: some View {
+        HStack(spacing: 8) {
+            Button {
+                navigateToParentDirectory()
+            } label: {
+                Label("Back", systemImage: "chevron.left")
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(!canNavigateBack)
 
-    private func workspaceRow(_ entry: WorkspaceEntry) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon(for: entry))
-                .foregroundStyle(.secondary)
-                .frame(width: 20)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(URL(fileURLWithPath: entry.path).lastPathComponent)
-                    .font(.subheadline)
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-
-                HStack(spacing: 8) {
-                    Text(entry.type == .dir ? "Directory" : "File")
-                    if let modifiedAt = entry.modifiedAt {
-                        Text(AppFormatters.shortDate.string(from: modifiedAt))
-                    }
-                    if let sizeBytes = entry.sizeBytes {
-                        Text(AppFormatters.byteCount.string(fromByteCount: Int64(sizeBytes)))
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(Array(breadcrumbSegments.indices), id: \.self) { index in
+                        if index > 0 {
+                            Image(systemName: "chevron.right")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        let segment = breadcrumbSegments[index]
+                        Button {
+                            jumpToDirectory(segment.path)
+                        } label: {
+                            Text(segment.title)
+                                .font(.caption)
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(segment.path == normalizedDirectoryPath(currentDirectoryPath) ? .primary : .secondary)
                     }
                 }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
             }
-
-            Spacer()
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(rowHighlightColor(for: entry.path))
+    }
+
+    private var emptyState: some View {
+        let copy = emptyStateCopy()
+
+        return ContentUnavailableView(
+            copy.title,
+            systemImage: "folder",
+            description: Text(copy.subtitle)
+        )
+        .padding(.top, 40)
+    }
+
+    private func emptyStateCopy() -> (title: String, subtitle: String) {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if workspaceEntries.isEmpty {
+            return (
+                title: "This folder is empty",
+                subtitle: "Try a different folder or generate files in this workspace."
+            )
+        }
+        if !query.isEmpty {
+            return (title: "No matching files", subtitle: "Try a different filter.")
+        }
+        if generatedOnly {
+            return (
+                title: "No generated files in this folder",
+                subtitle: "Turn off the filter or open a different folder."
+            )
+        }
+        return (
+            title: "This folder is empty",
+            subtitle: "Try a different folder or generate files in this workspace."
         )
     }
 
@@ -219,32 +267,95 @@ struct ArtifactsBrowserView: View {
     }
 
     @ViewBuilder
-    private func sectionList(_ sections: [WorkspaceSection]) -> some View {
-        ForEach(sections) { section in
-            HStack {
-                Text("\(section.name)/")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
+    private func directoryList(_ entries: [WorkspaceEntry]) -> some View {
+        ForEach(entries) { entry in
+            Button {
+                enterDirectory(entry)
+            } label: {
+                workspaceRow(entry, showsChevron: true)
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 2)
+            .buttonStyle(.plain)
+        }
+    }
 
-            ForEach(section.entries) { entry in
-                if entry.type == .file {
-                    Button {
-                        selectEntry(entry)
-                    } label: {
-                        workspaceRow(entry)
+    @ViewBuilder
+    private func fileList(_ entries: [WorkspaceEntry]) -> some View {
+        ForEach(entries) { entry in
+            Button {
+                selectEntry(entry)
+            } label: {
+                workspaceRow(entry, showsChevron: false)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func workspaceRow(_ entry: WorkspaceEntry, showsChevron: Bool) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon(for: entry))
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(displayName(for: entry))
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                HStack(spacing: 8) {
+                    Text(entry.type == .dir ? "Folder" : "File")
+                    if let modifiedAt = entry.modifiedAt {
+                        Text(AppFormatters.shortDate.string(from: modifiedAt))
                     }
-                    .buttonStyle(.plain)
-                    .id(entry.path)
-                } else {
-                    workspaceRow(entry)
-                        .id(entry.path)
+                    if let sizeBytes = entry.sizeBytes {
+                        Text(AppFormatters.byteCount.string(fromByteCount: Int64(sizeBytes)))
+                    }
                 }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
             }
         }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(rowHighlightColor(for: entry.path))
+        )
+    }
+
+    private func displayName(for entry: WorkspaceEntry) -> String {
+        URL(fileURLWithPath: entry.path).lastPathComponent
+    }
+
+    private func isGeneratedEntry(_ entry: WorkspaceEntry) -> Bool {
+        if entry.type == .dir {
+            return isGeneratedDirectoryPath(entry.path)
+        }
+        return isGeneratedPath(entry.path)
+    }
+
+    private func isGeneratedDirectoryPath(_ path: String) -> Bool {
+        path == "artifacts"
+            || path == "runs"
+            || path == "logs"
+            || path.hasPrefix("artifacts/")
+            || path.hasPrefix("runs/")
+            || path.hasPrefix("logs/")
+    }
+
+    private func isGeneratedPath(_ path: String) -> Bool {
+        if let artifact = artifactByPath[path] {
+            return artifact.origin == .generated
+        }
+        return path.hasPrefix("artifacts/") || path.hasPrefix("runs/") || path.hasPrefix("logs/")
     }
 
     private func rowHighlightColor(for path: String) -> Color {
@@ -255,6 +366,88 @@ struct ArtifactsBrowserView: View {
             return Color.blue.opacity(0.16)
         }
         return Color.clear
+    }
+
+    private func enterDirectory(_ entry: WorkspaceEntry) {
+        guard entry.type == .dir else { return }
+        let target = normalizedDirectoryPath(entry.path)
+        guard target != normalizedDirectoryPath(currentDirectoryPath) else { return }
+        currentDirectoryPath = target
+        clearSelectionIfOutsideDirectory(target)
+    }
+
+    private func jumpToDirectory(_ path: String) {
+        let target = normalizedDirectoryPath(path)
+        guard target != normalizedDirectoryPath(currentDirectoryPath) else { return }
+        currentDirectoryPath = target
+        clearSelectionIfOutsideDirectory(target)
+    }
+
+    private func navigateToParentDirectory() {
+        guard canNavigateBack else { return }
+        jumpToDirectory(parentDirectoryPath(for: currentDirectoryPath))
+    }
+
+    private func parentDirectoryPath(for path: String) -> String {
+        let normalized = normalizedDirectoryPath(path)
+        guard normalized != "." else { return "." }
+        let components = normalized.split(separator: "/")
+        guard components.count > 1 else { return "." }
+        return components.dropLast().map(String.init).joined(separator: "/")
+    }
+
+    private func normalizedDirectoryPath(_ path: String) -> String {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "." else { return "." }
+        let normalized = trimmed
+            .split(separator: "/")
+            .filter { $0 != "." && !$0.isEmpty }
+            .map(String.init)
+            .joined(separator: "/")
+        return normalized.isEmpty ? "." : normalized
+    }
+
+    private func clearSelectionIfOutsideDirectory(_ directoryPath: String) {
+        guard let selectedPath = selectedArtifact?.path else { return }
+        if !isPath(selectedPath, insideDirectory: directoryPath) {
+            clearSelection()
+        }
+    }
+
+    private func isPath(_ path: String, insideDirectory directoryPath: String) -> Bool {
+        let normalizedDirectory = normalizedDirectoryPath(directoryPath)
+        if normalizedDirectory == "." { return true }
+        return path == normalizedDirectory || path.hasPrefix("\(normalizedDirectory)/")
+    }
+
+    private func clearSelection() {
+        selectedArtifact = nil
+        selectedContent = ""
+        selectedImage = nil
+        selectedNotebook = nil
+        loadingContent = false
+        previewTask?.cancel()
+    }
+
+    private func reconcileSelectionForCurrentDirectory() {
+        guard let selectedArtifact else { return }
+        if !allFileEntriesInCurrentDirectory.contains(where: { $0.path == selectedArtifact.path }) {
+            clearSelection()
+        }
+    }
+
+    private func syncSelectionWithExternalPath() {
+        guard let selectedPath = store.selectedArtifactPath else { return }
+        let targetDirectory = parentDirectoryPath(for: selectedPath)
+        if targetDirectory != normalizedDirectoryPath(currentDirectoryPath) {
+            currentDirectoryPath = targetDirectory
+            return
+        }
+
+        guard let target = allFileEntriesInCurrentDirectory.first(where: { $0.path == selectedPath }) else { return }
+        if selectedArtifact?.path != selectedPath {
+            selectEntry(target)
+        }
     }
 
     private func selectEntry(_ entry: WorkspaceEntry) {
@@ -319,6 +512,10 @@ struct ArtifactsBrowserView: View {
             return ArtifactPreviewPayload(text: source, image: nil, notebook: nil)
 
         case .text, .json, .log, .unknown:
+            if HighlightedCodeWebView.languageForFilePath(artifact.path) != nil {
+                let source = await loadTextPreferRawIfLarge(artifact: artifact)
+                return ArtifactPreviewPayload(text: source, image: nil, notebook: nil)
+            }
             let content = await store.fetchWorkspaceContent(projectID: projectID, path: artifact.path)
             return ArtifactPreviewPayload(text: content, image: nil, notebook: nil)
         }
@@ -332,34 +529,12 @@ struct ArtifactsBrowserView: View {
         return await store.fetchWorkspaceContent(projectID: projectID, path: artifact.path)
     }
 
-    private func handleDeepLinkSelection(proxy: ScrollViewProxy) {
-        guard let path = store.selectedArtifactPath,
-              let target = fileEntries.first(where: { $0.path == path })
-        else {
-            if let selectedArtifact,
-               !fileEntries.contains(where: { $0.path == selectedArtifact.path }) {
-                self.selectedArtifact = nil
-                self.selectedContent = ""
-                self.selectedImage = nil
-                self.selectedNotebook = nil
-                self.loadingContent = false
-                self.previewTask?.cancel()
-            }
-            return
-        }
-
-        withAnimation(.easeInOut(duration: 0.2)) {
-            proxy.scrollTo(path, anchor: .center)
-        }
-
-        if selectedArtifact?.path != path {
-            selectEntry(target)
-        }
-    }
-
     private func icon(for entry: WorkspaceEntry) -> String {
         if entry.type == .dir {
             return "folder"
+        }
+        if HighlightedCodeWebView.languageForFilePath(entry.path) != nil {
+            return "chevron.left.forwardslash.chevron.right"
         }
         return icon(for: ArtifactKind.infer(from: entry.path))
     }
@@ -384,11 +559,11 @@ struct ArtifactsBrowserView: View {
     }
 }
 
-private struct WorkspaceSection: Identifiable {
-    let name: String
-    let entries: [WorkspaceEntry]
+private struct WorkspaceBreadcrumbSegment: Identifiable {
+    let path: String
+    let title: String
 
-    var id: String { name }
+    var id: String { path }
 }
 
 private struct ArtifactPreviewPayload {

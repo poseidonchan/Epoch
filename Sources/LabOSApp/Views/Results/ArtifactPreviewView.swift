@@ -128,7 +128,7 @@ struct ArtifactPreviewView: View {
                 .frame(maxHeight: 220)
             }
         case .python:
-            HighlightedCodeWebView(code: content, language: "python")
+            HighlightedCodeWebView(code: content, language: "python", filePathForLanguageHint: artifact.path)
                 .frame(height: 220)
         default:
             if isMarkdownFile {
@@ -145,6 +145,9 @@ struct ArtifactPreviewView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 260)
+            } else if let language = resolvedCodeLanguage {
+                HighlightedCodeWebView(code: content, language: language, filePathForLanguageHint: artifact.path)
+                    .frame(height: 220)
             } else {
                 ScrollView {
                     Text(content)
@@ -159,6 +162,10 @@ struct ArtifactPreviewView: View {
 
     private var isMarkdownFile: Bool {
         URL(fileURLWithPath: artifact.path).pathExtension.lowercased() == "md"
+    }
+
+    private var resolvedCodeLanguage: String? {
+        HighlightedCodeWebView.languageForFilePath(artifact.path)
     }
 
     private var shareItems: [Any] {
@@ -237,7 +244,7 @@ private struct ExpandedArtifactPreview: View {
 
         case .python:
             ScrollView {
-                HighlightedCodeWebView(code: content, language: "python")
+                HighlightedCodeWebView(code: content, language: "python", filePathForLanguageHint: artifact.path)
                     .frame(minHeight: 520)
                     .padding(12)
             }
@@ -253,6 +260,12 @@ private struct ExpandedArtifactPreview: View {
                             .markdownTheme(.labOS)
                             .padding(12)
                     }
+                }
+            } else if let language = HighlightedCodeWebView.languageForFilePath(artifact.path) {
+                ScrollView {
+                    HighlightedCodeWebView(code: content, language: language, filePathForLanguageHint: artifact.path)
+                        .frame(minHeight: 520)
+                        .padding(12)
                 }
             } else {
                 ScrollView {

@@ -949,7 +949,13 @@ internal final class ProjectService {
         }
     }
 
-    func refreshWorkspace(projectID: UUID, includeHidden: Bool = false) async {
+    func refreshWorkspace(
+        projectID: UUID,
+        includeHidden: Bool = false,
+        path: String = ".",
+        recursive: Bool = true,
+        limit: Int = 10_000
+    ) async {
         guard let gatewayClient = store.gatewayClient else { return }
 
         struct WorkspaceListParams: Codable, Sendable {
@@ -965,10 +971,10 @@ internal final class ProjectService {
                 method: "workspace.list",
                 params: WorkspaceListParams(
                     projectId: AppStore.gatewayID(projectID),
-                    path: ".",
-                    recursive: true,
+                    path: path,
+                    recursive: recursive,
                     includeHidden: includeHidden,
-                    limit: 10_000
+                    limit: max(1, limit)
                 )
             )
             let entries: [WorkspaceEntry] = try store.decodeGatewayPayload(response.payload, key: "entries")

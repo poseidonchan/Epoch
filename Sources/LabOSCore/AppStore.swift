@@ -2890,8 +2890,20 @@ public final class AppStore: ObservableObject {
         projectService.workspaceEntries(for: projectID)
     }
 
-    public func refreshWorkspace(projectID: UUID, includeHidden: Bool = false) async {
-        await projectService.refreshWorkspace(projectID: projectID, includeHidden: includeHidden)
+    public func refreshWorkspace(
+        projectID: UUID,
+        includeHidden: Bool = false,
+        path: String = ".",
+        recursive: Bool = true,
+        limit: Int = 10_000
+    ) async {
+        await projectService.refreshWorkspace(
+            projectID: projectID,
+            includeHidden: includeHidden,
+            path: path,
+            recursive: recursive,
+            limit: limit
+        )
     }
 
     public func fetchWorkspaceContent(projectID: UUID, path: String) async -> String {
