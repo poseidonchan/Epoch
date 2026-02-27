@@ -10,6 +10,8 @@ struct MessageBubbleView: View {
     let onEditMessage: (ChatMessage) -> Void
     let onBranchMessage: (ChatMessage) -> Void
     let showAssistantActionBar: Bool
+    let onOpenImagePreview: (ChatImagePreviewRequest) -> Void
+    let resolveAssistantImageURL: ((URL) -> URL?)?
 
     @EnvironmentObject private var store: AppStore
     @Environment(\.colorScheme) private var colorScheme
@@ -104,8 +106,8 @@ struct MessageBubbleView: View {
 
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(Array(userImageArtifactRefs.enumerated()), id: \.offset) { _, ref in
-                    userImageThumbnail(ref)
+                ForEach(Array(userImageArtifactRefs.enumerated()), id: \.offset) { index, ref in
+                    userImageThumbnail(ref, index: index)
                 }
             }
             .padding(.horizontal, 2)
@@ -115,7 +117,7 @@ struct MessageBubbleView: View {
     }
 
     @ViewBuilder
-    private func userImageThumbnail(_ ref: ChatArtifactReference) -> some View {
+    private func userImageThumbnail(_ ref: ChatArtifactReference, index: Int) -> some View {
         ZStack {
             if let image = userPreviewImage(for: ref) {
                 Image(uiImage: image)
@@ -137,6 +139,10 @@ struct MessageBubbleView: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.1))
         )
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .onTapGesture {
+            openUserImagePreview(selectedSourceIndex: index)
+        }
     }
 
     private func userPreviewImage(for ref: ChatArtifactReference) -> UIImage? {
@@ -261,6 +267,96 @@ struct MessageBubbleView: View {
             + (CGFloat(max(0, imageCount - 1)) * spacing)
             + horizontalPadding
         return min(userBubbleMaxWidth, totalWidth)
+    }
+
+    private func openUserImagePreview(selectedSourceIndex: Int) {
+        let mapped = userImageArtifactRefs.enumerated().compactMap { entry -> (sourceIndex: Int, url: URL)? in
+            guard let resolved = resolvedImageURL(for: entry.element) else { return nil }
+            return (sourceIndex: entry.offset, url: resolved)
+        }
+        guard !mapped.isEmpty else { return }
+
+        let selectedIndex = mapped.firstIndex(where: { $0.sourceIndex == selectedSourceIndex }) ?? 0
+        let request = ChatImagePreviewRequest(
+            imageURLs: mapped.map(\.url),
+            initialIndex: selectedIndex,
+            allowsPaging: true
+        )
+        onOpenImagePreview(request)
+    }
+
+    private func openAssistantImagePreview(_ url: URL) {
+        let resolved = resolveAssistantImageURL?(url) ?? url
+        let request = ChatImagePreviewRequest(
+            imageURLs: [resolved],
+            initialIndex: 0,
+            allowsPaging: false
+        )
+        onOpenImagePreview(request)
+    }
+
+    private func resolvedImageURL(for ref: ChatArtifactReference) -> URL? {
+        if let resolved = ChatImageURLResolver.resolve(ref.path) {
+            return resolved
+        }
+
+        let candidateData = imageDataFromBase64(ref.inlineDataBase64) ?? cachedAttachmentImageData(for: ref)
+        guard let candidateData else { return nil }
+        return stagePreviewImageData(candidateData, ref: ref)
+    }
+
+    private func imageDataFromBase64(_ base64: String?) -> Data? {
+        guard let base64 else { return nil }
+        return Data(base64Encoded: base64, options: .ignoreUnknownCharacters)
+    }
+
+    private func stagePreviewImageData(_ data: Data, ref: ChatArtifactReference) -> URL? {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("labos-chat-lightbox", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        } catch {
+            return nil
+        }
+
+        let preferredExt = imageFileExtension(for: ref)
+        let fileURL = tempDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension(preferredExt)
+
+        do {
+            try data.write(to: fileURL, options: .atomic)
+            return fileURL
+        } catch {
+            return nil
+        }
+    }
+
+    private func imageFileExtension(for ref: ChatArtifactReference) -> String {
+        if let ext = imageExtensionFromMIMEType(ref.mimeType) {
+            return ext
+        }
+
+        let candidates = [ref.path, ref.sourceName, ref.displayText]
+        for candidate in candidates {
+            let ext = pathExtension(of: candidate)
+            if Self.imageExtensions.contains(ext) {
+                return ext
+            }
+        }
+        return "jpg"
+    }
+
+    private func imageExtensionFromMIMEType(_ mimeType: String?) -> String? {
+        guard let mimeType else { return nil }
+        let lowered = mimeType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard lowered.hasPrefix("image/") else { return nil }
+        let suffix = lowered.dropFirst("image/".count)
+        if suffix == "jpeg" { return "jpg" }
+        if suffix == "svg+xml" { return "svg" }
+        let candidate = String(suffix)
+        if candidate.isEmpty { return nil }
+        return candidate
     }
 
     private var assistantMessage: some View {
@@ -431,11 +527,20 @@ struct MessageBubbleView: View {
 
         Group {
             if isStreaming || !prefersMathRenderer {
-                StreamingMarkdownView(text: message.text, isStreaming: isStreaming)
+                StreamingMarkdownView(
+                    text: message.text,
+                    isStreaming: isStreaming,
+                    onImageTap: openAssistantImagePreview,
+                    resolveImageURL: resolveAssistantImageURL
+                )
             } else {
                 // Keep markdown-it + KaTeX for richer finalized payloads, but avoid WKWebView
                 // for plain assistant text to reduce delayed pop-in on session open.
-                MarkdownMathView(markdown: normalized)
+                MarkdownMathView(
+                    markdown: normalized,
+                    onImageTap: openAssistantImagePreview,
+                    resolveImageURL: resolveAssistantImageURL
+                )
             }
         }
         .onAppear { scheduleStreamingIdleFallback() }

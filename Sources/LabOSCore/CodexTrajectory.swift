@@ -297,7 +297,7 @@ public enum CodexTrajectoryAssembler {
         case .plan:
             return .other
 
-        case .agentMessage, .userMessage, .unknown:
+        case .imageView, .agentMessage, .userMessage, .unknown:
             return .other
         }
     }

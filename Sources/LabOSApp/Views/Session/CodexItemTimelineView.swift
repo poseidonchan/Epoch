@@ -17,6 +17,8 @@ struct CodexItemTimelineView: View {
     var onEditUserMessage: (CodexUserMessageItem) -> Void = { _ in }
     var onBranchAgentMessage: (CodexAgentMessageItem) -> Void = { _ in }
     var onFinalizeTurnDuration: (_ turnID: String, _ durationMs: Int) -> Void = { _, _ in }
+    var onOpenImagePreview: (ChatImagePreviewRequest) -> Void = { _ in }
+    var resolveAssistantImageURL: ((URL) -> URL?)? = nil
 
     private struct TurnKey: Hashable, Sendable {
         let signature: String
@@ -26,6 +28,7 @@ struct CodexItemTimelineView: View {
     @State private var expandedTurnKeys: Set<TurnKey> = []
     @State private var expandedGroupIDs: Set<String> = []
     @State private var expandedLeafIDs: Set<String> = []
+    @State private var expandedPlanCardIDs: Set<String> = []
     @State private var turnKeyByTurnID: [String: TurnKey] = [:]
     @State private var startedAtByTurnKey: [TurnKey: Date] = [:]
     @State private var finalizedDurationMsByTurnKey: [TurnKey: Int] = [:]
@@ -136,7 +139,7 @@ struct CodexItemTimelineView: View {
                     isLatestTurn: turns.last?.id == turn.id
                 )
             } else if let proposedPlanText {
-                proposedPlanCard(proposedPlanText)
+                proposedPlanCard(proposedPlanText, cardID: "turn:\(turn.id):inline")
             } else if !isExpanded, (turn.isStreaming || turn.hasThinkingStatus) {
                 Text(pendingTurnStatus(for: turn))
                     .font(.subheadline)
@@ -169,11 +172,11 @@ struct CodexItemTimelineView: View {
             && !isLatestInFlightTurn
 
         return VStack(alignment: .leading, spacing: 6) {
-            finalAnswerContent(finalText, isStreaming: targetStreaming)
+            finalAnswerContent(finalText, turnID: turn.id, isStreaming: targetStreaming)
                 .accessibilityIdentifier("codex.final.answer.\(finalID.lowercased())")
 
             if let proposedPlanText, !proposedPlanText.isEmpty {
-                proposedPlanCard(proposedPlanText)
+                proposedPlanCard(proposedPlanText, cardID: "turn:\(turn.id):postfinal")
             }
 
             if canShowActions, let actionItem {
@@ -230,13 +233,13 @@ struct CodexItemTimelineView: View {
     }
 
     @ViewBuilder
-    private func finalAnswerContent(_ text: String, isStreaming: Bool) -> some View {
+    private func finalAnswerContent(_ text: String, turnID: String, isStreaming: Bool) -> some View {
         if let proposedPlan = CodexProposedPlanParser.parse(from: text) {
             VStack(alignment: .leading, spacing: 10) {
                 if !proposedPlan.leadingText.isEmpty {
                     codexMarkdownText(proposedPlan.leadingText, isStreaming: isStreaming)
                 }
-                proposedPlanCard(proposedPlan.planText)
+                proposedPlanCard(proposedPlan.planText, cardID: "turn:\(turnID):embedded")
                 if !proposedPlan.trailingText.isEmpty {
                     codexMarkdownText(proposedPlan.trailingText, isStreaming: isStreaming)
                 }
@@ -246,13 +249,33 @@ struct CodexItemTimelineView: View {
         }
     }
 
-    private func proposedPlanCard(_ planText: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func proposedPlanCard(_ planText: String, cardID: String) -> some View {
+        let collapsible = CodexPlanPreview.isCollapsible(planText)
+        let isExpanded = expandedPlanCardIDs.contains(cardID)
+        let displayText = (collapsible && !isExpanded)
+            ? CodexPlanPreview.collapsedText(from: planText)
+            : planText
+
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 8) {
                 Text("Proposed plan")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
+                if collapsible {
+                    Button {
+                        if isExpanded {
+                            expandedPlanCardIDs.remove(cardID)
+                        } else {
+                            expandedPlanCardIDs.insert(cardID)
+                        }
+                    } label: {
+                        Text(isExpanded ? "Collapse" : "Expand")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
                 Button {
                     copyToPasteboard(planText)
                 } label: {
@@ -263,7 +286,7 @@ struct CodexItemTimelineView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Copy plan")
             }
-            codexMarkdownText(planText, isStreaming: false)
+            codexMarkdownText(displayText, isStreaming: false)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -321,6 +344,8 @@ struct CodexItemTimelineView: View {
             bubble(title: "Tool \(toolItem.tool)", text: toolItem.status)
         case let .webSearch(item):
             bubble(title: "Web search", text: item.query)
+        case let .imageView(imageItem):
+            codexImageViewCard(path: imageItem.path)
         case let .unknown(unknown):
             if isReasoningItem(unknown) {
                 Text("Thinking...")
@@ -557,8 +582,8 @@ struct CodexItemTimelineView: View {
 
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(Array(inputs.enumerated()), id: \.offset) { _, input in
-                    codexUserImageThumbnail(input)
+                ForEach(Array(inputs.enumerated()), id: \.offset) { index, input in
+                    codexUserImageThumbnail(input, sourceIndex: index, allInputs: inputs)
                 }
             }
             .padding(.horizontal, 2)
@@ -568,7 +593,11 @@ struct CodexItemTimelineView: View {
     }
 
     @ViewBuilder
-    private func codexUserImageThumbnail(_ input: CodexUserInput) -> some View {
+    private func codexUserImageThumbnail(
+        _ input: CodexUserInput,
+        sourceIndex: Int,
+        allInputs: [CodexUserInput]
+    ) -> some View {
         ZStack {
             if let image = codexUserPreviewImage(input) {
                 Image(uiImage: image)
@@ -590,6 +619,10 @@ struct CodexItemTimelineView: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.1))
         )
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .onTapGesture {
+            openUserImagePreview(inputs: allInputs, selectedSourceIndex: sourceIndex)
+        }
     }
 
     private func userText(from content: [CodexUserInput]) -> String {
@@ -633,6 +666,119 @@ struct CodexItemTimelineView: View {
         return nil
     }
 
+    private func openUserImagePreview(inputs: [CodexUserInput], selectedSourceIndex: Int) {
+        let mapped = inputs.enumerated().compactMap { entry -> (sourceIndex: Int, url: URL)? in
+            guard let resolved = resolvedImageURL(for: entry.element) else { return nil }
+            return (sourceIndex: entry.offset, url: resolved)
+        }
+        guard !mapped.isEmpty else { return }
+
+        let selectedIndex = mapped.firstIndex(where: { $0.sourceIndex == selectedSourceIndex }) ?? 0
+        let request = ChatImagePreviewRequest(
+            imageURLs: mapped.map(\.url),
+            initialIndex: selectedIndex,
+            allowsPaging: true
+        )
+        onOpenImagePreview(request)
+    }
+
+    private func openAssistantImagePreview(_ url: URL) {
+        let resolved = resolveAssistantImageURL?(url) ?? url
+        let request = ChatImagePreviewRequest(
+            imageURLs: [resolved],
+            initialIndex: 0,
+            allowsPaging: false
+        )
+        onOpenImagePreview(request)
+    }
+
+    @ViewBuilder
+    private func codexImageViewCard(path: String) -> some View {
+        if let url = resolvedAssistantImageURL(rawPath: path) {
+            codexImageCard(url: url)
+        } else {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.tertiarySystemFill))
+                .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
+                .overlay(
+                    VStack(spacing: 6) {
+                        Image(systemName: "photo")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text("Image unavailable")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                )
+        }
+    }
+
+    @ViewBuilder
+    private func codexImageCard(url: URL) -> some View {
+        Group {
+            if url.isFileURL {
+                if let image = UIImage(contentsOfFile: url.path) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                } else {
+                    codexImagePlaceholder
+                }
+            } else {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case let .success(image):
+                        image
+                            .resizable()
+                            .scaledToFit()
+                    case .failure:
+                        codexImagePlaceholder
+                    case .empty:
+                        ProgressView()
+                            .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
+                    @unknown default:
+                        codexImagePlaceholder
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            openAssistantImagePreview(url)
+        }
+    }
+
+    private var codexImagePlaceholder: some View {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(Color(.tertiarySystemFill))
+            .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
+            .overlay(
+                Image(systemName: "photo")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            )
+    }
+
+    private func resolvedAssistantImageURL(rawPath: String) -> URL? {
+        guard let resolved = ChatImageURLResolver.resolve(rawPath) else {
+            return nil
+        }
+        return resolveAssistantImageURL?(resolved) ?? resolved
+    }
+
+    private func resolvedImageURL(for input: CodexUserInput) -> URL? {
+        if let path = input.path,
+           let resolved = ChatImageURLResolver.resolve(path) {
+            return resolved
+        }
+        if let url = input.url,
+           let resolved = ChatImageURLResolver.resolve(url) {
+            return resolved
+        }
+        return nil
+    }
+
     @ViewBuilder
     private func codexMarkdownText(_ text: String, isStreaming: Bool) -> some View {
         let normalized = MarkdownDisplayNormalizer.normalizeChatMessage(text)
@@ -642,9 +788,18 @@ struct CodexItemTimelineView: View {
             || normalized.contains("\\begin{")
 
         if prefersMathRenderer {
-            MarkdownMathView(markdown: normalized)
+            MarkdownMathView(
+                markdown: normalized,
+                onImageTap: openAssistantImagePreview,
+                resolveImageURL: resolveAssistantImageURL
+            )
         } else {
-            StreamingMarkdownView(text: text, isStreaming: isStreaming)
+            StreamingMarkdownView(
+                text: text,
+                isStreaming: isStreaming,
+                onImageTap: openAssistantImagePreview,
+                resolveImageURL: resolveAssistantImageURL
+            )
         }
     }
 

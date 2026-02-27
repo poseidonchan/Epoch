@@ -278,6 +278,35 @@ final class CodexTrajectoryAssemblerTests: XCTestCase {
         XCTAssertEqual(turn.groups.first?.leaves.first?.id, "ws1")
     }
 
+    func testImageViewItemIsGroupedAsOtherFamily() throws {
+        let items: [CodexThreadItem] = [
+            .userMessage(
+                CodexUserMessageItem(
+                    type: "userMessage",
+                    id: "u1",
+                    content: [CodexUserInput(type: "text", text: "show plot", url: nil, path: nil)]
+                )
+            ),
+            .imageView(
+                CodexImageViewItem(
+                    type: "imageView",
+                    id: "img1",
+                    path: "/Users/chan/Downloads/plot.png"
+                )
+            ),
+            .agentMessage(
+                CodexAgentMessageItem(type: "agentMessage", id: "a1", text: "done")
+            ),
+        ]
+
+        let turns = CodexTrajectoryAssembler.assemble(from: items, isStreaming: false)
+        let turn = try XCTUnwrap(turns.first)
+        XCTAssertEqual(turn.groups.count, 1)
+        XCTAssertEqual(turn.groups.first?.family, .other)
+        XCTAssertEqual(turn.groups.first?.leaves.count, 1)
+        XCTAssertEqual(turn.groups.first?.leaves.first?.id, "img1")
+    }
+
     func testProposedPlanParserExtractsPlanBlockAndSurroundingText() throws {
         let parsed = try XCTUnwrap(
             CodexProposedPlanParser.parse(

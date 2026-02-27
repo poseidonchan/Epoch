@@ -36,6 +36,38 @@
     });
   }
 
+  function postImageTap(rawURL) {
+    if (!rawURL) return;
+    try {
+      if (
+        window.webkit &&
+        window.webkit.messageHandlers &&
+        window.webkit.messageHandlers.imageTap
+      ) {
+        window.webkit.messageHandlers.imageTap.postMessage(rawURL);
+      }
+    } catch (e) {}
+  }
+
+  function bindImageTapHandlers(root) {
+    if (!root) return;
+    var images = root.querySelectorAll("img[src]");
+    for (var i = 0; i < images.length; i++) {
+      var image = images[i];
+      if (image.dataset && image.dataset.labosTapBound === "1") continue;
+      if (image.dataset) image.dataset.labosTapBound = "1";
+      image.style.cursor = "pointer";
+      image.addEventListener("click", function (event) {
+        if (event) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        var src = (this.currentSrc || this.getAttribute("src") || "").trim();
+        if (src) postImageTap(src);
+      });
+    }
+  }
+
   function isInCodeContext(node) {
     var cur = node;
     while (cur) {
@@ -319,14 +351,6 @@
         links[i].setAttribute("href", "#");
       }
     }
-    var images = container.querySelectorAll("img[src]");
-    for (var j = 0; j < images.length; j++) {
-      var src = (images[j].getAttribute("src") || "").trim();
-      if (src.startsWith("http:") || src.startsWith("https:")) {
-        images[j].removeAttribute("src");
-      }
-    }
-
     content.innerHTML = container.innerHTML;
 
     // Highlight code blocks (optional).
@@ -342,6 +366,7 @@
     // Render extracted LaTeX math segments (prevents Markdown parsing from breaking underscores, etc).
     renderExtractedMath(content, extracted.segments);
     normalizeDisplayMathContainers(content);
+    bindImageTapHandlers(content);
 
     // As a fallback, render any remaining delimiter-based math.
     if (window.renderMathInElement) {

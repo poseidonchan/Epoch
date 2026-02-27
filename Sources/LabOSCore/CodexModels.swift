@@ -116,6 +116,7 @@ public enum CodexThreadItem: Hashable, Sendable {
     case fileChange(CodexFileChangeItem)
     case mcpToolCall(CodexMCPToolCallItem)
     case webSearch(CodexWebSearchItem)
+    case imageView(CodexImageViewItem)
     case unknown(CodexUnknownItem)
 
     public var id: String {
@@ -133,6 +134,8 @@ public enum CodexThreadItem: Hashable, Sendable {
         case let .mcpToolCall(item):
             return item.id
         case let .webSearch(item):
+            return item.id
+        case let .imageView(item):
             return item.id
         case let .unknown(item):
             return item.id
@@ -155,6 +158,8 @@ public enum CodexThreadItem: Hashable, Sendable {
             return "mcpToolCall"
         case .webSearch:
             return "webSearch"
+        case .imageView:
+            return "imageView"
         case let .unknown(item):
             return item.type
         }
@@ -185,6 +190,8 @@ extension CodexThreadItem: Codable {
             self = .mcpToolCall(try CodexMCPToolCallItem(from: decoder))
         case "webSearch":
             self = .webSearch(try CodexWebSearchItem(from: decoder))
+        case "imageView":
+            self = .imageView(try CodexImageViewItem(from: decoder))
         default:
             self = .unknown(try CodexUnknownItem(from: decoder))
         }
@@ -205,6 +212,8 @@ extension CodexThreadItem: Codable {
         case let .mcpToolCall(item):
             try item.encode(to: encoder)
         case let .webSearch(item):
+            try item.encode(to: encoder)
+        case let .imageView(item):
             try item.encode(to: encoder)
         case let .unknown(item):
             try item.encode(to: encoder)
@@ -349,6 +358,18 @@ public struct CodexWebSearchItem: Hashable, Codable, Sendable {
         self.id = id
         self.query = query
         self.action = action
+    }
+}
+
+public struct CodexImageViewItem: Hashable, Codable, Sendable {
+    public var type: String
+    public var id: String
+    public var path: String
+
+    public init(type: String = "imageView", id: String, path: String) {
+        self.type = type
+        self.id = id
+        self.path = path
     }
 }
 

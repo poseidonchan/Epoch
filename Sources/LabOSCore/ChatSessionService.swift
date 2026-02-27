@@ -1542,6 +1542,10 @@ internal final class ChatSessionService {
                 store.codexItemsBySession[sessionID] = keepLocalInFlightItems
                     ? Self.mergeHistoryItemsPreservingInFlightLocals(local: existingItems, fetched: fetchedItems)
                     : fetchedItems
+                store.stageCodexImagesForDisplay(
+                    sessionID: sessionID,
+                    items: store.codexItemsBySession[sessionID] ?? []
+                )
                 if let lastStatus = thread.turns.last?.status {
                     store.codexStatusTextBySession[sessionID] = lastStatus
                     let normalizedStatus = lastStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -1563,6 +1567,10 @@ internal final class ChatSessionService {
                 }
             } else {
                 store.codexItemsBySession[sessionID] = store.codexItemsBySession[sessionID] ?? []
+                store.stageCodexImagesForDisplay(
+                    sessionID: sessionID,
+                    items: store.codexItemsBySession[sessionID] ?? []
+                )
             }
 
             let contextPayload: SessionContextState? = {

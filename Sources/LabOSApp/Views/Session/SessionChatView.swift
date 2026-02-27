@@ -31,6 +31,7 @@ struct SessionChatView: View {
     @State private var isUserDragging = false
     @State private var autoScrollWork: DispatchWorkItem?
     @State private var lastAutoScrollAt: Date = .distantPast
+    @State private var activeImagePreviewRequest: ChatImagePreviewRequest?
 
     private let bottomAnchorID = "__bottom__"
     private let scrollCoordinateSpace = "__chatScroll__"
@@ -128,6 +129,12 @@ struct SessionChatView: View {
                                         turnID: turnID,
                                         durationMs: durationMs
                                     )
+                                },
+                                onOpenImagePreview: { request in
+                                    presentImagePreview(request)
+                                },
+                                resolveAssistantImageURL: { url in
+                                    resolveCodexImageURLForDisplay(url)
                                 }
                             )
                                 .padding(.horizontal, 12)
@@ -152,7 +159,13 @@ struct SessionChatView: View {
                                     onBranchMessage: { msg in
                                         branchFromMessage(msg)
                                     },
-                                    showAssistantActionBar: !store.sessionUsesCodex(sessionID: sessionID)
+                                    showAssistantActionBar: !store.sessionUsesCodex(sessionID: sessionID),
+                                    onOpenImagePreview: { request in
+                                        presentImagePreview(request)
+                                    },
+                                    resolveAssistantImageURL: { url in
+                                        resolveCodexImageURLForDisplay(url)
+                                    }
                                 )
                             }
 
@@ -343,6 +356,11 @@ struct SessionChatView: View {
             )
             .interactiveDismissDisabled()
         }
+        .fullScreenCover(item: $activeImagePreviewRequest) { request in
+            ChatImageLightboxView(request: request) {
+                activeImagePreviewRequest = nil
+            }
+        }
         .sheet(isPresented: $showFileSheet) {
             ComposerAttachmentsSheet(
                 title: "Session Attachments",
@@ -438,6 +456,46 @@ struct SessionChatView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(importErrorMessage ?? "Unknown error")
+        }
+    }
+
+    private func presentImagePreview(_ request: ChatImagePreviewRequest) {
+        guard !request.imageURLs.isEmpty else { return }
+        activeImagePreviewRequest = request
+    }
+
+    private func resolveCodexImageURLForDisplay(_ url: URL) -> URL? {
+        let candidates = codexImagePathCandidates(for: url)
+        for candidate in candidates {
+            if let staged = store.codexStagedImageURL(sessionID: sessionID, rawPath: candidate) {
+                return staged
+            }
+        }
+
+        for candidate in candidates {
+            store.ensureCodexImageStagedForDisplay(sessionID: sessionID, rawPath: candidate)
+        }
+        return nil
+    }
+
+    private func codexImagePathCandidates(for url: URL) -> [String] {
+        var values: [String] = [url.absoluteString]
+        if url.isFileURL || !url.path.isEmpty {
+            values.append(url.path)
+        }
+        if let decoded = url.absoluteString.removingPercentEncoding, !decoded.isEmpty {
+            values.append(decoded)
+        }
+        if let decodedPath = url.path.removingPercentEncoding, !decodedPath.isEmpty {
+            values.append(decodedPath)
+        }
+
+        var seen: Set<String> = []
+        return values.compactMap { raw in
+            let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else { return nil }
+            guard seen.insert(normalized).inserted else { return nil }
+            return normalized
         }
     }
 

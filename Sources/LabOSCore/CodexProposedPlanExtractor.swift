@@ -1,9 +1,6 @@
 import Foundation
 
 public enum CodexProposedPlanExtractor {
-    private static let maxCharacters = 4000
-    private static let truncationSuffix = "\n[...truncated...]"
-
     public static func extract(from items: [CodexThreadItem], allowHeuristicFallback: Bool) -> String? {
         for item in items.reversed() {
             guard case let .agentMessage(agent) = item else { continue }
@@ -41,13 +38,7 @@ public enum CodexProposedPlanExtractor {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return nil }
 
-        if normalized.count <= maxCharacters {
-            return normalized
-        }
-
-        let headCount = max(0, maxCharacters - truncationSuffix.count)
-        let prefix = normalized.prefix(headCount).trimmingCharacters(in: .whitespacesAndNewlines)
-        return "\(prefix)\(truncationSuffix)"
+        return normalized
     }
 
     private static func textContainsPlanSteps(_ text: String) -> Bool {

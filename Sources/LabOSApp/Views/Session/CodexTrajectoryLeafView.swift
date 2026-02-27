@@ -57,6 +57,8 @@ struct CodexTrajectoryLeafView: View {
             return "File changes (\(item.changes.count))"
         case .plan:
             return "Plan"
+        case .imageView:
+            return "Image view"
         case .agentMessage:
             return "Assistant message"
         case let .unknown(item):
@@ -78,6 +80,8 @@ struct CodexTrajectoryLeafView: View {
             return item.status
         case let .plan(item):
             return item.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        case let .imageView(item):
+            return item.path.trimmingCharacters(in: .whitespacesAndNewlines)
         case let .agentMessage(item):
             let text = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return text.isEmpty ? nil : String(text.prefix(96))
@@ -103,6 +107,8 @@ struct CodexTrajectoryLeafView: View {
             Text(item.text)
                 .font(.subheadline)
                 .fixedSize(horizontal: false, vertical: true)
+        case let .imageView(item):
+            trajectoryField("path", item.path, monospaced: true)
         case let .agentMessage(item):
             StreamingMarkdownView(text: item.text, isStreaming: false)
         case let .unknown(item):

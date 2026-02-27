@@ -62,7 +62,7 @@ final class CodexProposedPlanExtractorTests: XCTestCase {
         XCTAssertNil(extracted)
     }
 
-    func testExtractTruncatesLongPlanText() throws {
+    func testExtractKeepsFullLongPlanText() throws {
         let raw = String(repeating: "a", count: 4_500)
         let items: [CodexThreadItem] = [
             plan("plan_1", raw),
@@ -70,8 +70,7 @@ final class CodexProposedPlanExtractorTests: XCTestCase {
 
         let extracted = CodexProposedPlanExtractor.extract(from: items, allowHeuristicFallback: true)
         let value = try XCTUnwrap(extracted)
-        XCTAssertTrue(value.hasSuffix("\n[...truncated...]"))
-        XCTAssertLessThanOrEqual(value.count, 4_000)
+        XCTAssertEqual(value, raw)
     }
 
     private func agent(_ id: String, _ text: String) -> CodexThreadItem {

@@ -7,6 +7,8 @@ struct StreamingMarkdownView: View {
     let text: String
     var isStreaming: Bool
     var throttleInterval: TimeInterval = 0.2
+    var onImageTap: ((URL) -> Void)? = nil
+    var resolveImageURL: ((URL) -> URL?)? = nil
 
     @State private var renderedText: String = ""
     @State private var pendingText: String = ""
@@ -36,6 +38,12 @@ struct StreamingMarkdownView: View {
             if shouldRenderMarkdown, !shouldBypassMarkdownRenderer {
                 Markdown(normalizedRenderedText)
                     .markdownTheme(.labOS)
+                    .markdownImageProvider(
+                        ChatMarkdownImageProvider(
+                            onImageTap: onImageTap,
+                            resolveImageURL: resolveImageURL
+                        )
+                    )
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.disabled)
             } else {

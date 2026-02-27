@@ -7,6 +7,8 @@ import WebKit
 
 struct MarkdownMathView: View {
     let markdown: String
+    var onImageTap: ((URL) -> Void)? = nil
+    var resolveImageURL: ((URL) -> URL?)? = nil
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var webHeight: CGFloat = 20
@@ -19,7 +21,8 @@ struct MarkdownMathView: View {
     }
 
     private var preparedMarkdown: String {
-        MarkdownMathPreprocessor.prepareForRendering(normalizedMarkdown)
+        let prepared = MarkdownMathPreprocessor.prepareForRendering(normalizedMarkdown)
+        return Self.rewriteImageURLs(in: prepared, resolveImageURL: resolveImageURL)
     }
 
     private var renderSignature: String {
@@ -68,6 +71,8 @@ struct MarkdownMathView: View {
                     markdown: preparedMarkdown,
                     renderSignature: renderSignature,
                     captureSnapshots: shouldUseSnapshotFallback,
+                    onImageTap: onImageTap,
+                    resolveImageURL: resolveImageURL,
                     height: $webHeight,
                     isReady: $webContentReady
                 )
@@ -90,7 +95,118 @@ struct MarkdownMathView: View {
     private var fallbackMarkdown: some View {
         Markdown(preparedMarkdown)
             .markdownTheme(.labOS)
+            .markdownImageProvider(
+                ChatMarkdownImageProvider(
+                    onImageTap: onImageTap,
+                    resolveImageURL: resolveImageURL
+                )
+            )
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private static func rewriteImageURLs(
+        in markdown: String,
+        resolveImageURL: ((URL) -> URL?)?
+    ) -> String {
+        guard let resolveImageURL else { return markdown }
+        let markdownRewritten = rewriteMarkdownImageDestinations(
+            in: markdown,
+            resolveImageURL: resolveImageURL
+        )
+        return rewriteHTMLImageSources(
+            in: markdownRewritten,
+            resolveImageURL: resolveImageURL
+        )
+    }
+
+    private static func rewriteMarkdownImageDestinations(
+        in markdown: String,
+        resolveImageURL: @escaping (URL) -> URL?
+    ) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"!\\[[^\\]]*\\]\\(([^)]+)\\)"#) else {
+            return markdown
+        }
+        let source = markdown as NSString
+        let mutable = NSMutableString(string: markdown)
+        let matches = regex.matches(in: markdown, range: NSRange(location: 0, length: source.length))
+
+        for match in matches.reversed() {
+            guard match.numberOfRanges > 1 else { continue }
+            let destinationRange = match.range(at: 1)
+            guard destinationRange.location != NSNotFound else { continue }
+            let destination = source.substring(with: destinationRange)
+            guard let rewritten = rewriteImageDestination(
+                destination,
+                resolveImageURL: resolveImageURL
+            ) else {
+                continue
+            }
+            mutable.replaceCharacters(in: destinationRange, with: rewritten)
+        }
+
+        return mutable as String
+    }
+
+    private static func rewriteImageDestination(
+        _ destination: String,
+        resolveImageURL: @escaping (URL) -> URL?
+    ) -> String? {
+        let trimmed = destination.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let rawURLToken: String
+        let prefix: String
+        let suffix: String
+        if trimmed.hasPrefix("<"), let end = trimmed.firstIndex(of: ">") {
+            rawURLToken = String(trimmed[trimmed.index(after: trimmed.startIndex)..<end])
+            prefix = "<"
+            suffix = ">" + String(trimmed[trimmed.index(after: end)...])
+        } else if let whitespace = trimmed.firstIndex(where: { $0.isWhitespace }) {
+            rawURLToken = String(trimmed[..<whitespace])
+            prefix = ""
+            suffix = String(trimmed[whitespace...])
+        } else {
+            rawURLToken = trimmed
+            prefix = ""
+            suffix = ""
+        }
+
+        guard let resolved = ChatImageURLResolver.resolve(rawURLToken) else {
+            return nil
+        }
+        let overridden = resolveImageURL(resolved) ?? resolved
+        let rewrittenToken = overridden.absoluteString
+        guard rewrittenToken != rawURLToken else { return nil }
+        return "\(prefix)\(rewrittenToken)\(suffix)"
+    }
+
+    private static func rewriteHTMLImageSources(
+        in markdown: String,
+        resolveImageURL: @escaping (URL) -> URL?
+    ) -> String {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"<img\b([^>]*?)\bsrc\s*=\s*(['"])(.*?)\2"#,
+            options: [.caseInsensitive]
+        ) else {
+            return markdown
+        }
+        let source = markdown as NSString
+        let mutable = NSMutableString(string: markdown)
+        let matches = regex.matches(in: markdown, range: NSRange(location: 0, length: source.length))
+
+        for match in matches.reversed() {
+            guard match.numberOfRanges > 3 else { continue }
+            let srcRange = match.range(at: 3)
+            guard srcRange.location != NSNotFound else { continue }
+            let rawURL = source.substring(with: srcRange)
+            guard let resolved = ChatImageURLResolver.resolve(rawURL) else { continue }
+            let overridden = resolveImageURL(resolved) ?? resolved
+            let rewritten = overridden.absoluteString
+            guard rewritten != rawURL else { continue }
+            mutable.replaceCharacters(in: srcRange, with: rewritten)
+        }
+
+        return mutable as String
     }
 
     private func loadCachedState(for key: String) {
@@ -111,6 +227,8 @@ private struct MarkdownMathWebView: UIViewRepresentable {
     let markdown: String
     let renderSignature: String
     let captureSnapshots: Bool
+    let onImageTap: ((URL) -> Void)?
+    let resolveImageURL: ((URL) -> URL?)?
     @Binding var height: CGFloat
     @Binding var isReady: Bool
 
@@ -123,6 +241,7 @@ private struct MarkdownMathWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         let userContentController = WKUserContentController()
         userContentController.add(context.coordinator, name: "height")
+        userContentController.add(context.coordinator, name: "imageTap")
 
         let configuration = WKWebViewConfiguration()
         configuration.userContentController = userContentController
@@ -141,6 +260,8 @@ private struct MarkdownMathWebView: UIViewRepresentable {
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
         guard let urls = Self.assetURLs(bundle: Self.resourceBundle) else { return }
+        context.coordinator.onImageTap = onImageTap
+        context.coordinator.resolveImageURL = resolveImageURL
 
         let prepared = markdown
         if context.coordinator.lastSignature == renderSignature {
@@ -284,22 +405,36 @@ private struct MarkdownMathWebView: UIViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(height: $height, isReady: $isReady)
+        Coordinator(
+            height: $height,
+            isReady: $isReady,
+            onImageTap: onImageTap,
+            resolveImageURL: resolveImageURL
+        )
     }
 
     @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var height: Binding<CGFloat>
         var isReady: Binding<Bool>
+        var onImageTap: ((URL) -> Void)?
+        var resolveImageURL: ((URL) -> URL?)?
         var lastSignature: String?
         var cacheKey: String?
         var snapshotEnabled = true
         var snapshotCapturedForKey: String?
         weak var webView: WKWebView?
 
-        init(height: Binding<CGFloat>, isReady: Binding<Bool>) {
+        init(
+            height: Binding<CGFloat>,
+            isReady: Binding<Bool>,
+            onImageTap: ((URL) -> Void)?,
+            resolveImageURL: ((URL) -> URL?)?
+        ) {
             self.height = height
             self.isReady = isReady
+            self.onImageTap = onImageTap
+            self.resolveImageURL = resolveImageURL
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -316,6 +451,15 @@ private struct MarkdownMathWebView: UIViewRepresentable {
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            if message.name == "imageTap" {
+                guard let rawURL = message.body as? String,
+                      let resolved = ChatImageURLResolver.resolve(rawURL) else {
+                    return
+                }
+                let overridden = resolveImageURL?(resolved) ?? resolved
+                onImageTap?(overridden)
+                return
+            }
             guard message.name == "height" else { return }
 
             let value: Double?

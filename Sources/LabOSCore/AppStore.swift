@@ -1,5 +1,8 @@
 import Combine
 import Foundation
+#if canImport(ImageIO)
+import ImageIO
+#endif
 
 @MainActor
 public final class AppStore: ObservableObject {
@@ -122,6 +125,7 @@ public final class AppStore: ObservableObject {
     @Published public internal(set) var codexTokenUsageBySession: [UUID: CodexTokenUsage] = [:]
     @Published public internal(set) var codexFullAccessBySession: [UUID: Bool] = [:]
     @Published public internal(set) var codexTrajectoryStartedAtBySession: [UUID: [String: Date]] = [:]
+    @Published public internal(set) var codexStagedImageURLBySession: [UUID: [String: String]] = [:]
 
     @Published public internal(set) var streamingSessions: Set<UUID> = []
     @Published public internal(set) var streamingAssistantMessageIDBySession: [UUID: UUID] = [:]
@@ -152,6 +156,7 @@ public final class AppStore: ObservableObject {
     private var codexPendingDurationMsByScopedBackendTurn: [String: Int] = [:]
     private var codexCommandNoResultStartedAtBySession: [UUID: [String: Date]] = [:]
     private var codexInterruptedTurnIDsBySession: [UUID: Set<String>] = [:]
+    private var codexStagedImageInflightKeysBySession: [UUID: Set<String>] = [:]
 
     @Published public var resourceStatus: ResourceStatus = .placeholder
 
@@ -617,6 +622,22 @@ public final class AppStore: ObservableObject {
     }
 
     internal static let codexLocalUserItemPrefix = "local-user-"
+    private static let codexImageBridgeDirectoryName = "labos-codex-image-bridge"
+    private static let codexSupportedImageExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "heic", "heif", "gif", "webp", "bmp", "tiff", "tif", "avif",
+    ]
+
+    private struct CodexCommandExecParams: Codable, Sendable {
+        var command: [String]
+        var timeoutMs: Int?
+        var cwd: String?
+    }
+
+    private struct CodexCommandExecResponse: Codable, Sendable {
+        var exitCode: Int
+        var stdout: String
+        var stderr: String
+    }
 
     static func sessionHistoryPrefetchCandidates(
         sessions: [Session],
@@ -751,6 +772,9 @@ public final class AppStore: ObservableObject {
         codexTokenUsageBySession.removeAll()
         codexFullAccessBySession.removeAll()
         codexTrajectoryStartedAtBySession.removeAll()
+        clearCodexStagedImages(sessionIDs: Set(codexStagedImageURLBySession.keys))
+        codexStagedImageURLBySession.removeAll()
+        codexStagedImageInflightKeysBySession.removeAll()
         codexCommandNoResultStartedAtBySession.removeAll()
         codexSuppressedTurnIDsBySession.removeAll()
         codexFirstUserMessageIDByScopedBackendTurn.removeAll()
@@ -1141,13 +1165,75 @@ public final class AppStore: ObservableObject {
                let message = error["message"]?.stringValue {
                 codexStatusTextBySession[sessionID] = "error: \(message)"
             }
+        case "codex/event/view_image_tool_call", "codex/event/view_image/tool_call":
+            if let sessionID,
+               let rawPath = codexViewImagePath(from: params) {
+                stageCodexImageForDisplay(sessionID: sessionID, rawPath: rawPath)
+            }
         default:
+            if let sessionID, notification.method.hasPrefix("codex/event/"),
+               notification.method.contains("view_image"),
+               let rawPath = codexViewImagePath(from: params) {
+                stageCodexImageForDisplay(sessionID: sessionID, rawPath: rawPath)
+                break
+            }
             if let sessionID, notification.method.hasPrefix("codex/event/"),
                let statusText = extractCodexStatusText(notificationMethod: notification.method, params: params) {
                 codexStatusTextBySession[sessionID] = statusText
             }
             break
         }
+    }
+
+    private func codexViewImagePath(from params: [String: JSONValue]) -> String? {
+        if let rawPath = params["path"]?.stringValue,
+           let normalized = normalizedOptionalString(rawPath) {
+            return normalized
+        }
+        if let event = params["event"]?.objectValue,
+           let rawPath = event["path"]?.stringValue,
+           let normalized = normalizedOptionalString(rawPath) {
+            return normalized
+        }
+        if let nested = codexFirstStringValue(forKey: "path", in: .object(params), maxDepth: 6),
+           let normalized = normalizedOptionalString(nested) {
+            return normalized
+        }
+        return nil
+    }
+
+    private func codexFirstStringValue(
+        forKey key: String,
+        in root: JSONValue,
+        maxDepth: Int
+    ) -> String? {
+        guard maxDepth >= 0 else { return nil }
+        var queue: [(JSONValue, Int)] = [(root, 0)]
+
+        while !queue.isEmpty {
+            let (value, depth) = queue.removeFirst()
+            if depth > maxDepth { continue }
+
+            switch value {
+            case let .object(object):
+                if let direct = object[key]?.stringValue {
+                    return direct
+                }
+                guard depth < maxDepth else { continue }
+                for child in object.values {
+                    queue.append((child, depth + 1))
+                }
+            case let .array(array):
+                guard depth < maxDepth else { continue }
+                for child in array {
+                    queue.append((child, depth + 1))
+                }
+            default:
+                continue
+            }
+        }
+
+        return nil
     }
 
     private func resolveCodexSessionID(notificationParams params: [String: JSONValue], threadId: String?) -> UUID? {
@@ -1270,6 +1356,9 @@ public final class AppStore: ObservableObject {
             items: existing,
             incoming: item
         )
+        if case let .imageView(imageItem) = item {
+            stageCodexImageForDisplay(sessionID: sessionID, rawPath: imageItem.path)
+        }
     }
 
     private static func matchingLocalEchoUserItemID(
@@ -2693,6 +2782,234 @@ public final class AppStore: ObservableObject {
         codexItemsBySession[sessionID] ?? []
     }
 
+    public func codexStagedImageURL(sessionID: UUID, rawPath: String) -> URL? {
+        let keys = codexImagePathKeys(rawPath)
+        guard !keys.isEmpty else { return nil }
+        guard let map = codexStagedImageURLBySession[sessionID], !map.isEmpty else { return nil }
+
+        for key in keys {
+            guard let stagedPath = map[key] else { continue }
+            if FileManager.default.fileExists(atPath: stagedPath) {
+                return URL(fileURLWithPath: stagedPath)
+            }
+        }
+        return nil
+    }
+
+    public func ensureCodexImageStagedForDisplay(sessionID: UUID, rawPath: String) {
+        stageCodexImageForDisplay(sessionID: sessionID, rawPath: rawPath)
+    }
+
+    internal func stageCodexImageForDisplay(sessionID: UUID, rawPath: String) {
+        Task { @MainActor [weak self] in
+            _ = await self?.stageCodexImageForDisplayAsync(sessionID: sessionID, rawPath: rawPath)
+        }
+    }
+
+    @discardableResult
+    internal func stageCodexImageForDisplayAsync(sessionID: UUID, rawPath: String) async -> URL? {
+        let keys = codexImagePathKeys(rawPath)
+        guard !keys.isEmpty else { return nil }
+        if let existing = codexStagedImageURL(sessionID: sessionID, rawPath: rawPath) {
+            return existing
+        }
+
+        guard let canonicalPath = codexCanonicalImageFilePath(rawPath),
+              codexShouldBridgeImagePath(canonicalPath)
+        else {
+            return nil
+        }
+
+        var inFlight = codexStagedImageInflightKeysBySession[sessionID] ?? Set()
+        if inFlight.contains(canonicalPath) {
+            return nil
+        }
+        inFlight.insert(canonicalPath)
+        codexStagedImageInflightKeysBySession[sessionID] = inFlight
+        defer {
+            var updated = codexStagedImageInflightKeysBySession[sessionID] ?? Set()
+            updated.remove(canonicalPath)
+            codexStagedImageInflightKeysBySession[sessionID] = updated.isEmpty ? nil : updated
+        }
+
+        let imageData: Data? = {
+            if FileManager.default.isReadableFile(atPath: canonicalPath),
+               let direct = try? Data(contentsOf: URL(fileURLWithPath: canonicalPath), options: [.mappedIfSafe]) {
+                return direct
+            }
+            return nil
+        }()
+
+        let bridgedData: Data?
+        if let imageData {
+            bridgedData = imageData
+        } else {
+            bridgedData = await codexFetchImageDataViaCommandExec(path: canonicalPath)
+        }
+
+        guard let data = bridgedData,
+              codexDataLooksLikeImage(data),
+              let stagedURL = codexStageImageData(data, sessionID: sessionID, sourcePath: canonicalPath)
+        else {
+            return nil
+        }
+
+        var byRawPath = codexStagedImageURLBySession[sessionID] ?? [:]
+        for key in keys {
+            byRawPath[key] = stagedURL.path
+        }
+        byRawPath[canonicalPath] = stagedURL.path
+        byRawPath[URL(fileURLWithPath: canonicalPath).absoluteString] = stagedURL.path
+        codexStagedImageURLBySession[sessionID] = byRawPath
+        return stagedURL
+    }
+
+    internal func stageCodexImagesForDisplay(sessionID: UUID, items: [CodexThreadItem]) {
+        for item in items {
+            guard case let .imageView(imageItem) = item else { continue }
+            stageCodexImageForDisplay(sessionID: sessionID, rawPath: imageItem.path)
+        }
+    }
+
+    internal func clearCodexStagedImages(sessionID: UUID) {
+        let directory = codexImageBridgeDirectory(sessionID: sessionID)
+        try? FileManager.default.removeItem(at: directory)
+        codexStagedImageURLBySession[sessionID] = nil
+        codexStagedImageInflightKeysBySession[sessionID] = nil
+    }
+
+    internal func clearCodexStagedImages(sessionIDs: Set<UUID>) {
+        guard !sessionIDs.isEmpty else { return }
+        for sessionID in sessionIDs {
+            clearCodexStagedImages(sessionID: sessionID)
+        }
+    }
+
+    private func codexImagePathKeys(_ rawPath: String) -> [String] {
+        let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        var keys: [String] = [trimmed]
+        if let resolved = ChatImageURLResolver.resolve(trimmed) {
+            keys.append(resolved.absoluteString)
+            if resolved.isFileURL {
+                keys.append(resolved.path)
+            }
+        }
+
+        var seen: Set<String> = []
+        return keys.compactMap { key in
+            let normalized = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else { return nil }
+            guard seen.insert(normalized).inserted else { return nil }
+            return normalized
+        }
+    }
+
+    private func codexCanonicalImageFilePath(_ rawPath: String) -> String? {
+        let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if trimmed.hasPrefix("~/"), trimmed.count > 2 {
+            return trimmed
+        }
+
+        guard let resolved = ChatImageURLResolver.resolve(trimmed), resolved.isFileURL else {
+            return nil
+        }
+        let path = resolved.path.trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.isEmpty ? nil : path
+    }
+
+    private func codexShouldBridgeImagePath(_ filePath: String) -> Bool {
+        let ext = URL(fileURLWithPath: filePath).pathExtension.lowercased()
+        return Self.codexSupportedImageExtensions.contains(ext)
+    }
+
+    private func codexImageBridgeDirectory(sessionID: UUID) -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent(Self.codexImageBridgeDirectoryName, isDirectory: true)
+            .appendingPathComponent(sessionID.uuidString.lowercased(), isDirectory: true)
+    }
+
+    private func codexStageImageData(
+        _ data: Data,
+        sessionID: UUID,
+        sourcePath: String
+    ) -> URL? {
+        let directory = codexImageBridgeDirectory(sessionID: sessionID)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            return nil
+        }
+
+        let ext = URL(fileURLWithPath: sourcePath).pathExtension.lowercased()
+        let safeExt = Self.codexSupportedImageExtensions.contains(ext) ? ext : "png"
+        let originalName = URL(fileURLWithPath: sourcePath).deletingPathExtension().lastPathComponent
+        let normalizedName = originalName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"[^a-zA-Z0-9._-]+"#, with: "-", options: .regularExpression)
+        let fileName = "\(UUID().uuidString)-\(normalizedName.isEmpty ? "image" : normalizedName)"
+        let fileURL = directory
+            .appendingPathComponent(fileName)
+            .appendingPathExtension(safeExt)
+
+        do {
+            try data.write(to: fileURL, options: .atomic)
+            return fileURL
+        } catch {
+            return nil
+        }
+    }
+
+    private func codexFetchImageDataViaCommandExec(path: String) async -> Data? {
+        let escapedPath = Self.shellSingleQuoted(path)
+        let script = """
+        p=\(escapedPath)
+        case "$p" in
+          \\~/*) p="$HOME/${p#~/}" ;;
+        esac
+        if [ -r "$p" ]; then
+          base64 -i "$p" 2>/dev/null || base64 "$p" 2>/dev/null
+        fi
+        """
+
+        do {
+            let response = try await requestCodex(
+                method: "command/exec",
+                params: CodexCommandExecParams(
+                    command: ["/bin/sh", "-lc", script],
+                    timeoutMs: 12_000,
+                    cwd: nil
+                )
+            )
+            let payload: CodexCommandExecResponse = try decodeCodexResult(response.result)
+            guard payload.exitCode == 0 else { return nil }
+            let base64 = payload.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !base64.isEmpty else { return nil }
+            return Data(base64Encoded: base64, options: .ignoreUnknownCharacters)
+        } catch {
+            return nil
+        }
+    }
+
+    private func codexDataLooksLikeImage(_ data: Data) -> Bool {
+        guard !data.isEmpty else { return false }
+#if canImport(ImageIO)
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return false
+        }
+        return CGImageSourceGetCount(source) > 0
+#else
+        return true
+#endif
+    }
+
+    private static func shellSingleQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+
     public func codexRunningCommandsEligibleForShelf(
         sessionID: UUID,
         now: Date = .now,
@@ -2994,6 +3311,7 @@ public final class AppStore: ObservableObject {
     internal func clearCodexTurnLifecycleState(sessionID: UUID, threadID: String? = nil) {
         codexTrajectoryStartedAtBySession[sessionID] = nil
         codexCommandNoResultStartedAtBySession[sessionID] = nil
+        clearCodexStagedImages(sessionID: sessionID)
 
         let resolvedThreadID: String? = {
             if let threadID,
