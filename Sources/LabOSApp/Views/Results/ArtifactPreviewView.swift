@@ -51,19 +51,21 @@ struct ArtifactPreviewView: View {
             }
 
             if isLoading {
-                HStack {
+                VStack {
                     Spacer()
                     ProgressView()
                     Spacer()
                 }
-                .padding(.vertical, 24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                previewBody
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                previewBody()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .frame(minHeight: 220, alignment: .topLeading)
                     .padding(10)
                     .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(.tertiarySystemBackground)))
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(12)
         .fullScreenCover(isPresented: $showExpanded) {
             ExpandedArtifactPreview(artifact: artifact, content: content, image: image, notebook: notebook)
@@ -92,15 +94,17 @@ struct ArtifactPreviewView: View {
     }
 
     @ViewBuilder
-    private var previewBody: some View {
+    private func previewBody() -> some View {
         switch artifact.kind {
         case .image:
             if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxHeight: 240)
-                    .frame(maxWidth: .infinity)
+                ScrollView([.horizontal, .vertical]) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, alignment: .top)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             } else {
                 VStack(alignment: .leading, spacing: 6) {
                     Image(systemName: "photo")
@@ -113,11 +117,12 @@ struct ArtifactPreviewView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
         case .notebook:
             if let notebook {
                 NotebookPreviewView(notebook: notebook)
-                    .frame(maxHeight: 320)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             } else {
                 ScrollView {
                     Text(content)
@@ -125,11 +130,11 @@ struct ArtifactPreviewView: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxHeight: 220)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
         case .python:
             HighlightedCodeWebView(code: content, language: "python", filePathForLanguageHint: artifact.path)
-                .frame(height: 220)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         default:
             if isMarkdownFile {
                 ScrollView {
@@ -144,10 +149,10 @@ struct ArtifactPreviewView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxHeight: 260)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             } else if let language = resolvedCodeLanguage {
                 HighlightedCodeWebView(code: content, language: language, filePathForLanguageHint: artifact.path)
-                    .frame(height: 220)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             } else {
                 ScrollView {
                     Text(content)
@@ -155,7 +160,7 @@ struct ArtifactPreviewView: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxHeight: 220)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
         }
     }

@@ -4048,10 +4048,13 @@ public final class AppStore: ObservableObject {
         planService.approvePlan(sessionID: sessionID, judgmentResponses: judgmentResponses)
     }
 
-    public func openResults() {
+    public func openResults(preserveSelection: Bool = false) {
         rightPanelTab = .artifacts
         isLeftPanelOpen = false
         isRightPanelOpen = true
+        if !preserveSelection {
+            selectedArtifactPath = nil
+        }
         if let activeProjectID {
             Task { [weak self] in
                 await self?.refreshWorkspace(projectID: activeProjectID)
@@ -4061,7 +4064,7 @@ public final class AppStore: ObservableObject {
 
     public func openResults(tab: ResultsTab) {
         _ = tab
-        openResults()
+        openResults(preserveSelection: false)
     }
 
     public func closeResults() {
@@ -4080,14 +4083,14 @@ public final class AppStore: ObservableObject {
     public func openArtifactReference(_ reference: ChatArtifactReference) {
         activeProjectID = reference.projectID
         selectedArtifactPath = reference.path
-        openResults()
+        openResults(preserveSelection: true)
         setTemporaryArtifactHighlight(reference.path)
     }
 
     public func openArtifact(projectID: UUID, path: String) {
         activeProjectID = projectID
         selectedArtifactPath = path
-        openResults()
+        openResults(preserveSelection: true)
         setTemporaryArtifactHighlight(path)
     }
 
