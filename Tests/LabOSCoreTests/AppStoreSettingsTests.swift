@@ -72,6 +72,107 @@ final class AppStoreSettingsTests: XCTestCase {
         XCTAssertEqual(store2.hpcQos, "normal")
     }
 
+    func testOpenAIVoiceSettingsPersistModelPromptAndApiKeyState() {
+        let suiteName = "LabOSCoreTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Unable to create isolated UserDefaults suite")
+            return
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let keyStore = InMemoryOpenAIAPIKeyStore()
+        let store = AppStore(
+            bootstrapDemo: false,
+            userDefaults: defaults,
+            openAIAPIKeyStore: keyStore
+        )
+
+        XCTAssertFalse(store.openAIAPIKeyConfigured)
+        XCTAssertEqual(store.openAIVoiceTranscriptionModel, .gpt4oMiniTranscribe)
+
+        store.saveOpenAIVoiceSettings(
+            apiKey: "  sk-test-voice  ",
+            transcriptionModel: .gpt4oTranscribe,
+            transcriptionPrompt: "  normalize this speech  "
+        )
+
+        XCTAssertTrue(store.openAIAPIKeyConfigured)
+        XCTAssertEqual(store.openAIVoiceTranscriptionModel, .gpt4oTranscribe)
+        XCTAssertEqual(store.openAIVoiceTranscriptionPrompt, "normalize this speech")
+        XCTAssertEqual(keyStore.apiKey, "sk-test-voice")
+
+        let store2 = AppStore(
+            bootstrapDemo: false,
+            userDefaults: defaults,
+            openAIAPIKeyStore: keyStore
+        )
+        XCTAssertTrue(store2.openAIAPIKeyConfigured)
+        XCTAssertEqual(store2.openAIVoiceTranscriptionModel, .gpt4oTranscribe)
+        XCTAssertEqual(store2.openAIVoiceTranscriptionPrompt, "normalize this speech")
+    }
+
+    func testSavingOpenAIVoiceSettingsWithEmptyApiKeyPreservesExistingKey() {
+        let suiteName = "LabOSCoreTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Unable to create isolated UserDefaults suite")
+            return
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let keyStore = InMemoryOpenAIAPIKeyStore()
+        let store = AppStore(
+            bootstrapDemo: false,
+            userDefaults: defaults,
+            openAIAPIKeyStore: keyStore
+        )
+
+        store.saveOpenAIVoiceSettings(
+            apiKey: "sk-initial",
+            transcriptionModel: .gpt4oMiniTranscribe,
+            transcriptionPrompt: "initial prompt"
+        )
+        store.saveOpenAIVoiceSettings(
+            apiKey: "  ",
+            transcriptionModel: .gpt4oTranscribe,
+            transcriptionPrompt: "updated prompt"
+        )
+
+        XCTAssertEqual(keyStore.apiKey, "sk-initial")
+        XCTAssertTrue(store.openAIAPIKeyConfigured)
+        XCTAssertEqual(store.openAIVoiceTranscriptionModel, .gpt4oTranscribe)
+        XCTAssertEqual(store.openAIVoiceTranscriptionPrompt, "updated prompt")
+    }
+
+    func testClearOpenAIApiKeyRemovesConfiguredState() {
+        let suiteName = "LabOSCoreTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Unable to create isolated UserDefaults suite")
+            return
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let keyStore = InMemoryOpenAIAPIKeyStore()
+        let store = AppStore(
+            bootstrapDemo: false,
+            userDefaults: defaults,
+            openAIAPIKeyStore: keyStore
+        )
+        store.saveOpenAIVoiceSettings(
+            apiKey: "sk-to-clear",
+            transcriptionModel: .gpt4oMiniTranscribe,
+            transcriptionPrompt: "prompt"
+        )
+        XCTAssertTrue(store.openAIAPIKeyConfigured)
+
+        store.clearOpenAIAPIKey()
+
+        XCTAssertFalse(store.openAIAPIKeyConfigured)
+        XCTAssertNil(keyStore.apiKey)
+    }
+
     func testRunCompletionNotificationsPreferencePersists() {
         let suiteName = "LabOSCoreTests.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
@@ -351,5 +452,25 @@ final class AppStoreSettingsTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(Int(interval * 1000)))
         }
         XCTFail("Condition timed out after \(timeoutSeconds)s")
+    }
+}
+
+private final class InMemoryOpenAIAPIKeyStore: OpenAIAPIKeyStoring {
+    var apiKey: String?
+
+    func loadAPIKey() -> String? {
+        apiKey
+    }
+
+    @discardableResult
+    func saveAPIKey(_ apiKey: String) -> Bool {
+        self.apiKey = apiKey
+        return true
+    }
+
+    @discardableResult
+    func deleteAPIKey() -> Bool {
+        apiKey = nil
+        return true
     }
 }

@@ -21,7 +21,11 @@ struct ProjectPageView: View {
     @State private var showFileImporter = false
     @State private var importErrorMessage: String?
     @State private var sendErrorMessage: String?
+    @State private var voiceErrorMessage: String?
+    @State private var voiceErrorShowsSystemSettingsAction = false
+    @State private var composerCursorUTF16Offset = 0
     @State private var composerDraftSessionID = UUID()
+    @StateObject private var voiceController = VoiceComposerController()
     private let maxInlineAttachmentBytes = 900 * 1024
     private let maxInlinePhotoDimension: CGFloat = 1_536
 
@@ -163,10 +167,21 @@ struct ProjectPageView: View {
             )
         }
         .onAppear {
+            configureVoiceController()
             guard projectCodexSkillsState.updatedAt == nil,
                   !projectCodexSkillsState.isLoading
             else { return }
             store.refreshCodexSkills(sessionID: composerDraftSessionID, cwds: projectSkillLoadCwds)
+        }
+        .onDisappear {
+            voiceController.cancelAll()
+        }
+        .onChange(of: voiceController.lastErrorMessage) { _, message in
+            guard let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            voiceErrorMessage = message
+            voiceErrorShowsSystemSettingsAction = voiceController.lastErrorRequiresSystemSettings
+            voiceController.lastErrorMessage = nil
+            voiceController.lastErrorRequiresSystemSettings = false
         }
         .sheet(isPresented: $renameProjectPresented) {
             NamePromptSheet(
@@ -350,6 +365,24 @@ struct ProjectPageView: View {
         } message: {
             Text(sendErrorMessage ?? "Unknown error")
         }
+        .alert("Voice input failed", isPresented: Binding(
+            get: { voiceErrorMessage != nil },
+            set: { newValue in
+                if !newValue {
+                    voiceErrorMessage = nil
+                    voiceErrorShowsSystemSettingsAction = false
+                }
+            }
+        )) {
+            if voiceErrorShowsSystemSettingsAction {
+                Button("Open iOS Settings") {
+                    openSystemSettings()
+                }
+            }
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(voiceErrorMessage ?? "Unknown error")
+        }
     }
 
     private var projectTitleRow: some View {
@@ -420,6 +453,7 @@ struct ProjectPageView: View {
             submitLabel: "Send",
             style: .chatGPT,
             chatComposerChrome: .embeddedInDock,
+            submitDisabled: voiceController.isTranscribing,
             attachmentAction: {
                 showComposerAttachmentSheet = true
             },
@@ -440,7 +474,27 @@ struct ProjectPageView: View {
                 )
             },
             contextRemainingFraction: store.contextRemainingFraction(for: composerDraftSessionID),
-            contextWindowTokens: store.contextWindowTokens(for: composerDraftSessionID) ?? 258_000
+            contextWindowTokens: store.contextWindowTokens(for: composerDraftSessionID) ?? 258_000,
+            voiceState: voiceController.voiceState(isConfigured: store.openAIAPIKeyConfigured),
+            onVoiceUnavailableTap: {
+                store.openSettings()
+            },
+            onVoicePressBegan: {
+                guard store.openAIAPIKeyConfigured else {
+                    store.openSettings()
+                    return
+                }
+                voiceController.beginRecording()
+            },
+            onVoiceCancelArmedChanged: { cancelArmed in
+                voiceController.setCancelArmed(cancelArmed)
+            },
+            onVoicePressEnded: { cancelled in
+                voiceController.endRecording(cancelledByGesture: cancelled)
+            },
+            onCursorUTF16OffsetChanged: { offset in
+                composerCursorUTF16Offset = offset
+            }
         ) {
             let pendingDraftAttachments = store.pendingComposerAttachments(for: composerDraftSessionID)
             let message = seedPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -454,6 +508,7 @@ struct ProjectPageView: View {
 
             // Clear immediately for snappy UI; if creation fails we restore it.
             seedPrompt = ""
+            composerCursorUTF16Offset = 0
 
             Task { @MainActor in
                 guard let session = await store.createSession(projectID: projectID, title: nil) else {
@@ -476,6 +531,37 @@ struct ProjectPageView: View {
                 )
             }
         }
+    }
+
+    private func configureVoiceController() {
+        voiceController.configure(
+            transcribeAction: { audioURL in
+                try await store.transcribeOpenAIAudio(fileURL: audioURL)
+            },
+            onTranscription: { text in
+                insertTranscriptionTextAtCursor(text)
+            }
+        )
+    }
+
+    private func insertTranscriptionTextAtCursor(_ transcribedText: String) {
+        let insertion = transcribedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !insertion.isEmpty else { return }
+
+        let utf16Count = seedPrompt.utf16.count
+        let clampedOffset = min(max(composerCursorUTF16Offset, 0), utf16Count)
+        let insertionIndex: String.Index = {
+            let utf16Index = seedPrompt.utf16.index(seedPrompt.utf16.startIndex, offsetBy: clampedOffset)
+            return String.Index(utf16Index, within: seedPrompt) ?? seedPrompt.endIndex
+        }()
+
+        seedPrompt.insert(contentsOf: insertion, at: insertionIndex)
+        composerCursorUTF16Offset = clampedOffset + insertion.utf16.count
+    }
+
+    private func openSystemSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 
     private func handleImportResult(_ result: Result<[URL], Error>) {

@@ -30,6 +30,14 @@ struct InlineComposerView: View {
         case update
     }
 
+    enum VoiceState: Equatable {
+        case unavailable
+        case idle
+        case recording
+        case cancelArmed
+        case transcribing(progress: Double)
+    }
+
     let placeholder: String
     @Binding var text: String
     @Binding var isPlanModeEnabled: Bool
@@ -48,6 +56,12 @@ struct InlineComposerView: View {
     var pendingAttachments: [ComposerAttachment] = []
     var onRemoveAttachment: ((UUID) -> Void)? = nil
     var showsVoiceButton = true
+    var voiceState: VoiceState = .idle
+    var onVoiceUnavailableTap: (() -> Void)? = nil
+    var onVoicePressBegan: (() -> Void)? = nil
+    var onVoiceCancelArmedChanged: ((Bool) -> Void)? = nil
+    var onVoicePressEnded: ((Bool) -> Void)? = nil
+    var onCursorUTF16OffsetChanged: ((Int) -> Void)? = nil
     var modelOptions: [GatewayModelInfo] = []
     var thinkingLevelOptions: [ThinkingLevel] = ThinkingLevel.allCases
     var skillOptions: [SkillOption] = []
@@ -62,6 +76,8 @@ struct InlineComposerView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @State private var showsPlusMenu = false
+    @State private var voiceGestureIsTracking = false
+    @State private var voiceGestureCancelArmed = false
 
     private var trimmedText: String {
         text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -76,6 +92,28 @@ struct InlineComposerView: View {
             return nil
         default:
             return trimmed
+        }
+    }
+
+    private var voiceShowsStatusRow: Bool {
+        switch voiceState {
+        case .recording, .cancelArmed, .transcribing:
+            return true
+        case .unavailable, .idle:
+            return false
+        }
+    }
+
+    private var voicePromptText: String? {
+        switch voiceState {
+        case .recording:
+            return "Recording… slide up to cancel"
+        case .cancelArmed:
+            return "Release to cancel"
+        case .transcribing:
+            return "Transcribing…"
+        case .unavailable, .idle:
+            return nil
         }
     }
 
@@ -207,7 +245,7 @@ struct InlineComposerView: View {
     }
 
     private var chatComposer: some View {
-        let hasStatusRow = displayStatusText != nil || !pendingAttachments.isEmpty
+        let hasStatusRow = displayStatusText != nil || !pendingAttachments.isEmpty || voiceShowsStatusRow
 
         return Group {
             if chatComposerChrome == .standalone {
@@ -228,6 +266,7 @@ struct InlineComposerView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
                 showsPlusMenu = false
+                finishVoiceGesture(forceCancel: true)
             }
         }
         .onChange(of: text) { oldValue, newValue in
@@ -235,6 +274,7 @@ struct InlineComposerView: View {
         }
         .onDisappear {
             showsPlusMenu = false
+            finishVoiceGesture(forceCancel: true)
         }
     }
 
@@ -278,12 +318,21 @@ struct InlineComposerView: View {
                 statusChip(text: statusText, iconSystemName: statusIconSystemName)
             }
 
+            if let voicePromptText {
+                voiceStatusRow(text: voicePromptText)
+            }
+
+            if case let .transcribing(progress) = voiceState {
+                voiceProgressRow(progress: progress)
+            }
+
             HStack(alignment: .bottom, spacing: 8) {
                 ZStack(alignment: .topLeading) {
                     InlineSkillTokenTextEditor(
                         text: $text,
                         skillLookup: skillLookupByName,
-                        colorScheme: colorScheme
+                        colorScheme: colorScheme,
+                        onSelectionUTF16OffsetChanged: onCursorUTF16OffsetChanged
                     )
                     .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -345,18 +394,115 @@ struct InlineComposerView: View {
     }
 
     private var voiceToolbarButton: some View {
-        Button {} label: {
-            Image(systemName: "mic")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 34, height: 34)
-                .background(
-                    Circle()
-                        .fill(Color(.tertiarySystemFill))
-                )
+        Group {
+            switch voiceState {
+            case .unavailable:
+                Button {
+                    onVoiceUnavailableTap?()
+                } label: {
+                    voiceButtonIcon(systemName: "mic.slash.fill")
+                }
+                .buttonStyle(.plain)
+            case .transcribing:
+                voiceButtonIcon(systemName: voiceButtonSystemImage)
+            case .idle, .recording, .cancelArmed:
+                voiceButtonIcon(systemName: voiceButtonSystemImage)
+                    .contentShape(Circle())
+                    .gesture(voicePressGesture)
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Voice input")
+        .accessibilityLabel(voiceAccessibilityLabel)
+    }
+
+    private var voicePressGesture: some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .local)
+            .onChanged { value in
+                guard voiceState != .unavailable else { return }
+                if case .transcribing = voiceState { return }
+                if !voiceGestureIsTracking {
+                    voiceGestureIsTracking = true
+                    onVoicePressBegan?()
+                }
+                let cancelArmed = value.translation.height < -44
+                if cancelArmed != voiceGestureCancelArmed {
+                    voiceGestureCancelArmed = cancelArmed
+                    onVoiceCancelArmedChanged?(cancelArmed)
+                }
+            }
+            .onEnded { _ in
+                finishVoiceGesture(forceCancel: voiceGestureCancelArmed)
+            }
+    }
+
+    private var voiceAccessibilityLabel: String {
+        switch voiceState {
+        case .unavailable:
+            return "Voice input unavailable. Open settings."
+        case .idle:
+            return "Hold to record voice input"
+        case .recording:
+            return "Recording voice input"
+        case .cancelArmed:
+            return "Release to cancel recording"
+        case .transcribing:
+            return "Transcribing voice input"
+        }
+    }
+
+    private var voiceButtonSystemImage: String {
+        switch voiceState {
+        case .unavailable:
+            return "mic.slash.fill"
+        case .idle:
+            return "mic"
+        case .recording:
+            return "waveform.circle.fill"
+        case .cancelArmed:
+            return "xmark.circle.fill"
+        case .transcribing:
+            return "waveform"
+        }
+    }
+
+    private func voiceButtonIcon(systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(voiceButtonForeground)
+            .frame(width: 34, height: 34)
+            .background(
+                Circle()
+                    .fill(voiceButtonBackground)
+            )
+    }
+
+    private var voiceButtonForeground: Color {
+        switch voiceState {
+        case .unavailable:
+            return .secondary
+        case .cancelArmed:
+            return .white
+        case .recording:
+            return .white
+        case .transcribing:
+            return .blue
+        case .idle:
+            return .secondary
+        }
+    }
+
+    private var voiceButtonBackground: Color {
+        switch voiceState {
+        case .unavailable:
+            return Color(.tertiarySystemFill)
+        case .cancelArmed:
+            return .red
+        case .recording:
+            return .orange
+        case .transcribing:
+            return Color.blue.opacity(0.16)
+        case .idle:
+            return Color(.tertiarySystemFill)
+        }
     }
 
     private var submitToolbarButton: some View {
@@ -784,10 +930,51 @@ struct InlineComposerView: View {
         )
     }
 
+    private func voiceStatusRow(text: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: voiceState == .cancelArmed ? "xmark.circle.fill" : "mic.fill")
+                .font(.caption.weight(.semibold))
+            Text(text)
+                .font(.caption.weight(.semibold))
+        }
+        .foregroundStyle(voiceState == .cancelArmed ? Color.red : Color.orange)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(
+            Capsule()
+                .fill(Color.black.opacity(colorScheme == .dark ? 0.75 : 0.06))
+        )
+    }
+
+    private func voiceProgressRow(progress: Double) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "waveform")
+                    .font(.caption.weight(.semibold))
+                Text("Transcribing…")
+                    .font(.caption.weight(.semibold))
+            }
+            .foregroundStyle(.blue)
+            ProgressView(value: min(max(progress, 0), 1))
+                .progressViewStyle(.linear)
+                .tint(.blue)
+        }
+    }
+
+    private func finishVoiceGesture(forceCancel: Bool) {
+        guard voiceGestureIsTracking else { return }
+        let cancelled = forceCancel || voiceGestureCancelArmed
+        onVoicePressEnded?(cancelled)
+        voiceGestureIsTracking = false
+        voiceGestureCancelArmed = false
+        onVoiceCancelArmedChanged?(false)
+    }
+
     private struct InlineSkillTokenTextEditor: UIViewRepresentable {
         @Binding var text: String
         var skillLookup: [String: SkillOption]
         var colorScheme: ColorScheme
+        var onSelectionUTF16OffsetChanged: ((Int) -> Void)? = nil
 
         func makeCoordinator() -> Coordinator {
             Coordinator(parent: self)
@@ -864,6 +1051,11 @@ struct InlineComposerView: View {
                 if parent.text != raw {
                     parent.text = raw
                 }
+                let rawSelection = Self.rawSelectionRange(
+                    fromAttributedSelection: textView.selectedRange,
+                    in: textView.attributedText ?? NSAttributedString()
+                )
+                parent.onSelectionUTF16OffsetChanged?(rawSelection.location)
 
                 applyRenderedText(
                     to: textView,
@@ -872,6 +1064,15 @@ struct InlineComposerView: View {
                     colorScheme: parent.colorScheme,
                     preserveSelectionFromCurrent: true
                 )
+            }
+
+            func textViewDidChangeSelection(_ textView: UITextView) {
+                guard !isApplyingProgrammaticChange else { return }
+                let rawSelection = Self.rawSelectionRange(
+                    fromAttributedSelection: textView.selectedRange,
+                    in: textView.attributedText ?? NSAttributedString()
+                )
+                parent.onSelectionUTF16OffsetChanged?(rawSelection.location)
             }
 
             func applyRenderedText(
@@ -909,6 +1110,12 @@ struct InlineComposerView: View {
                     textView.selectedRange = NSRange(location: end, length: 0)
                 }
                 isApplyingProgrammaticChange = false
+
+                let updatedSelection = Self.rawSelectionRange(
+                    fromAttributedSelection: textView.selectedRange,
+                    in: rendered
+                )
+                parent.onSelectionUTF16OffsetChanged?(updatedSelection.location)
 
                 lastLookupSignature = lookupSignature
                 lastRawText = rawText

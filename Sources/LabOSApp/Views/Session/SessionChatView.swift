@@ -24,13 +24,17 @@ struct SessionChatView: View {
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var showFileImporter = false
     @State private var importErrorMessage: String?
+    @State private var voiceErrorMessage: String?
+    @State private var voiceErrorShowsSystemSettingsAction = false
     @State private var editingMessageID: UUID?
+    @State private var composerCursorUTF16Offset = 0
     @State private var autoScrollEnabled = true
     @State private var scrollViewHeight: CGFloat = 0
     @State private var bottomDistance: CGFloat = 0
     @State private var isUserDragging = false
     @State private var autoScrollWork: DispatchWorkItem?
     @State private var lastAutoScrollAt: Date = .distantPast
+    @StateObject private var voiceController = VoiceComposerController()
     @State private var activeImagePreviewRequest: ChatImagePreviewRequest?
 
     private let bottomAnchorID = "__bottom__"
@@ -310,10 +314,21 @@ struct SessionChatView: View {
             )
         }
         .onAppear {
+            configureVoiceController()
             loadCodexPromptDraftIfNeeded(prompt: codexPrompt)
             if isCodexSession, codexSkillsState.updatedAt == nil, !codexSkillsState.isLoading {
                 store.refreshCodexSkills(sessionID: sessionID)
             }
+        }
+        .onDisappear {
+            voiceController.cancelAll()
+        }
+        .onChange(of: voiceController.lastErrorMessage) { _, message in
+            guard let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            voiceErrorMessage = message
+            voiceErrorShowsSystemSettingsAction = voiceController.lastErrorRequiresSystemSettings
+            voiceController.lastErrorMessage = nil
+            voiceController.lastErrorRequiresSystemSettings = false
         }
         .onChange(of: codexPrompt?.id) { _, _ in
             loadCodexPromptDraftIfNeeded(prompt: codexPrompt)
@@ -457,6 +472,24 @@ struct SessionChatView: View {
         } message: {
             Text(importErrorMessage ?? "Unknown error")
         }
+        .alert("Voice input failed", isPresented: Binding(
+            get: { voiceErrorMessage != nil },
+            set: { newValue in
+                if !newValue {
+                    voiceErrorMessage = nil
+                    voiceErrorShowsSystemSettingsAction = false
+                }
+            }
+        )) {
+            if voiceErrorShowsSystemSettingsAction {
+                Button("Open iOS Settings") {
+                    openSystemSettings()
+                }
+            }
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(voiceErrorMessage ?? "Unknown error")
+        }
     }
 
     private func presentImagePreview(_ request: ChatImagePreviewRequest) {
@@ -591,7 +624,7 @@ struct SessionChatView: View {
                 }
             }()
 
-            let submitDisabled = primaryAction == .stop && !canInterrupt
+            let submitDisabled = (primaryAction == .stop && !canInterrupt) || voiceController.isTranscribing
 
             InlineComposerView(
                 placeholder: "Ask LabOS",
@@ -641,7 +674,27 @@ struct SessionChatView: View {
                 onRefreshSkills: isCodexSession ? { store.refreshCodexSkills(sessionID: sessionID, forceReload: true) } : nil,
                 contextRemainingFraction: store.contextRemainingFraction(for: sessionID),
                 contextWindowTokens: store.contextWindowTokens(for: sessionID) ?? 258_000,
-                useEstimatedContextFallback: !isCodexSession
+                useEstimatedContextFallback: !isCodexSession,
+                voiceState: voiceController.voiceState(isConfigured: store.openAIAPIKeyConfigured),
+                onVoiceUnavailableTap: {
+                    store.openSettings()
+                },
+                onVoicePressBegan: {
+                    guard store.openAIAPIKeyConfigured else {
+                        store.openSettings()
+                        return
+                    }
+                    voiceController.beginRecording()
+                },
+                onVoiceCancelArmedChanged: { cancelArmed in
+                    voiceController.setCancelArmed(cancelArmed)
+                },
+                onVoicePressEnded: { cancelled in
+                    voiceController.endRecording(cancelledByGesture: cancelled)
+                },
+                onCursorUTF16OffsetChanged: { offset in
+                    composerCursorUTF16Offset = offset
+                }
             ) {
                 let attachments = store.pendingComposerAttachments(for: sessionID)
                 let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -670,6 +723,7 @@ struct SessionChatView: View {
                 }
 
                 composerText = ""
+                composerCursorUTF16Offset = 0
             }
         }
     }
@@ -1508,6 +1562,38 @@ struct SessionChatView: View {
         }
 
         return nil
+    }
+
+    private func configureVoiceController() {
+        voiceController.configure(
+            transcribeAction: { audioURL in
+                try await store.transcribeOpenAIAudio(fileURL: audioURL)
+            },
+            onTranscription: { text in
+                insertTranscriptionTextAtCursor(text)
+            }
+        )
+    }
+
+    private func insertTranscriptionTextAtCursor(_ transcribedText: String) {
+        let insertion = transcribedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !insertion.isEmpty else { return }
+
+        let utf16Count = composerText.utf16.count
+        let clampedOffset = min(max(composerCursorUTF16Offset, 0), utf16Count)
+
+        let insertionIndex: String.Index = {
+            let utf16Index = composerText.utf16.index(composerText.utf16.startIndex, offsetBy: clampedOffset)
+            return String.Index(utf16Index, within: composerText) ?? composerText.endIndex
+        }()
+
+        composerText.insert(contentsOf: insertion, at: insertionIndex)
+        composerCursorUTF16Offset = clampedOffset + insertion.utf16.count
+    }
+
+    private func openSystemSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 
     private var header: some View {

@@ -374,6 +374,44 @@ public enum ThinkingLevel: String, Codable, CaseIterable, Sendable {
     case xhigh
 }
 
+public enum OpenAIVoiceTranscriptionModel: String, Codable, CaseIterable, Sendable, Identifiable {
+    case gpt4oTranscribe = "gpt-4o-transcribe"
+    case gpt4oMiniTranscribe = "gpt-4o-mini-transcribe"
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .gpt4oTranscribe:
+            return "gpt-4o-transcribe"
+        case .gpt4oMiniTranscribe:
+            return "gpt-4o-mini-transcribe"
+        }
+    }
+}
+
+public struct OpenAIVoiceSettings: Hashable, Codable, Sendable {
+    public static let defaultTranscriptionPrompt = """
+    Transcribe the user's speech into polished written text while preserving original meaning, terminology, and intent.
+    Add punctuation and sentence boundaries. Remove filler words and verbal hesitations.
+    Keep the output concise, natural, and ready to send as a chat message.
+    """
+
+    public var transcriptionModel: OpenAIVoiceTranscriptionModel
+    public var transcriptionPrompt: String
+    public var hasAPIKey: Bool
+
+    public init(
+        transcriptionModel: OpenAIVoiceTranscriptionModel,
+        transcriptionPrompt: String,
+        hasAPIKey: Bool
+    ) {
+        self.transcriptionModel = transcriptionModel
+        self.transcriptionPrompt = transcriptionPrompt
+        self.hasAPIKey = hasAPIKey
+    }
+}
+
 public enum SessionPermissionLevel: String, Codable, CaseIterable, Sendable {
     case `default` = "default"
     case full = "full"

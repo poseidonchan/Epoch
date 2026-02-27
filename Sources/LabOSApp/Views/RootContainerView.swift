@@ -63,6 +63,19 @@ struct RootContainerView: View {
                 store.handleDeepLink(url)
                 notificationRouter.consumePendingURL(url)
             }
+            .sheet(
+                isPresented: Binding(
+                    get: { store.isSettingsPresented },
+                    set: { presented in
+                        if !presented {
+                            store.closeSettings()
+                        }
+                    }
+                )
+            ) {
+                AppSettingsSheet()
+                    .environmentObject(store)
+            }
             .fullScreenCover(
                 isPresented: Binding(
                     get: { store.isRightPanelOpen },

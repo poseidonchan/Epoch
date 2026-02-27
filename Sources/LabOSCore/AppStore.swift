@@ -15,6 +15,8 @@ public final class AppStore: ObservableObject {
         static let hpcAccount = "LabOS.hpc.account"
         static let hpcQos = "LabOS.hpc.qos"
         static let runCompletionNotificationsEnabled = "LabOS.notifications.runCompletion.enabled"
+        static let openAIVoiceTranscriptionModel = "LabOS.openai.voice.transcriptionModel"
+        static let openAIVoiceTranscriptionPrompt = "LabOS.openai.voice.transcriptionPrompt"
         static let codexPromptDraftPrefix = "LabOS.codexPromptDraft"
         static let codexTrajectoryDurations = "LabOS.codexTrajectoryDurations"
         static let codexQueuedInputPrefix = "LabOS.codexQueuedInput"
@@ -181,9 +183,13 @@ public final class AppStore: ObservableObject {
     @Published public var selectedArtifactPath: String?
     @Published public var highlightedArtifactPath: String?
     @Published public var selectedRunID: UUID?
+    @Published public var isSettingsPresented = false
     @Published public internal(set) var runCompletionNotificationsEnabled = true
     @Published public internal(set) var latestRunCompletionSignal: RunCompletionSignal?
     @Published public internal(set) var latestPendingUserInputSignal: PendingUserInputSignal?
+    @Published public internal(set) var openAIVoiceTranscriptionModel: OpenAIVoiceTranscriptionModel = .gpt4oMiniTranscribe
+    @Published public internal(set) var openAIVoiceTranscriptionPrompt: String = OpenAIVoiceSettings.defaultTranscriptionPrompt
+    @Published public internal(set) var openAIAPIKeyConfigured = false
 
     // MARK: - Internal Services (initialized in init)
     internal var composerService: ComposerService!
@@ -217,6 +223,7 @@ public final class AppStore: ObservableObject {
     internal var artifactDataCache: [String: Data] = [:]
     internal let backend: BackendClient
     internal let defaults: UserDefaults
+    internal let openAIAPIKeyStore: OpenAIAPIKeyStoring
     internal var gatewayClient: GatewayClient?
     internal var codexClient: CodexRPCClient?
     private var gatewayEventsTask: Task<Void, Never>?
@@ -252,10 +259,17 @@ public final class AppStore: ObservableObject {
         formatter.zeroFormattingBehavior = [.dropLeading, .dropTrailing]
         return formatter
     }()
-    public init(backend: BackendClient = MockBackendClient(), bootstrapDemo: Bool = true, userDefaults: UserDefaults = .standard) {
+    public init(
+        backend: BackendClient = MockBackendClient(),
+        bootstrapDemo: Bool = true,
+        userDefaults: UserDefaults = .standard,
+        openAIAPIKeyStore: OpenAIAPIKeyStoring = OpenAIKeychainStore()
+    ) {
         self.backend = backend
         defaults = userDefaults
+        self.openAIAPIKeyStore = openAIAPIKeyStore
         loadGatewaySettings()
+        loadOpenAIVoiceSettings()
         loadCodexTrajectoryDurations()
 
         // Initialize services
@@ -368,6 +382,20 @@ public final class AppStore: ObservableObject {
         preferredBackendEngine = normalizeBackendEngine(defaults.string(forKey: DefaultsKey.backendEngine)) ?? "codex-app-server"
     }
 
+    private func loadOpenAIVoiceSettings() {
+        let rawModel = defaults.string(forKey: DefaultsKey.openAIVoiceTranscriptionModel)
+            ?? OpenAIVoiceTranscriptionModel.gpt4oMiniTranscribe.rawValue
+        openAIVoiceTranscriptionModel = OpenAIVoiceTranscriptionModel(rawValue: rawModel) ?? .gpt4oMiniTranscribe
+
+        let rawPrompt = defaults.string(forKey: DefaultsKey.openAIVoiceTranscriptionPrompt)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        openAIVoiceTranscriptionPrompt = (rawPrompt?.isEmpty == false)
+            ? rawPrompt!
+            : OpenAIVoiceSettings.defaultTranscriptionPrompt
+
+        openAIAPIKeyConfigured = openAIAPIKeyStore.loadAPIKey() != nil
+    }
+
     private func loadCodexTrajectoryDurations() {
         guard let data = defaults.data(forKey: DefaultsKey.codexTrajectoryDurations) else {
             codexTrajectoryDurationsBySession = [:]
@@ -409,6 +437,53 @@ public final class AppStore: ObservableObject {
 
     public func setRunCompletionNotificationsEnabled(_ enabled: Bool) {
         composerService.setRunCompletionNotificationsEnabled(enabled)
+    }
+
+    public var openAIVoiceSettings: OpenAIVoiceSettings {
+        OpenAIVoiceSettings(
+            transcriptionModel: openAIVoiceTranscriptionModel,
+            transcriptionPrompt: openAIVoiceTranscriptionPrompt,
+            hasAPIKey: openAIAPIKeyConfigured
+        )
+    }
+
+    public func saveOpenAIVoiceSettings(
+        apiKey: String?,
+        transcriptionModel: OpenAIVoiceTranscriptionModel,
+        transcriptionPrompt: String
+    ) {
+        openAIVoiceTranscriptionModel = transcriptionModel
+        defaults.set(transcriptionModel.rawValue, forKey: DefaultsKey.openAIVoiceTranscriptionModel)
+
+        let trimmedPrompt = transcriptionPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedPrompt = trimmedPrompt.isEmpty ? OpenAIVoiceSettings.defaultTranscriptionPrompt : trimmedPrompt
+        openAIVoiceTranscriptionPrompt = normalizedPrompt
+        defaults.set(normalizedPrompt, forKey: DefaultsKey.openAIVoiceTranscriptionPrompt)
+
+        let trimmedKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedKey.isEmpty {
+            _ = openAIAPIKeyStore.saveAPIKey(trimmedKey)
+        }
+        openAIAPIKeyConfigured = openAIAPIKeyStore.loadAPIKey() != nil
+    }
+
+    public func clearOpenAIAPIKey() {
+        _ = openAIAPIKeyStore.deleteAPIKey()
+        openAIAPIKeyConfigured = false
+    }
+
+    public func transcribeOpenAIAudio(fileURL: URL) async throws -> String {
+        guard let apiKey = openAIAPIKeyStore.loadAPIKey() else {
+            openAIAPIKeyConfigured = false
+            throw OpenAIAudioTranscriptionError.missingAPIKey
+        }
+        openAIAPIKeyConfigured = true
+        return try await OpenAIAudioTranscriptionService().transcribe(
+            audioFileURL: fileURL,
+            apiKey: apiKey,
+            model: openAIVoiceTranscriptionModel,
+            prompt: openAIVoiceTranscriptionPrompt
+        )
     }
 
     public func saveGatewaySettings(wsURLString: String, token: String) {
@@ -3690,6 +3765,14 @@ public final class AppStore: ObservableObject {
     public func backToProjects() {
         activeProjectID = nil
         activeSessionID = nil
+    }
+
+    public func openSettings() {
+        isSettingsPresented = true
+    }
+
+    public func closeSettings() {
+        isSettingsPresented = false
     }
 
     public func backToProject() {
