@@ -116,14 +116,14 @@ export async function handleTurnStart(
       throw new Error("Codex app-server engine does not support thread/start.");
     }
     const responseHistory = buildResponseHistoryFromTurns(historyTurns);
-    const sandboxMode = toCodexSandboxMode(settings.sandbox);
+    const sandboxParam = toCodexSandboxParam(settings.sandbox);
 
     const repaired = await engine.threadStart({
       cwd: settings.cwd,
       modelProvider: settings.modelProvider,
       ...(modelOverride ?? settings.model ? { model: modelOverride ?? settings.model } : {}),
       approvalPolicy: approvalPolicyOverride ?? settings.approvalPolicy,
-      ...(sandboxMode ? { sandbox: sandboxMode } : {}),
+      ...(sandboxParam ? { sandbox: sandboxParam } : {}),
     });
     const repairedThreadRaw = (repaired.thread ?? null) as Record<string, unknown> | null;
     const repairedThreadId = normalizeNonEmptyString(repairedThreadRaw?.id);
@@ -155,7 +155,7 @@ export async function handleTurnStart(
           modelProvider: repairedModelProvider,
           ...(repairedModelId ? { model: repairedModelId } : {}),
           approvalPolicy: approvalPolicyOverride ?? settings.approvalPolicy,
-          ...(sandboxMode ? { sandbox: sandboxMode } : {}),
+          ...(sandboxParam ? { sandbox: sandboxParam } : {}),
         });
         await maybePersistThreadFromResponse(ctx.repository, resumed, "codex-app-server");
         const resumedThreadRaw = (resumed.thread ?? null) as Record<string, unknown> | null;
@@ -402,6 +402,38 @@ function toCodexSandboxMode(raw: unknown): "read-only" | "workspace-write" | "da
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const obj = raw as Record<string, unknown>;
   return toCodexSandboxMode(normalizeNonEmptyString(obj.mode) ?? normalizeNonEmptyString(obj.type) ?? null);
+}
+
+function toCodexSandboxParam(
+  raw: unknown
+): Record<string, unknown> | string | null {
+  if (!raw) return null;
+  if (typeof raw === "string") {
+    const normalized = raw.trim().toLowerCase();
+    if (normalized === "danger-full-access" || normalized === "dangerfullaccess" || normalized === "danger_full_access")
+      return "danger-full-access";
+    if (normalized === "read-only" || normalized === "readonly" || normalized === "read_only") return "read-only";
+    if (normalized === "workspace-write" || normalized === "workspacewrite" || normalized === "workspace_write")
+      return "workspace-write";
+    return null;
+  }
+  if (typeof raw !== "object" || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+  const mode = normalizeNonEmptyString(obj.mode) ?? normalizeNonEmptyString(obj.type);
+  if (mode === "danger-full-access" || mode === "dangerfullaccess" || mode === "danger_full_access")
+    return "danger-full-access";
+  if (mode === "read-only" || mode === "readonly" || mode === "read_only") return "read-only";
+  if (mode === "workspace-write" || mode === "workspacewrite" || mode === "workspace_write") {
+    // Preserve networkAccess for workspace-write mode
+    return {
+      type: "workspaceWrite",
+      networkAccess: Boolean(obj.networkAccess ?? false),
+      writableRoots: Array.isArray(obj.writableRoots) ? obj.writableRoots : [],
+      excludeTmpdirEnvVar: Boolean(obj.excludeTmpdirEnvVar ?? false),
+      excludeSlashTmp: Boolean(obj.excludeSlashTmp ?? false),
+    };
+  }
+  return null;
 }
 
 const AGENTS_CONTEXT_MARKER = "[LABOS_AGENTS_CONTEXT]";

@@ -5,6 +5,7 @@ import SwiftUI
 import UIKit
 
 struct MessageBubbleView: View {
+    let projectID: UUID
     let message: ChatMessage
     let onArtifactTap: (ChatArtifactReference) -> Void
     let onEditMessage: (ChatMessage) -> Void
@@ -527,7 +528,10 @@ struct MessageBubbleView: View {
                     text: message.text,
                     isStreaming: isStreaming,
                     onImageTap: openAssistantImagePreview,
-                    resolveImageURL: resolveAssistantImageURL
+                    resolveImageURL: resolveAssistantImageURL,
+                    onLinkTap: { url in
+                        handleLinkTap(url)
+                    }
                 )
             } else {
                 // Keep markdown-it + KaTeX for richer finalized payloads, but avoid WKWebView
@@ -654,6 +658,28 @@ struct MessageBubbleView: View {
 
     private func copyMessageText(_ text: String) {
         UIPasteboard.general.string = text
+    }
+
+    private func handleLinkTap(_ url: URL) {
+        if url.scheme == "app" {
+            store.handleDeepLink(url)
+            return
+        }
+        let rawPath = url.isFileURL ? url.path : url.path
+        let relativePath = stripWorkspaceRoot(rawPath)
+        guard !relativePath.isEmpty else { return }
+        store.openArtifact(projectID: projectID, path: relativePath)
+    }
+
+    private func stripWorkspaceRoot(_ path: String) -> String {
+        guard path.hasPrefix("/") else { return path }
+        let knownPrefixes = ["artifacts/", "runs/", "logs/", "session_attachments/"]
+        for prefix in knownPrefixes {
+            if let range = path.range(of: prefix) {
+                return String(path[range.lowerBound...])
+            }
+        }
+        return (path as NSString).lastPathComponent
     }
 }
 

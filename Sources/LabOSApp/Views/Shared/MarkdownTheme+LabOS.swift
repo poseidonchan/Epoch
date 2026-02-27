@@ -25,6 +25,10 @@ extension Theme {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .link {
+                ForegroundColor(.accentColor)
+                UnderlineStyle(.single)
+            }
             .codeBlock { configuration in
                 ScrollView(.horizontal) {
                     configuration.label

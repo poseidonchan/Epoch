@@ -1447,7 +1447,7 @@ struct InlineComposerView: View {
             Circle()
                 .trim(from: 0, to: clampedProgress)
                 .stroke(
-                    Color.blue,
+                    Color.green,
                     style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round)
                 )
                 .rotationEffect(.degrees(-90))

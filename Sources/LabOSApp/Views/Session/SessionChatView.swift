@@ -153,6 +153,7 @@ struct SessionChatView: View {
                         } else {
                             ForEach(messages) { message in
                                 MessageBubbleView(
+                                    projectID: projectID,
                                     message: message,
                                     onArtifactTap: { ref in
                                         store.openArtifactReference(ref)

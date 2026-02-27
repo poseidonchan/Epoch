@@ -9,6 +9,7 @@ struct StreamingMarkdownView: View {
     var throttleInterval: TimeInterval = 0.2
     var onImageTap: ((URL) -> Void)? = nil
     var resolveImageURL: ((URL) -> URL?)? = nil
+    var onLinkTap: ((URL) -> Void)? = nil
 
     @State private var renderedText: String = ""
     @State private var pendingText: String = ""
@@ -44,6 +45,13 @@ struct StreamingMarkdownView: View {
                             resolveImageURL: resolveImageURL
                         )
                     )
+                    .environment(\.openURL, OpenURLAction { url in
+                        if let handler = onLinkTap {
+                            handler(url)
+                            return .handled
+                        }
+                        return .systemAction
+                    })
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.disabled)
             } else {
