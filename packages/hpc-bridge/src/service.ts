@@ -1068,6 +1068,7 @@ export class BridgeService {
   ) {
     const projectRoot = path.resolve(this.projectRoot(projectId));
     await this.ensureProjectWorkspaceDirs(projectRoot);
+    const canonicalProjectRoot = await realpath(projectRoot).catch(() => projectRoot);
     const startPath = await this.resolveProjectPath(projectId, inputPath || ".");
     const maxEntries = Math.max(1, Math.min(20_000, Math.floor(opts.limit)));
     const recursive = Boolean(opts.recursive);
@@ -1104,7 +1105,7 @@ export class BridgeService {
           itemModifiedAt = fileStat.mtime.toISOString();
         }
 
-        const relPath = path.relative(projectRoot, absPath).replaceAll(path.sep, "/");
+        const relPath = path.relative(canonicalProjectRoot, absPath).replaceAll(path.sep, "/");
         if (!relPath || relPath.startsWith("..")) {
           continue;
         }
@@ -1131,7 +1132,7 @@ export class BridgeService {
         await enqueueDirectory(current);
       }
     } else {
-      const relPath = path.relative(projectRoot, startPath).replaceAll(path.sep, "/");
+      const relPath = path.relative(canonicalProjectRoot, startPath).replaceAll(path.sep, "/");
       if (relPath && !relPath.startsWith("..")) {
         entries.push({
           path: relPath,
