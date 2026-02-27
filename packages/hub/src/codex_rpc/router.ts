@@ -1001,7 +1001,14 @@ export class CodexRpcRouter {
           turnId: completedTurnId,
           sessionId: implementationSessionId,
         })
-        .catch(() => {});
+        .catch((error) => {
+          this.notifyPlanImplementationFailure({
+            sessionId: implementationSessionId,
+            threadId,
+            turnId: completedTurnId,
+            error,
+          });
+        });
     }
   }
 
@@ -1010,6 +1017,7 @@ export class CodexRpcRouter {
     turnId: string;
     sessionId: string;
   }) {
+    const threadId = await this.resolveThreadIdForSession(args.sessionId, args.threadId);
     // Avoid issuing duplicate implement-confirmation prompts for the same session.
     const pending = await this.repository.listPendingInputsForSession({
       sessionId: args.sessionId,
@@ -1019,16 +1027,16 @@ export class CodexRpcRouter {
       return;
     }
 
-    const thread = await this.repository.readThread(args.threadId, true);
+    const thread = await this.repository.readThread(threadId, true);
     if (!thread) return;
-    const completedTurn = findTurnByIdVariants(thread, args.threadId, args.turnId);
+    const completedTurn = findTurnByIdVariants(thread, threadId, args.turnId);
     if (!completedTurn) return;
     if (!turnContainsImplementablePlan(completedTurn)) return;
-    if (threadHasNewerUserTurnAfter(thread, args.threadId, args.turnId)) return;
+    if (threadHasNewerUserTurnAfter(thread, threadId, args.turnId)) return;
 
     const requestId = `labos_impl_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
     const params = buildPlanImplementationPromptParams({
-      threadId: args.threadId,
+      threadId,
       turnId: args.turnId,
     });
 
@@ -1036,7 +1044,7 @@ export class CodexRpcRouter {
       token: this.token,
       requestId,
       sessionId: args.sessionId,
-      threadId: args.threadId,
+      threadId,
       method: "item/tool/requestUserInput",
       kind: "implement_confirmation",
       params,
@@ -1054,11 +1062,6 @@ export class CodexRpcRouter {
           kind: "implement_confirmation",
         }
       );
-      await this.repository.resolvePendingInput({
-        token: this.token,
-        requestId,
-        status: "resolved",
-      });
     } catch (err) {
       if (shouldResolvePendingRequestOnError(err)) {
         await this.repository.resolvePendingInput({
@@ -1071,12 +1074,24 @@ export class CodexRpcRouter {
     }
 
     const followup = decidePlanImplementationFollowup(response);
-    if (!followup) return;
+    if (!followup) {
+      await this.repository.resolvePendingInput({
+        token: this.token,
+        requestId,
+        status: "resolved",
+      });
+      return;
+    }
     await this.startFollowupTurn({
-      threadId: args.threadId,
+      threadId,
       sessionId: args.sessionId,
       text: followup.text,
       planMode: followup.planMode,
+    });
+    await this.repository.resolvePendingInput({
+      token: this.token,
+      requestId,
+      status: "resolved",
     });
   }
 
@@ -1086,13 +1101,14 @@ export class CodexRpcRouter {
     text: string;
     planMode: boolean;
   }) {
+    const threadId = await this.resolveThreadIdForSession(args.sessionId, args.threadId);
     const prepared = await handleTurnStart(
       {
         repository: this.repository,
         engines: this.engines,
       },
       {
-        threadId: args.threadId,
+        threadId,
         sessionId: args.sessionId,
         input: [
           {
@@ -1113,6 +1129,30 @@ export class CodexRpcRouter {
       turnId: prepared.turnId,
       seedTurn: prepared.turn,
       events: prepared.events,
+    });
+  }
+
+  private async resolveThreadIdForSession(sessionId: string, fallbackThreadId: string): Promise<string> {
+    const mappedThreadId = normalizeNonEmptyString(await this.repository.findThreadBySession?.(sessionId));
+    return mappedThreadId ?? fallbackThreadId;
+  }
+
+  private notifyPlanImplementationFailure(args: {
+    sessionId: string;
+    threadId: string;
+    turnId: string;
+    error: unknown;
+  }) {
+    const rawMessage = normalizeNonEmptyString(args.error instanceof Error ? args.error.message : args.error);
+    const message =
+      rawMessage ?? "Unable to start plan implementation. Please retry from the prompt or send a follow-up message.";
+    this.connection.sendNotification("codex/event/error", {
+      sessionId: args.sessionId,
+      threadId: args.threadId,
+      turnId: args.turnId,
+      error: {
+        message: `Plan implementation failed: ${message}`,
+      },
     });
   }
 
@@ -1297,21 +1337,22 @@ export function decidePlanImplementationFollowup(
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
   const answerList = (entry as Record<string, unknown>).answers;
   if (!Array.isArray(answerList) || answerList.length === 0) return null;
-  const raw = normalizeNonEmptyString(answerList[0]);
-  if (!raw) return null;
-
-  const normalized = normalizePlanImplementationDecision(raw);
-  if (
-    normalized === "yes, implement this plan" ||
-    normalized === "yes implement this plan" ||
-    normalized === "implement now" ||
-    normalized === "implement it" ||
-    normalized === "implement plan"
-  ) {
-    return {
-      planMode: false,
-      text: "Implement it",
-    };
+  for (const answer of answerList) {
+    const raw = normalizeNonEmptyString(answer);
+    if (!raw) continue;
+    const normalized = normalizePlanImplementationDecision(raw);
+    if (
+      normalized === "yes, implement this plan" ||
+      normalized === "yes implement this plan" ||
+      normalized === "implement now" ||
+      normalized === "implement it" ||
+      normalized === "implement plan"
+    ) {
+      return {
+        planMode: false,
+        text: "Implement it",
+      };
+    }
   }
   return null;
 }

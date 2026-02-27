@@ -113,111 +113,121 @@ test("thread/tokenUsage/updated remains backward compatible with legacy flat pay
 });
 
 test("handleLabosSessionRead includes context payload with remaining tokens", async () => {
+  const originalRoot = process.env.LABOS_HPC_WORKSPACE_ROOT;
+  process.env.LABOS_HPC_WORKSPACE_ROOT = "/tmp/labos";
+
   const projectId = "123e4567-e89b-12d3-a456-426614174200";
   const sessionId = "123e4567-e89b-12d3-a456-426614174201";
   const threadId = "123e4567-e89b-12d3-a456-426614174202";
+  try {
+    const repository = {
+      async query(sql, args = []) {
+        const normalized = String(sql);
+        if (normalized.includes("FROM sessions") && normalized.includes("WHERE project_id=$1 AND id=$2")) {
+          assert.equal(args[0], projectId);
+          assert.equal(args[1], sessionId);
+          return [
+            {
+              id: sessionId,
+              project_id: projectId,
+              title: "Session Read Context",
+              lifecycle: "active",
+              created_at: "2026-02-01T00:00:00.000Z",
+              updated_at: "2026-02-02T00:00:00.000Z",
+              backend_engine: "codex-app-server",
+              codex_thread_id: threadId,
+              codex_model: "gpt-5.1",
+              codex_model_provider: "openai",
+              codex_approval_policy: "on-request",
+              codex_sandbox_json: JSON.stringify({ mode: "workspace-write" }),
+              hpc_workspace_state: "queued",
+              permission_level: "full",
+              context_model_id: "gpt-5.1",
+              context_window_tokens: 100000,
+              context_used_input_tokens: 12000,
+              context_used_tokens: 19000,
+              context_updated_at: "2026-02-26T10:00:00.000Z",
+            },
+          ];
+        }
+        throw new Error(`Unexpected SQL: ${normalized}`);
+      },
+      async getThreadRecord(id) {
+        assert.equal(id, threadId);
+        return {
+          id: threadId,
+          projectId,
+          cwd: "projects/123e4567-e89b-12d3-a456-426614174200",
+          modelProvider: "openai",
+          modelId: "gpt-5.1",
+          preview: "",
+          createdAt: 1,
+          updatedAt: 2,
+          archived: false,
+          statusJson: JSON.stringify({ syncState: "ready" }),
+          engine: "codex-app-server",
+        };
+      },
+      async updateThread() {},
+      async readThread(id, includeTurns) {
+        assert.equal(id, threadId);
+        assert.equal(typeof includeTurns, "boolean");
+        return {
+          id: threadId,
+          preview: "",
+          modelProvider: "openai",
+          createdAt: 1,
+          updatedAt: 2,
+          path: null,
+          cwd: "projects/123e4567-e89b-12d3-a456-426614174200",
+          cliVersion: "@labos/hub/0.1.0",
+          source: "appServer",
+          gitInfo: null,
+          turns: [],
+        };
+      },
+      async assignThreadToSession(args) {
+        assert.equal(args.threadId, threadId);
+        assert.equal(args.sessionId, sessionId);
+      },
+      async listPendingInputsForSession() {
+        return [];
+      },
+      async readPlanSnapshotForSession() {
+        return null;
+      },
+    };
 
-  const repository = {
-    async query(sql, args = []) {
-      const normalized = String(sql);
-      if (normalized.includes("FROM sessions") && normalized.includes("WHERE project_id=$1 AND id=$2")) {
-        assert.equal(args[0], projectId);
-        assert.equal(args[1], sessionId);
-        return [
-          {
-            id: sessionId,
-            project_id: projectId,
-            title: "Session Read Context",
-            lifecycle: "active",
-            created_at: "2026-02-01T00:00:00.000Z",
-            updated_at: "2026-02-02T00:00:00.000Z",
-            backend_engine: "codex-app-server",
-            codex_thread_id: threadId,
-            codex_model: "gpt-5.1",
-            codex_model_provider: "openai",
-            codex_approval_policy: "on-request",
-            codex_sandbox_json: JSON.stringify({ mode: "workspace-write" }),
-            hpc_workspace_state: "queued",
-            permission_level: "full",
-            context_model_id: "gpt-5.1",
-            context_window_tokens: 100000,
-            context_used_input_tokens: 12000,
-            context_used_tokens: 19000,
-            context_updated_at: "2026-02-26T10:00:00.000Z",
-          },
-        ];
-      }
-      throw new Error(`Unexpected SQL: ${normalized}`);
-    },
-    async getThreadRecord(id) {
-      assert.equal(id, threadId);
-      return {
-        id: threadId,
+    const result = await handleLabosSessionRead(
+      {
+        repository,
+        engines: {},
+        pendingUserInputSummaryBySession: new Map(),
+        runtimeToken: "tok_read_context",
+      },
+      {
         projectId,
-        cwd: "projects/123e4567-e89b-12d3-a456-426614174200",
-        modelProvider: "openai",
-        modelId: "gpt-5.1",
-        preview: "",
-        createdAt: 1,
-        updatedAt: 2,
-        archived: false,
-        statusJson: JSON.stringify({ syncState: "ready" }),
-        engine: "codex-app-server",
-      };
-    },
-    async updateThread() {},
-    async readThread(id, includeTurns) {
-      assert.equal(id, threadId);
-      assert.equal(typeof includeTurns, "boolean");
-      return {
-        id: threadId,
-        preview: "",
-        modelProvider: "openai",
-        createdAt: 1,
-        updatedAt: 2,
-        path: null,
-        cwd: "projects/123e4567-e89b-12d3-a456-426614174200",
-        cliVersion: "@labos/hub/0.1.0",
-        source: "appServer",
-        gitInfo: null,
-        turns: [],
-      };
-    },
-    async assignThreadToSession(args) {
-      assert.equal(args.threadId, threadId);
-      assert.equal(args.sessionId, sessionId);
-    },
-    async listPendingInputsForSession() {
-      return [];
-    },
-    async readPlanSnapshotForSession() {
-      return null;
-    },
-  };
+        sessionId,
+        includeTurns: false,
+      }
+    );
 
-  const result = await handleLabosSessionRead(
-    {
-      repository,
-      engines: {},
-      pendingUserInputSummaryBySession: new Map(),
-      runtimeToken: "tok_read_context",
-    },
-    {
-      projectId,
-      sessionId,
-      includeTurns: false,
+    assert.equal(result.context.projectId, projectId);
+    assert.equal(result.context.sessionId, sessionId);
+    assert.equal(result.context.permissionLevel, "full");
+    assert.equal(result.context.modelId, "gpt-5.1");
+    assert.equal(result.context.contextWindowTokens, 100000);
+    assert.equal(result.context.usedInputTokens, 12000);
+    assert.equal(result.context.usedTokens, 19000);
+    assert.equal(result.context.remainingTokens, 88000);
+    assert.equal(result.context.updatedAt, "2026-02-26T10:00:00.000Z");
+  } finally {
+    if (originalRoot == null) {
+      delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+    } else {
+      process.env.LABOS_HPC_WORKSPACE_ROOT = originalRoot;
     }
-  );
-
-  assert.equal(result.context.projectId, projectId);
-  assert.equal(result.context.sessionId, sessionId);
-  assert.equal(result.context.permissionLevel, "full");
-  assert.equal(result.context.modelId, "gpt-5.1");
-  assert.equal(result.context.contextWindowTokens, 100000);
-  assert.equal(result.context.usedInputTokens, 12000);
-  assert.equal(result.context.usedTokens, 19000);
-  assert.equal(result.context.remainingTokens, 88000);
-  assert.equal(result.context.updatedAt, "2026-02-26T10:00:00.000Z");
+  }
 });
 
 test("handleLabosSessionRead marks mapped threads for remote rehydration when cwd changes", async () => {
@@ -326,6 +336,192 @@ test("handleLabosSessionRead marks mapped threads for remote rehydration when cw
     assert.equal(status.cwd, expectedWorkspace);
     assert.equal(status.syncState, "needsRemoteHydration");
     assert.equal(result.syncState, "needsRemoteHydration");
+  } finally {
+    if (originalRoot == null) {
+      delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+    } else {
+      process.env.LABOS_HPC_WORKSPACE_ROOT = originalRoot;
+    }
+  }
+});
+
+test("handleLabosSessionRead fails fast when workspace root is unavailable", async () => {
+  const originalRoot = process.env.LABOS_HPC_WORKSPACE_ROOT;
+  delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+
+  const projectId = "123e4567-e89b-12d3-a456-426614174220";
+  const sessionId = "123e4567-e89b-12d3-a456-426614174221";
+
+  try {
+    const repository = {
+      async query(sql, args = []) {
+        const normalized = String(sql);
+        if (normalized.includes("FROM sessions") && normalized.includes("WHERE project_id=$1 AND id=$2")) {
+          assert.equal(args[0], projectId);
+          assert.equal(args[1], sessionId);
+          return [
+            {
+              id: sessionId,
+              project_id: projectId,
+              title: "Session Missing Workspace Root",
+              lifecycle: "active",
+              created_at: "2026-02-01T00:00:00.000Z",
+              updated_at: "2026-02-02T00:00:00.000Z",
+              backend_engine: "codex-app-server",
+              codex_thread_id: null,
+              codex_model: "gpt-5.1",
+              codex_model_provider: "openai",
+              codex_approval_policy: "on-request",
+              codex_sandbox_json: JSON.stringify({ mode: "workspace-write" }),
+              hpc_workspace_state: "queued",
+              permission_level: "default",
+            },
+          ];
+        }
+        if (normalized.includes("FROM nodes")) {
+          return [];
+        }
+        throw new Error(`Unexpected SQL: ${normalized}`);
+      },
+    };
+
+    await assert.rejects(
+      () =>
+        handleLabosSessionRead(
+          {
+            repository,
+            engines: {},
+            pendingUserInputSummaryBySession: new Map(),
+            runtimeToken: "tok_workspace_missing",
+          },
+          {
+            projectId,
+            sessionId,
+            includeTurns: false,
+          }
+        ),
+      /CAPABILITY_MISSING: node workspaceRoot is unavailable/
+    );
+  } finally {
+    if (originalRoot == null) {
+      delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+    } else {
+      process.env.LABOS_HPC_WORKSPACE_ROOT = originalRoot;
+    }
+  }
+});
+
+test("handleLabosSessionRead resolves workspace root from nodes table when env is unavailable", async () => {
+  const originalRoot = process.env.LABOS_HPC_WORKSPACE_ROOT;
+  delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+
+  const projectId = "123e4567-e89b-12d3-a456-426614174222";
+  const sessionId = "123e4567-e89b-12d3-a456-426614174223";
+  const threadId = "123e4567-e89b-12d3-a456-426614174224";
+  const workspaceRoot = "/tmp/labos-from-node";
+  const expectedCwd = `${workspaceRoot}/projects/${projectId}`;
+  let updatedThread = null;
+
+  try {
+    const repository = {
+      async query(sql, args = []) {
+        const normalized = String(sql);
+        if (normalized.includes("FROM sessions") && normalized.includes("WHERE project_id=$1 AND id=$2")) {
+          assert.equal(args[0], projectId);
+          assert.equal(args[1], sessionId);
+          return [
+            {
+              id: sessionId,
+              project_id: projectId,
+              title: "Session Workspace From Node",
+              lifecycle: "active",
+              created_at: "2026-02-01T00:00:00.000Z",
+              updated_at: "2026-02-02T00:00:00.000Z",
+              backend_engine: "codex-app-server",
+              codex_thread_id: threadId,
+              codex_model: "gpt-5.1",
+              codex_model_provider: "openai",
+              codex_approval_policy: "on-request",
+              codex_sandbox_json: JSON.stringify({ mode: "workspace-write" }),
+              hpc_workspace_state: "queued",
+              permission_level: "default",
+            },
+          ];
+        }
+        if (normalized.includes("FROM nodes")) {
+          return [
+            {
+              permissions: JSON.stringify({ workspaceRoot }),
+            },
+          ];
+        }
+        throw new Error(`Unexpected SQL: ${normalized}`);
+      },
+      async getThreadRecord(id) {
+        assert.equal(id, threadId);
+        return {
+          id: threadId,
+          projectId,
+          cwd: `projects/${projectId}`,
+          modelProvider: "openai",
+          modelId: "gpt-5.1",
+          preview: "",
+          createdAt: 1,
+          updatedAt: 2,
+          archived: false,
+          statusJson: JSON.stringify({ syncState: "ready" }),
+          engine: "codex-app-server",
+        };
+      },
+      async updateThread(args) {
+        updatedThread = args;
+      },
+      async readThread(id, includeTurns) {
+        assert.equal(id, threadId);
+        assert.equal(typeof includeTurns, "boolean");
+        return {
+          id: threadId,
+          preview: "",
+          modelProvider: "openai",
+          createdAt: 1,
+          updatedAt: 2,
+          path: null,
+          cwd: expectedCwd,
+          cliVersion: "@labos/hub/0.1.0",
+          source: "appServer",
+          gitInfo: null,
+          turns: [],
+        };
+      },
+      async assignThreadToSession(args) {
+        assert.equal(args.threadId, threadId);
+        assert.equal(args.sessionId, sessionId);
+      },
+      async listPendingInputsForSession() {
+        return [];
+      },
+      async readPlanSnapshotForSession() {
+        return null;
+      },
+    };
+
+    const result = await handleLabosSessionRead(
+      {
+        repository,
+        engines: {},
+        pendingUserInputSummaryBySession: new Map(),
+        runtimeToken: "tok_workspace_nodes",
+      },
+      {
+        projectId,
+        sessionId,
+        includeTurns: false,
+      }
+    );
+
+    assert.ok(updatedThread);
+    assert.equal(updatedThread.cwd, expectedCwd);
+    assert.equal(result.thread.cwd, expectedCwd);
   } finally {
     if (originalRoot == null) {
       delete process.env.LABOS_HPC_WORKSPACE_ROOT;

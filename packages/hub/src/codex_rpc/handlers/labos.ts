@@ -1613,8 +1613,10 @@ async function enqueueWorkspaceProvisioning(
 
 async function resolveProjectWorkspacePath(repository: CodexRepository, projectId: string): Promise<string> {
   const root = await resolveWorkspaceRoot(repository);
-  if (root) return path.join(root, "projects", projectId);
-  return path.join("projects", projectId);
+  if (!root) {
+    throw new Error("CAPABILITY_MISSING: node workspaceRoot is unavailable");
+  }
+  return path.join(root, "projects", projectId);
 }
 
 async function resolveWorkspaceRoot(repository: CodexRepository): Promise<string | null> {
@@ -1639,6 +1641,19 @@ async function resolveWorkspaceRoot(repository: CodexRepository): Promise<string
     if (workspaceRoot) return workspaceRoot;
   }
   return null;
+}
+
+function parseJsonObject(raw: unknown): Record<string, unknown> | null {
+  if (!raw) return null;
+  if (typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  if (typeof raw !== "string") return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeBackendEngine(raw: unknown): "codex-app-server" | null {

@@ -191,6 +191,39 @@ export type HubHandle = {
   close: () => Promise<void>;
 };
 
+export async function upsertNodeConnectionSnapshot(
+  pool: DbPool,
+  nodeCtx: ConnectionContext & { role: "node" },
+  nowIso: string = new Date().toISOString()
+) {
+  await pool.query(
+    `INSERT INTO nodes (
+       id, device_id, name, platform, version, caps, commands, permissions, last_seen_at, created_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+     ON CONFLICT (id) DO UPDATE SET
+       device_id=EXCLUDED.device_id,
+       name=EXCLUDED.name,
+       platform=EXCLUDED.platform,
+       version=EXCLUDED.version,
+       caps=EXCLUDED.caps,
+       commands=EXCLUDED.commands,
+       permissions=EXCLUDED.permissions,
+       last_seen_at=EXCLUDED.last_seen_at`,
+    [
+      nodeCtx.deviceId,
+      nodeCtx.deviceId,
+      nodeCtx.deviceName,
+      nodeCtx.platform,
+      nodeCtx.clientVersion,
+      JSON.stringify(nodeCtx.caps ?? []),
+      JSON.stringify(nodeCtx.commands ?? []),
+      JSON.stringify(nodeCtx.permissions ?? {}),
+      nowIso,
+      nowIso,
+    ]
+  );
+}
+
 export async function startHub(opts: HubStartOptions): Promise<HubHandle> {
   const fastify = Fastify({ logger: true });
   await fastify.register(multipart, {
@@ -723,6 +756,11 @@ async function handleWsConnection(ws: WebSocket, state: HubState) {
           ctx = nodeCtx;
           state.node = { ws, ctx: nodeCtx };
           state.resources.computeConnected = true;
+          try {
+            await upsertNodeConnectionSnapshot(state.pool, nodeCtx);
+          } catch (err) {
+            fastify.log.warn({ err, deviceId: nodeCtx.deviceId }, "failed to persist node connection snapshot");
+          }
 
           if (state.hpcPrefs) {
             void callNode(state, "hpc.prefs.set", {
@@ -4515,6 +4553,12 @@ async function handleNodeEvent(state: HubState, event: string, payload: any) {
       if (typeof payload.ramPercent === "number") state.resources.ramPercent = payload.ramPercent;
       if (Object.prototype.hasOwnProperty.call(payload ?? {}, "hpc")) {
         state.resources.hpc = normalizeHpcStatus(payload?.hpc);
+      }
+      const connectedNode = state.node?.ctx?.role === "node" ? state.node.ctx : null;
+      if (connectedNode) {
+        await upsertNodeConnectionSnapshot(state.pool, connectedNode).catch(() => {
+          // best effort
+        });
       }
       void drainWorkspaceProvisioningQueue(state).catch(() => {
         // best effort
