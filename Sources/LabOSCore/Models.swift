@@ -344,67 +344,6 @@ public struct RunRecord: Identifiable, Hashable, Codable, Sendable {
     }
 }
 
-public enum ToolRuntime: String, Codable, CaseIterable, Sendable {
-    case python = "Python"
-    case shell = "Shell"
-    case download = "Download"
-    case hpcJob = "HPC Job"
-    case notebook = "Notebook"
-}
-
-public enum PlanRiskFlag: String, Codable, CaseIterable, Sendable {
-    case networkAccess = "Network access"
-    case largeDownload = "Large download"
-    case overwriteExisting = "Overwrite existing files"
-}
-
-public struct PlanStep: Identifiable, Hashable, Codable, Sendable {
-    public let id: UUID
-    public var title: String
-    public var runtime: ToolRuntime
-    public var inputs: [String]
-    public var outputs: [String]
-    public var riskFlags: [PlanRiskFlag]
-
-    public init(
-        id: UUID = UUID(),
-        title: String,
-        runtime: ToolRuntime,
-        inputs: [String],
-        outputs: [String],
-        riskFlags: [PlanRiskFlag] = []
-    ) {
-        self.id = id
-        self.title = title
-        self.runtime = runtime
-        self.inputs = inputs
-        self.outputs = outputs
-        self.riskFlags = riskFlags
-    }
-}
-
-public struct ExecutionPlan: Identifiable, Hashable, Codable, Sendable {
-    public let id: UUID
-    public let projectID: UUID
-    public let sessionID: UUID
-    public let createdAt: Date
-    public var steps: [PlanStep]
-
-    public init(
-        id: UUID = UUID(),
-        projectID: UUID,
-        sessionID: UUID,
-        createdAt: Date = .now,
-        steps: [PlanStep]
-    ) {
-        self.id = id
-        self.projectID = projectID
-        self.sessionID = sessionID
-        self.createdAt = createdAt
-        self.steps = steps
-    }
-}
-
 public enum ThinkingLevel: String, Codable, CaseIterable, Sendable {
     case minimal
     case low
@@ -548,53 +487,6 @@ public struct JudgmentQuestion: Hashable, Codable, Sendable {
     }
 }
 
-public struct JudgmentPrompt: Hashable, Codable, Sendable {
-    public var questions: [JudgmentQuestion]
-
-    public init(questions: [JudgmentQuestion]) {
-        self.questions = questions
-    }
-}
-
-public struct JudgmentResponses: Hashable, Codable, Sendable {
-    public var answers: [String: String]?
-    public var freeform: [String: String]?
-
-    public init(answers: [String: String]? = nil, freeform: [String: String]? = nil) {
-        self.answers = answers
-        self.freeform = freeform
-    }
-}
-
-public struct PendingApproval: Identifiable, Hashable, Sendable {
-    public var id: UUID { planId }
-    public var planId: UUID
-    public var projectId: UUID
-    public var sessionId: UUID
-    public var agentRunId: UUID
-    public var plan: ExecutionPlan
-    public var required: Bool
-    public var judgment: JudgmentPrompt?
-
-    public init(
-        planId: UUID,
-        projectId: UUID,
-        sessionId: UUID,
-        agentRunId: UUID,
-        plan: ExecutionPlan,
-        required: Bool,
-        judgment: JudgmentPrompt?
-    ) {
-        self.planId = planId
-        self.projectId = projectId
-        self.sessionId = sessionId
-        self.agentRunId = agentRunId
-        self.plan = plan
-        self.required = required
-        self.judgment = judgment
-    }
-}
-
 public struct ChatArtifactReference: Hashable, Codable, Sendable {
     public var displayText: String
     public var projectID: UUID
@@ -668,7 +560,6 @@ public struct ChatMessage: Identifiable, Hashable, Codable, Sendable {
     public var text: String
     public let createdAt: Date
     public var artifactRefs: [ChatArtifactReference]
-    public var proposedPlan: ExecutionPlan?
     public var linkedRunID: UUID?
 
     public init(
@@ -678,7 +569,6 @@ public struct ChatMessage: Identifiable, Hashable, Codable, Sendable {
         text: String,
         createdAt: Date = .now,
         artifactRefs: [ChatArtifactReference] = [],
-        proposedPlan: ExecutionPlan? = nil,
         linkedRunID: UUID? = nil
     ) {
         self.id = id
@@ -687,7 +577,6 @@ public struct ChatMessage: Identifiable, Hashable, Codable, Sendable {
         self.text = text
         self.createdAt = createdAt
         self.artifactRefs = artifactRefs
-        self.proposedPlan = proposedPlan
         self.linkedRunID = linkedRunID
     }
 }

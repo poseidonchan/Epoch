@@ -381,10 +381,6 @@ struct MessageBubbleView: View {
                     )
                 }
 
-                if let plan = message.proposedPlan {
-                    planSummary(plan)
-                }
-
                 if !message.artifactRefs.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(Array(message.artifactRefs.enumerated()), id: \.offset) { _, ref in
@@ -579,23 +575,6 @@ struct MessageBubbleView: View {
                 }
             }
         }
-    }
-
-    private func planSummary(_ plan: ExecutionPlan) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Proposed Plan")
-                .font(.caption.weight(.semibold))
-            ForEach(plan.steps.indices, id: \.self) { idx in
-                Text("\(idx + 1). \(plan.steps[idx].title)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.yellow.opacity(0.14))
-        )
     }
 
     private var assistantActionBar: some View {

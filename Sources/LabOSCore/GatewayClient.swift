@@ -13,25 +13,11 @@ public enum GatewayEvent: Sendable {
     case sessionsUpdated(Session, change: String)
     case sessionPermissionUpdated(SessionPermissionUpdatedPayload)
     case chatMessageCreated(projectID: UUID, sessionID: UUID, message: ChatMessage)
-    case assistantDelta(AssistantDeltaPayload)
-    case toolEvent(ToolEventPayload)
-    case planUpdated(AgentPlanUpdatedPayload)
     case sessionContextUpdated(SessionContextUpdatedPayload)
-    case lifecycle(LifecyclePayload)
-    case approvalRequested(ApprovalRequestedPayload)
-    case approvalResolved(planID: UUID, decision: String)
     case runsUpdated(projectID: UUID, run: RunRecord, change: String)
     case runsLogDelta(RunLogDeltaPayload)
     case artifactsUpdated(projectID: UUID, artifact: Artifact, change: String)
     case settingsOpenAIUpdated(OpenAIHubSettingsStatus)
-}
-
-public struct AssistantDeltaPayload: Hashable, Codable, Sendable {
-    public var agentRunId: UUID
-    public var projectId: UUID
-    public var sessionId: UUID
-    public var messageId: UUID
-    public var delta: String
 }
 
 public struct SessionPermissionUpdatedPayload: Hashable, Codable, Sendable {
@@ -50,37 +36,6 @@ public struct SessionContextUpdatedPayload: Hashable, Codable, Sendable {
     public var usedTokens: Int
     public var remainingTokens: Int
     public var updatedAt: Date
-}
-
-public struct LifecyclePayload: Hashable, Codable, Sendable {
-    public var agentRunId: UUID
-    public var projectId: UUID
-    public var sessionId: UUID
-    public var phase: String
-    public var error: GatewayError?
-}
-
-public struct ApprovalRequestedPayload: Hashable, Codable, Sendable {
-    public var planId: UUID
-    public var agentRunId: UUID
-    public var projectId: UUID
-    public var sessionId: UUID
-    public var plan: ExecutionPlan
-    public var required: Bool
-    public var judgment: JudgmentPrompt?
-}
-
-public struct ToolEventPayload: Hashable, Codable, Sendable {
-    public var agentRunId: UUID
-    public var projectId: UUID
-    public var sessionId: UUID
-    public var runId: UUID?
-    public var toolCallId: String
-    public var tool: String
-    public var phase: String
-    public var summary: String
-    public var detail: [String: JSONValue]
-    public var ts: String
 }
 
 public struct AgentPlanUpdatedPayload: Hashable, Codable, Sendable {
@@ -329,34 +284,9 @@ public final class GatewayClient: ObservableObject {
                let message: ChatMessage = try? decodeEventPayload(eventFrame.payload, key: "message") {
                 eventsContinuation?.yield(.chatMessageCreated(projectID: projectID, sessionID: sessionID, message: message))
             }
-        case "agent.stream.assistant_delta":
-            if let delta: AssistantDeltaPayload = try? decodeEventPayload(eventFrame.payload) {
-                eventsContinuation?.yield(.assistantDelta(delta))
-            }
-        case "agent.stream.tool_event":
-            if let payload: ToolEventPayload = try? decodeEventPayload(eventFrame.payload) {
-                eventsContinuation?.yield(.toolEvent(payload))
-            }
-        case "agent.plan.updated":
-            if let payload: AgentPlanUpdatedPayload = try? decodeEventPayload(eventFrame.payload) {
-                eventsContinuation?.yield(.planUpdated(payload))
-            }
         case "sessions.context.updated":
             if let payload: SessionContextUpdatedPayload = try? decodeEventPayload(eventFrame.payload) {
                 eventsContinuation?.yield(.sessionContextUpdated(payload))
-            }
-        case "agent.stream.lifecycle":
-            if let lifecycle: LifecyclePayload = try? decodeEventPayload(eventFrame.payload) {
-                eventsContinuation?.yield(.lifecycle(lifecycle))
-            }
-        case "exec.approval.requested":
-            if let approval: ApprovalRequestedPayload = try? decodeEventPayload(eventFrame.payload) {
-                eventsContinuation?.yield(.approvalRequested(approval))
-            }
-        case "exec.approval.resolved":
-            if let planID: UUID = try? decodeEventPayload(eventFrame.payload, key: "planId"),
-               let decision: String = try? decodeEventPayload(eventFrame.payload, key: "decision") {
-                eventsContinuation?.yield(.approvalResolved(planID: planID, decision: decision))
             }
         case "runs.updated":
             if let projectID: UUID = try? decodeEventPayload(eventFrame.payload, key: "projectId"),

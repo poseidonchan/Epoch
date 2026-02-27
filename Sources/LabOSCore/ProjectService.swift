@@ -237,7 +237,6 @@ internal final class ProjectService {
                 store.codexThreadBySession[sessionID] = nil
             }
             store.composerService.pruneAttachmentPayloads(for: sessionID, keptMessageIDs: [])
-            store.planService.pendingApprovalsBySession[sessionID] = nil
             store.livePlanBySession[sessionID] = nil
             store.liveAgentEventsBySession[sessionID] = nil
             store.activeInlineProcessBySession[sessionID] = nil
@@ -253,10 +252,6 @@ internal final class ProjectService {
         store.persistedProcessSummaryByMessageID = store.persistedProcessSummaryByMessageID.filter { summary in
             !removedSessionIDs.contains(summary.value.sessionID)
         }
-        for (planID, sessionID) in store.planService.planSessionByPlanID where removedSessionIDs.contains(sessionID) {
-            store.planService.planSessionByPlanID[planID] = nil
-        }
-
         store.chatService.sessionHistoryPrefetchTasksByProject[projectID]?.cancel()
         store.chatService.sessionHistoryPrefetchTasksByProject[projectID] = nil
 
@@ -757,7 +752,6 @@ internal final class ProjectService {
             store.codexThreadBySession[sessionID] = nil
         }
         store.composerService.pruneAttachmentPayloads(for: sessionID, keptMessageIDs: [])
-        store.planService.pendingApprovalsBySession[sessionID] = nil
         store.livePlanBySession[sessionID] = nil
         store.liveAgentEventsBySession[sessionID] = nil
         store.activeInlineProcessBySession[sessionID] = nil
@@ -773,10 +767,6 @@ internal final class ProjectService {
         store.chatService.sessionHistoryRequestsInFlight.remove(sessionID)
         store.chatService.sessionHistoryLastFetchedAtBySession[sessionID] = nil
         store.clearCodexTrajectoryDurations(sessionID: sessionID)
-        for (planID, mappedSessionID) in store.planService.planSessionByPlanID where mappedSessionID == sessionID {
-            store.planService.planSessionByPlanID[planID] = nil
-        }
-
         if var runs = store.runsByProject[projectID] {
             for index in runs.indices where runs[index].sessionID == sessionID {
                 runs[index].sessionID = nil

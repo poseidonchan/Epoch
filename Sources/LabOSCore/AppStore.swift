@@ -198,7 +198,6 @@ public final class AppStore: ObservableObject {
     // MARK: - Internal Services (initialized in init)
     internal var composerService: ComposerService!
     internal var projectService: ProjectService!
-    internal var planService: PlanApprovalService!
     internal var chatService: ChatSessionService!
 
     enum SessionHistoryRefreshTrigger {
@@ -281,7 +280,6 @@ public final class AppStore: ObservableObject {
         // Initialize services
         composerService = ComposerService(store: self)
         projectService = ProjectService(store: self)
-        planService = PlanApprovalService(store: self)
         chatService = ChatSessionService(store: self)
 
         composerService.loadHpcSettings()
@@ -861,8 +859,6 @@ public final class AppStore: ObservableObject {
         codexClient = nil
         gatewayConnectionState = .disconnected
         codexConnectionState = .disconnected
-        planService.pendingApprovalsBySession.removeAll()
-        planService.planSessionByPlanID.removeAll()
         livePlanBySession.removeAll()
         liveAgentEventsBySession.removeAll()
         activeInlineProcessBySession.removeAll()
@@ -2251,17 +2247,13 @@ public final class AppStore: ObservableObject {
         let promptQueue = codexPendingPromptBySession[sessionID] ?? []
         let promptCount = promptQueue.count
         let approvalCount = codexPendingApprovalsBySession[sessionID]?.count ?? 0
-        let planApprovalCount = planService.pendingApproval(for: sessionID) == nil ? 0 : 1
-        let total = promptCount + approvalCount + planApprovalCount
+        let total = promptCount + approvalCount
         let kind: String? = {
             if let prompt = promptQueue.first {
                 return prompt.kind
             }
             if approvalCount > 0 {
                 return "approval"
-            }
-            if planApprovalCount > 0 {
-                return "plan"
             }
             return nil
         }()
@@ -2675,15 +2667,6 @@ public final class AppStore: ObservableObject {
         case let .chatMessageCreated(_, sessionID, message):
             chatService.applyRemoteMessage(sessionID: sessionID, message: message)
 
-        case let .assistantDelta(payload):
-            chatService.applyAssistantDelta(payload)
-
-        case let .toolEvent(payload):
-            chatService.applyToolEvent(payload)
-
-	        case let .planUpdated(payload):
-	            livePlanBySession[payload.sessionId] = payload
-
 	        case let .sessionContextUpdated(payload):
 	            sessionContextBySession[payload.sessionId] = SessionContextState(
 	                projectId: payload.projectId,
@@ -2695,17 +2678,6 @@ public final class AppStore: ObservableObject {
 	                remainingTokens: payload.remainingTokens,
 	                updatedAt: payload.updatedAt
 	            )
-
-	        case let .approvalRequested(payload):
-            planService.handleApprovalRequested(payload)
-            refreshSessionPendingUserInputMetadata(sessionID: payload.sessionId)
-
-        case let .approvalResolved(planID, decision):
-            let mappedSessionID = planService.planSessionByPlanID[planID]
-            planService.handleApprovalResolved(planID: planID, decision: decision)
-            if let mappedSessionID {
-                refreshSessionPendingUserInputMetadata(sessionID: mappedSessionID)
-            }
 
         case let .runsUpdated(projectID, run, change: _):
             upsertRun(projectID: projectID, run: run)
@@ -2723,8 +2695,6 @@ public final class AppStore: ObservableObject {
                 defaults.set(ocrModel, forKey: DefaultsKey.openAIOcrModel)
             }
 
-        case let .lifecycle(payload):
-            chatService.applyLifecycle(payload)
         }
     }
 
@@ -3273,9 +3243,6 @@ public final class AppStore: ObservableObject {
         var count = 0
         count += codexPendingPromptQueue(for: session.id).count
         count += codexPendingApprovals(for: session.id).count
-        if pendingApproval(for: session.id) != nil {
-            count += 1
-        }
         return count
     }
 
@@ -3289,9 +3256,6 @@ public final class AppStore: ObservableObject {
         }
         if !codexPendingApprovals(for: session.id).isEmpty {
             return "approval"
-        }
-        if pendingApproval(for: session.id) != nil {
-            return "plan"
         }
         return nil
     }
@@ -3438,9 +3402,6 @@ public final class AppStore: ObservableObject {
     }
 
     public func sessionNeedsUserInput(sessionID: UUID) -> Bool {
-        if pendingApproval(for: sessionID) != nil {
-            return true
-        }
         if codexPendingPrompt(for: sessionID) != nil {
             return true
         }
@@ -3825,14 +3786,6 @@ public final class AppStore: ObservableObject {
         await chatService.branchFromMessage(projectID: projectID, sessionID: sessionID, fromMessageID: messageID, modelIdOverride: modelIdOverride)
     }
 
-    public func pendingApproval(for sessionID: UUID) -> PendingApproval? {
-        planService.pendingApproval(for: sessionID)
-    }
-
-    public func pendingPlan(for sessionID: UUID) -> ExecutionPlan? {
-        planService.pendingPlan(for: sessionID)
-    }
-
     public func planModeEnabled(for sessionID: UUID) -> Bool {
         composerService.planModeEnabled(for: sessionID)
     }
@@ -4130,14 +4083,6 @@ public final class AppStore: ObservableObject {
             lastGatewayErrorMessage = error.localizedDescription
             return nil
         }
-    }
-
-    public func cancelPlan(sessionID: UUID) {
-        planService.cancelPlan(sessionID: sessionID)
-    }
-
-    public func approvePlan(sessionID: UUID, judgmentResponses: JudgmentResponses? = nil) {
-        planService.approvePlan(sessionID: sessionID, judgmentResponses: judgmentResponses)
     }
 
     public func openResults(preserveSelection: Bool = false) {

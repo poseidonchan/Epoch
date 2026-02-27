@@ -302,30 +302,6 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
 
         XCTAssertFalse(store.sessionNeedsUserInput(sessionID: sessionID))
 
-        let plan = ExecutionPlan(
-            projectID: projectID,
-            sessionID: sessionID,
-            steps: [
-                PlanStep(
-                    title: "Step",
-                    runtime: .shell,
-                    inputs: [],
-                    outputs: []
-                ),
-            ]
-        )
-        store.planService.pendingApprovalsBySession[sessionID] = PendingApproval(
-            planId: UUID(),
-            projectId: projectID,
-            sessionId: sessionID,
-            agentRunId: UUID(),
-            plan: plan,
-            required: true,
-            judgment: nil
-        )
-        XCTAssertTrue(store.sessionNeedsUserInput(sessionID: sessionID))
-
-        store.planService.pendingApprovalsBySession[sessionID] = nil
         store.codexPendingPromptBySession[sessionID] = [
             CodexPendingPrompt(
                 requestID: .int(11),

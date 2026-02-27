@@ -358,19 +358,6 @@ struct SessionChatView: View {
                 }
             }
         }
-        .sheet(item: pendingApprovalBinding) { pending in
-            PlanConfirmationSheet(
-                plan: pending.plan,
-                judgment: pending.judgment,
-                onRun: { responses in
-                    store.approvePlan(sessionID: sessionID, judgmentResponses: responses)
-                },
-                onCancel: {
-                    store.cancelPlan(sessionID: sessionID)
-                }
-            )
-            .interactiveDismissDisabled()
-        }
         .fullScreenCover(item: $activeImagePreviewRequest) { request in
             ChatImageLightboxView(request: request) {
                 activeImagePreviewRequest = nil
@@ -1632,19 +1619,6 @@ struct SessionChatView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(.ultraThinMaterial)
-    }
-
-    private var pendingApprovalBinding: Binding<PendingApproval?> {
-        Binding<PendingApproval?>(
-            get: { isCodexSession ? nil : store.pendingApproval(for: sessionID) },
-            set: { newValue in
-                guard newValue == nil else { return }
-                guard !isCodexSession else { return }
-                if store.pendingApproval(for: sessionID) != nil {
-                    store.cancelPlan(sessionID: sessionID)
-                }
-            }
-        )
     }
 
 }

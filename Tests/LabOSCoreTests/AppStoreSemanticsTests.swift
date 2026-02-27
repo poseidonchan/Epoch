@@ -103,47 +103,6 @@ final class AppStoreSemanticsTests: XCTestCase {
         XCTAssertTrue(store.runs(for: project.id).isEmpty)
     }
 
-    func testCancelPlanDoesNotCreateRun() async throws {
-        let store = AppStore(bootstrapDemo: false)
-        guard let project = await store.createProject(name: "Project C") else {
-            XCTFail("Project was not created")
-            return
-        }
-        guard let session = await store.createSession(projectID: project.id, title: "Session C") else {
-            XCTFail("Session was not created")
-            return
-        }
-
-        let plan = ExecutionPlan(
-            projectID: project.id,
-            sessionID: session.id,
-            steps: [
-                PlanStep(
-                    title: "Execute pipeline",
-                    runtime: .shell,
-                    inputs: [],
-                    outputs: ["artifacts/output.txt"]
-                )
-            ]
-        )
-        let pending = PendingApproval(
-            planId: UUID(),
-            projectId: project.id,
-            sessionId: session.id,
-            agentRunId: UUID(),
-            plan: plan,
-            required: true,
-            judgment: nil
-        )
-        store.planService.pendingApprovalsBySession[session.id] = pending
-        store.planService.planSessionByPlanID[pending.planId] = session.id
-
-        store.cancelPlan(sessionID: session.id)
-
-        XCTAssertNil(store.pendingPlan(for: session.id))
-        XCTAssertTrue(store.runs(for: project.id).isEmpty)
-    }
-
     func testUploadedFilesAreSeparatedFromGeneratedResults() async throws {
         let store = AppStore(bootstrapDemo: false)
         guard let project = await store.createProject(name: "Project D") else {
