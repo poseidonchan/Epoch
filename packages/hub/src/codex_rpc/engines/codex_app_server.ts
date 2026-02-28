@@ -164,6 +164,7 @@ export class CodexAppServerEngine implements CodexEngineSession {
         ...(args.model ? { model: args.model } : {}),
         approvalPolicy: args.approvalPolicy,
         ...(args.collaborationMode ? { collaborationMode: args.collaborationMode } : {}),
+        ...(args.sandboxPolicy ? { sandboxPolicy: args.sandboxPolicy } : {}),
       });
 
       const turnRaw = (result.turn ?? null) as Record<string, unknown> | null;

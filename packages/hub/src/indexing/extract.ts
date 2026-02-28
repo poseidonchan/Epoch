@@ -137,6 +137,10 @@ function normalizeExtractedText(input: string): string {
     .trim();
 }
 
+export async function extractPdfBufferText(raw: Buffer): Promise<string> {
+  return extractPdfText(raw);
+}
+
 async function extractPdfText(raw: Buffer): Promise<string> {
   const parser = new PDFParse({ data: raw });
   try {

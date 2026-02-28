@@ -53,6 +53,57 @@ export async function summarizeTextWithOpenAI(
   return { model, summary: summary || fallbackExtractiveSummary(excerpt) };
 }
 
+export async function generateSessionTitle(
+  messages: Array<{ role: string; text: string }>,
+  opts: { apiKey: string; model?: string }
+): Promise<string | null> {
+  if (!opts.apiKey || messages.length === 0) return null;
+
+  const model = opts.model ?? DEFAULT_SUMMARY_MODEL;
+  const transcript = messages
+    .slice(0, 10)
+    .map((m) => `${m.role}: ${m.text}`)
+    .join("\n")
+    .slice(0, 8_000);
+
+  try {
+    const title = await withRetries(async () => {
+      const res = await fetch(`${OPENAI_BASE_URL}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${opts.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0.3,
+          max_tokens: 40,
+          messages: [
+            {
+              role: "system",
+              content:
+                "Given this conversation, generate a concise title (3-8 words). Return only the title, no quotes.",
+            },
+            { role: "user", content: transcript },
+          ],
+        }),
+      });
+
+      if (!res.ok) {
+        const message = await safeReadText(res);
+        throw new Error(`OpenAI title generation failed (${res.status}): ${message}`);
+      }
+
+      const body = (await res.json()) as OpenAIChatCompletionResponse;
+      return String(body?.choices?.[0]?.message?.content ?? "").trim();
+    });
+
+    return title || null;
+  } catch {
+    return null;
+  }
+}
+
 export function fallbackExtractiveSummary(text: string): string {
   const lines = String(text ?? "")
     .split(/\r?\n/)

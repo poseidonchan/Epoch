@@ -47,50 +47,18 @@ type HpcStatus = {
 
 type PermissionLevel = "default" | "full";
 
-type RuntimeExecPolicy = {
-  maxTimeoutMs: number;
-  maxConcurrent: number;
-};
-
-type RuntimeSlurmPolicy = {
-  maxTimeMinutes: number;
-  maxCpus: number;
-  maxMemMB: number;
-  maxGpus: number;
-  maxConcurrent: number;
-};
-
 type RuntimePolicy = {
-  exec: RuntimeExecPolicy;
-  slurm: RuntimeSlurmPolicy;
-};
-
-const DEFAULT_RUNTIME_POLICY: RuntimePolicy = {
-  exec: {
-    maxTimeoutMs: 15 * 60_000,
-    maxConcurrent: 2,
-  },
-  slurm: {
-    maxTimeMinutes: 60,
-    maxCpus: 4,
-    maxMemMB: 16 * 1024,
-    maxGpus: 1,
-    maxConcurrent: 2,
-  },
-};
-
-const FULL_RUNTIME_POLICY: RuntimePolicy = {
-  exec: {
-    maxTimeoutMs: 2 * 60 * 60_000,
-    maxConcurrent: 8,
-  },
-  slurm: {
-    maxTimeMinutes: 24 * 60,
-    maxCpus: 64,
-    maxMemMB: 256 * 1024,
-    maxGpus: 8,
-    maxConcurrent: 8,
-  },
+  exec?: {
+    maxTimeoutMs?: number;
+    maxConcurrent?: number;
+  };
+  slurm?: {
+    maxTimeMinutes?: number;
+    maxCpus?: number;
+    maxMemMB?: number;
+    maxGpus?: number;
+    maxConcurrent?: number;
+  };
 };
 
 const DANGEROUS_COMMANDS = new Set([
@@ -518,6 +486,7 @@ export class BridgeService {
           const timeoutMs = typeof params.timeoutMs === "number" ? Math.max(1, Math.floor(params.timeoutMs)) : undefined;
           const permissionLevel = normalizePermissionLevel(params.permissionLevel) ?? "default";
           const policyOverride = normalizeRuntimePolicy(params.policy);
+          const sandboxMode = normalizeSandboxMode(params.sandboxMode);
           const env = params.env && typeof params.env === "object" ? (params.env as Record<string, unknown>) : undefined;
           const cleanEnv: Record<string, string> | undefined = env
             ? Object.fromEntries(Object.entries(env).map(([k, v]) => [String(k), String(v ?? "")]))
@@ -531,8 +500,9 @@ export class BridgeService {
             return;
           }
 
-          const policy = this.runtimePolicyFor(permissionLevel, policyOverride);
-          if (this.runtimeExecActive.size >= policy.exec.maxConcurrent) {
+          const policy = this.runtimePolicyFor(policyOverride);
+          if (policy?.exec?.maxConcurrent != null &&
+              this.runtimeExecActive.size >= policy.exec.maxConcurrent) {
             this.sendRes(id, false, undefined, {
               code: "RATE_LIMITED",
               message: `runtime.exec.start concurrency exceeded (${policy.exec.maxConcurrent})`,
@@ -553,6 +523,7 @@ export class BridgeService {
             timeoutMs,
             permissionLevel,
             policyOverride,
+            sandboxMode,
           });
           this.sendRes(id, true, result);
           return;
@@ -810,19 +781,8 @@ export class BridgeService {
     }
   }
 
-  private runtimePolicyFor(permissionLevel: PermissionLevel, override?: Partial<RuntimePolicy> | null): RuntimePolicy {
-    const base = permissionLevel === "full" ? FULL_RUNTIME_POLICY : DEFAULT_RUNTIME_POLICY;
-    if (!override) return base;
-    return {
-      exec: {
-        ...base.exec,
-        ...(override.exec ?? {}),
-      },
-      slurm: {
-        ...base.slurm,
-        ...(override.slurm ?? {}),
-      },
-    };
+  private runtimePolicyFor(override?: RuntimePolicy | null): RuntimePolicy | null {
+    return override ?? null;
   }
 
   private async resolveProjectPath(projectId: string, inputPath: string, opts?: { forWrite?: boolean }): Promise<string> {
@@ -933,12 +893,16 @@ export class BridgeService {
     env?: Record<string, string>;
     timeoutMs?: number;
     permissionLevel: PermissionLevel;
-    policyOverride?: Partial<RuntimePolicy> | null;
+    policyOverride?: RuntimePolicy | null;
+    sandboxMode?: "workspace-write" | "danger-full-access" | "read-only";
   }) {
     this.assertRuntimeCommandPolicy(opts.command, opts.permissionLevel);
 
-    const policy = this.runtimePolicyFor(opts.permissionLevel, opts.policyOverride);
-    const timeoutMs = Math.min(opts.timeoutMs ?? policy.exec.maxTimeoutMs, policy.exec.maxTimeoutMs);
+    const policy = this.runtimePolicyFor(opts.policyOverride);
+    const cap = policy?.exec?.maxTimeoutMs;
+    const timeoutMs = cap != null
+      ? Math.min(opts.timeoutMs ?? cap, cap)
+      : opts.timeoutMs;
     const projectRoot = path.resolve(this.projectRoot(opts.projectId));
     const resolvedCwd = resolveRuntimeCommandCwd({
       workspaceRoot: this.cfg.workspaceRoot,
@@ -963,9 +927,25 @@ export class BridgeService {
       ts: new Date(startedAt).toISOString(),
     });
 
+    let finalEnv: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
+    if (opts.sandboxMode === "workspace-write") {
+      const wsEnv: Record<string, string> = {
+        HOME: projectRoot,
+        TMPDIR: path.join(projectRoot, "tmp"),
+        XDG_CACHE_HOME: path.join(projectRoot, ".cache"),
+        XDG_DATA_HOME: path.join(projectRoot, ".local", "share"),
+        XDG_CONFIG_HOME: path.join(projectRoot, ".config"),
+        PYTHONUSERBASE: path.join(projectRoot, ".local"),
+        PIP_USER: "0",
+        npm_config_prefix: path.join(projectRoot, ".npm-global"),
+      };
+      finalEnv = { ...process.env, ...wsEnv, ...(opts.env ?? {}) };
+      await mkdir(path.join(projectRoot, "tmp"), { recursive: true });
+    }
+
     const child = spawn(opts.command[0]!, opts.command.slice(1), {
       cwd,
-      env: { ...process.env, ...(opts.env ?? {}) },
+      env: finalEnv,
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -1008,22 +988,25 @@ export class BridgeService {
       });
     });
 
-    const timeout = setTimeout(() => {
-      procState.timedOut = true;
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // ignore
-      }
-    }, timeoutMs);
-    timeout.unref();
+    let timeout: NodeJS.Timeout | null = null;
+    if (timeoutMs != null) {
+      timeout = setTimeout(() => {
+        procState.timedOut = true;
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // ignore
+        }
+      }, timeoutMs);
+      timeout.unref();
+    }
 
     const { exitCode } = await new Promise<{ exitCode: number | null }>((resolve) => {
       child.on("close", (code) => resolve({ exitCode: typeof code === "number" ? code : null }));
       child.on("error", () => resolve({ exitCode: null }));
     });
 
-    clearTimeout(timeout);
+    if (timeout) clearTimeout(timeout);
     this.runtimeExecActive.delete(opts.executionId);
 
     const durationMs = Math.max(0, Date.now() - startedAt);
@@ -1327,9 +1310,9 @@ export class BridgeService {
     job: any;
     staging: any;
     permissionLevel: PermissionLevel;
-    policyOverride?: Partial<RuntimePolicy> | null;
+    policyOverride?: RuntimePolicy | null;
   }) {
-    const policy = this.runtimePolicyFor(opts.permissionLevel, opts.policyOverride);
+    const policy = this.runtimePolicyFor(opts.policyOverride);
     const hasSlurm = await this.hasCommand("sbatch");
     if (!hasSlurm) {
       const fakeId = `SIM-${Date.now()}`;
@@ -1340,7 +1323,8 @@ export class BridgeService {
     const user = await this.getSlurmUser();
     const runningCount = (await this.squeueJobIds({ user, state: "R" })).length;
     const pendingCount = (await this.squeueJobIds({ user, state: "PD" })).length;
-    if (runningCount + pendingCount >= policy.slurm.maxConcurrent) {
+    if (policy?.slurm?.maxConcurrent != null &&
+        runningCount + pendingCount >= policy.slurm.maxConcurrent) {
       throw new Error(`Slurm concurrency limit exceeded (${policy.slurm.maxConcurrent})`);
     }
 
@@ -1383,16 +1367,24 @@ export class BridgeService {
     if (account) lines.push(`#SBATCH --account=${shellEscape(account)}`);
     if (qos) lines.push(`#SBATCH --qos=${shellEscape(qos)}`);
     const requestedTimeMins = Number(opts.job?.resources?.timeLimitMinutes ?? this.cfg.defaults.timeLimitMinutes ?? 10);
-    const timeMins = Math.min(policy.slurm.maxTimeMinutes, Math.max(1, Math.floor(requestedTimeMins)));
+    const timeMins = policy?.slurm?.maxTimeMinutes != null
+      ? Math.min(policy.slurm.maxTimeMinutes, Math.max(1, Math.floor(requestedTimeMins)))
+      : Math.max(1, Math.floor(requestedTimeMins));
     lines.push(`#SBATCH --time=${timeMins}`);
     const requestedCpus = Number(opts.job?.resources?.cpus ?? this.cfg.defaults.cpus ?? 1);
-    const cpus = Math.min(policy.slurm.maxCpus, Math.max(1, Math.floor(requestedCpus)));
+    const cpus = policy?.slurm?.maxCpus != null
+      ? Math.min(policy.slurm.maxCpus, Math.max(1, Math.floor(requestedCpus)))
+      : Math.max(1, Math.floor(requestedCpus));
     lines.push(`#SBATCH --cpus-per-task=${cpus}`);
     const requestedMemMb = Number(opts.job?.resources?.memMB ?? this.cfg.defaults.memMB ?? 512);
-    const memMB = Math.min(policy.slurm.maxMemMB, Math.max(1, Math.floor(requestedMemMb)));
+    const memMB = policy?.slurm?.maxMemMB != null
+      ? Math.min(policy.slurm.maxMemMB, Math.max(1, Math.floor(requestedMemMb)))
+      : Math.max(1, Math.floor(requestedMemMb));
     lines.push(`#SBATCH --mem=${memMB}M`);
     const requestedGpus = Number(opts.job?.resources?.gpus ?? this.cfg.defaults.gpus ?? 0);
-    const gpus = Math.min(policy.slurm.maxGpus, Math.max(0, Math.floor(requestedGpus)));
+    const gpus = policy?.slurm?.maxGpus != null
+      ? Math.min(policy.slurm.maxGpus, Math.max(0, Math.floor(requestedGpus)))
+      : Math.max(0, Math.floor(requestedGpus));
     if (gpus > 0) lines.push(`#SBATCH --gres=gpu:${Math.floor(gpus)}`);
     lines.push(`#SBATCH --output=${shellEscape(stdoutPathTemplate)}`);
     lines.push(`#SBATCH --error=${shellEscape(stderrPathTemplate)}`);
@@ -1719,7 +1711,7 @@ function normalizePermissionLevel(v: unknown): PermissionLevel | null {
   return null;
 }
 
-function normalizeRuntimePolicy(raw: unknown): Partial<RuntimePolicy> | null {
+function normalizeRuntimePolicy(raw: unknown): RuntimePolicy | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const obj = raw as Record<string, unknown>;
 
@@ -1730,13 +1722,13 @@ function normalizeRuntimePolicy(raw: unknown): Partial<RuntimePolicy> | null {
     ? (obj.slurm as Record<string, unknown>)
     : null;
 
-  const exec: Partial<RuntimeExecPolicy> = {};
+  const exec: NonNullable<RuntimePolicy["exec"]> = {};
   if (maybeExec) {
     if (Number.isFinite(Number(maybeExec.maxTimeoutMs))) exec.maxTimeoutMs = Math.max(1, Math.floor(Number(maybeExec.maxTimeoutMs)));
     if (Number.isFinite(Number(maybeExec.maxConcurrent))) exec.maxConcurrent = Math.max(1, Math.floor(Number(maybeExec.maxConcurrent)));
   }
 
-  const slurm: Partial<RuntimeSlurmPolicy> = {};
+  const slurm: NonNullable<RuntimePolicy["slurm"]> = {};
   if (maybeSlurm) {
     if (Number.isFinite(Number(maybeSlurm.maxTimeMinutes))) slurm.maxTimeMinutes = Math.max(1, Math.floor(Number(maybeSlurm.maxTimeMinutes)));
     if (Number.isFinite(Number(maybeSlurm.maxCpus))) slurm.maxCpus = Math.max(1, Math.floor(Number(maybeSlurm.maxCpus)));
@@ -1752,6 +1744,13 @@ function normalizeRuntimePolicy(raw: unknown): Partial<RuntimePolicy> | null {
     ...(hasExec ? { exec } : {}),
     ...(hasSlurm ? { slurm } : {}),
   };
+}
+
+function normalizeSandboxMode(raw: unknown): "workspace-write" | "danger-full-access" | "read-only" {
+  const v = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (v === "danger-full-access") return "danger-full-access";
+  if (v === "read-only") return "read-only";
+  return "workspace-write";
 }
 
 function expandSlurmPathTemplate(template: string, jobId: string) {

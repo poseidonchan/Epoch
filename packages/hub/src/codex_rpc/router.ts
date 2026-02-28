@@ -1,6 +1,7 @@
 import { updateThreadPreviewFromItems } from "./handlers/thread.js";
 import { handleInitialize } from "./handlers/initialize.js";
 import {
+  handleLabosArtifactDelete,
   handleLabosArtifactGet,
   handleLabosArtifactList,
   handleLabosHpcPrefsSet,
@@ -13,6 +14,7 @@ import {
   handleLabosRunList,
   handleLabosSessionCreate,
   handleLabosSessionDelete,
+  handleLabosSessionGenerateTitle,
   handleLabosSessionList,
   handleLabosSessionRead,
   handleLabosSessionUpdate,
@@ -38,46 +40,17 @@ type CodexRouterContext = {
 };
 
 type RuntimePolicyShape = {
-  exec: {
-    maxTimeoutMs: number;
-    maxConcurrent: number;
+  exec?: {
+    maxTimeoutMs?: number;
+    maxConcurrent?: number;
   };
-  slurm: {
-    maxTimeMinutes: number;
-    maxCpus: number;
-    maxMemMB: number;
-    maxGpus: number;
-    maxConcurrent: number;
+  slurm?: {
+    maxTimeMinutes?: number;
+    maxCpus?: number;
+    maxMemMB?: number;
+    maxGpus?: number;
+    maxConcurrent?: number;
   };
-};
-
-const DEFAULT_RUNTIME_POLICY_BY_LEVEL: Record<SessionPermissionLevel, RuntimePolicyShape> = {
-  default: {
-    exec: {
-      maxTimeoutMs: 15 * 60_000,
-      maxConcurrent: 2,
-    },
-    slurm: {
-      maxTimeMinutes: 60,
-      maxCpus: 4,
-      maxMemMB: 16 * 1024,
-      maxGpus: 1,
-      maxConcurrent: 2,
-    },
-  },
-  full: {
-    exec: {
-      maxTimeoutMs: 2 * 60 * 60_000,
-      maxConcurrent: 8,
-    },
-    slurm: {
-      maxTimeMinutes: 24 * 60,
-      maxCpus: 64,
-      maxMemMB: 256 * 1024,
-      maxGpus: 8,
-      maxConcurrent: 8,
-    },
-  },
 };
 
 export class CodexRpcRouter {
@@ -250,6 +223,11 @@ export class CodexRpcRouter {
           this.connection.sendResult(request.id, result);
           return;
         }
+        case "labos/session/generateTitle": {
+          const result = await handleLabosSessionGenerateTitle({ repository: this.repository, engines: this.engines }, params);
+          this.connection.sendResult(request.id, result);
+          return;
+        }
         case "labos/session/read": {
           const result = await handleLabosSessionRead(
             {
@@ -270,6 +248,11 @@ export class CodexRpcRouter {
         }
         case "labos/artifact/get": {
           const result = await handleLabosArtifactGet({ repository: this.repository, engines: this.engines }, params);
+          this.connection.sendResult(request.id, result);
+          return;
+        }
+        case "labos/artifact/delete": {
+          const result = await handleLabosArtifactDelete({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
         }
@@ -374,18 +357,9 @@ export class CodexRpcRouter {
     method: string;
     params: Record<string, unknown>;
   }): Promise<{ handled: boolean; result?: Record<string, unknown>; error?: string }> {
-    if (
-      args.method === "item/commandExecution/requestApproval" ||
-      args.method === "item/fileChange/requestApproval" ||
-      args.method === "execCommandApproval" ||
-      args.method === "applyPatchApproval"
-    ) {
-      return {
-        handled: true,
-        error:
-          "CAPABILITY_MISSING: codex app-server remote runtime extension is required. Legacy approval-based local execution is disabled.",
-      };
-    }
+    // Approval requests (item/commandExecution/requestApproval, etc.) are NOT
+    // handled here — they fall through to { handled: false } so the router
+    // forwards them to the iOS app, which has Accept/Reject UI.
 
     if (args.method === "runtime/commandExecution/exec") {
       const result = await this.handleRemoteCommandExecution(args.threadId, args.params);
@@ -434,7 +408,9 @@ export class CodexRpcRouter {
     const timeoutMs = normalizePositiveInteger(params.timeoutMs);
     const env = normalizeStringRecord(params.env);
     const permissionLevel = await this.resolvePermissionLevel(projectId, sessionId);
-    const policy = await this.resolveProjectRuntimePolicy(projectId, permissionLevel);
+    const policy = await this.resolveProjectRuntimePolicy(projectId);
+    const sandboxConfig = await this.resolveSessionSandboxMode(projectId, sessionId);
+    const sandboxMode = sandboxConfig.mode;
 
     let streamedAnyDelta = false;
     const unsubscribe = this.runtimeBridge.subscribeNodeEvents((event, payload) => {
@@ -472,6 +448,7 @@ export class CodexRpcRouter {
         ...(env ? { env } : {}),
         ...(policy ? { policy } : {}),
         permissionLevel,
+        sandboxMode,
       });
 
       if (!streamedAnyDelta) {
@@ -537,7 +514,9 @@ export class CodexRpcRouter {
     }
 
     const permissionLevel = await this.resolvePermissionLevel(projectId, sessionId);
-    const policy = await this.resolveProjectRuntimePolicy(projectId, permissionLevel);
+    const policy = await this.resolveProjectRuntimePolicy(projectId);
+    const sandboxConfig = await this.resolveSessionSandboxMode(projectId, sessionId);
+    const sandboxMode = sandboxConfig.mode;
     const diffByPath = new Map<string, string>();
 
     const unsubscribe = this.runtimeBridge.subscribeNodeEvents((event, payload) => {
@@ -582,6 +561,7 @@ export class CodexRpcRouter {
         ...(fileChanges ? { fileChanges } : {}),
         ...(policy ? { policy } : {}),
         permissionLevel,
+        sandboxMode,
       });
 
       const responseDiff = normalizeNullableString(response.diff);
@@ -625,10 +605,8 @@ export class CodexRpcRouter {
   }
 
   private async resolveProjectRuntimePolicy(
-    projectId: string,
-    level: SessionPermissionLevel
+    projectId: string
   ): Promise<RuntimePolicyShape | null> {
-    const base = DEFAULT_RUNTIME_POLICY_BY_LEVEL[level];
     try {
       const rows = await this.repository.query<{ codex_sandbox_json: string | null }>(
         `SELECT codex_sandbox_json
@@ -638,29 +616,33 @@ export class CodexRpcRouter {
         [projectId]
       );
       const rawSandbox = rows[0]?.codex_sandbox_json;
-      if (!rawSandbox || typeof rawSandbox !== "string") {
-        return base;
-      }
+      if (!rawSandbox || typeof rawSandbox !== "string") return null;
       const parsed = safeParseJsonObject(rawSandbox);
-      if (!parsed) return base;
+      if (!parsed) return null;
       const runtimePolicyRoot = normalizeObject(parsed.runtimePolicy);
-      if (!runtimePolicyRoot) return base;
-      const byLevel = normalizeObject(runtimePolicyRoot[level]) ?? runtimePolicyRoot;
-      const override = normalizeRuntimePolicyShape(byLevel);
-      if (!override) return base;
-      return {
-        exec: {
-          ...base.exec,
-          ...(override.exec ?? {}),
-        },
-        slurm: {
-          ...base.slurm,
-          ...(override.slurm ?? {}),
-        },
-      };
+      if (!runtimePolicyRoot) return null;
+      return normalizeRuntimePolicyShape(runtimePolicyRoot);
     } catch {
-      return base;
+      return null;
     }
+  }
+
+  private async resolveSessionSandboxMode(
+    projectId: string,
+    sessionId: string
+  ): Promise<{ mode: "workspace-write" | "danger-full-access" | "read-only"; networkAccess?: boolean }> {
+    try {
+      const rows = await this.repository.query<{ codex_sandbox_json: string | null }>(
+        `SELECT codex_sandbox_json FROM sessions WHERE project_id=$1 AND id=$2 LIMIT 1`,
+        [projectId, sessionId]
+      );
+      const parsed = safeParseJsonObject(rows[0]?.codex_sandbox_json ?? "");
+      const mode = normalizeNonEmptyString(parsed?.mode);
+      if (mode === "danger-full-access") return { mode: "danger-full-access" };
+      if (mode === "read-only") return { mode: "read-only" };
+      return { mode: "workspace-write", networkAccess: Boolean(parsed?.networkAccess ?? true) };
+    } catch { /* fall through */ }
+    return { mode: "workspace-write", networkAccess: true };
   }
 
   private async consumeTurnEvents(args: {
@@ -950,6 +932,13 @@ export class CodexRpcRouter {
         }
         this.turnAggregators.delete(turnId);
       }
+    }
+
+    if (completedTurnId && sessionMapping && this.runtimeBridge) {
+      void this.runtimeBridge.reconcileAgentsFile(
+        sessionMapping.projectId,
+        `turn-completed:${completedTurnId}`
+      ).catch(() => {});
     }
 
     if (method === "thread/tokenUsage/updated") {
@@ -1474,14 +1463,14 @@ function normalizeStringRecord(raw: unknown): Record<string, string> | null {
   return Object.fromEntries(entries);
 }
 
-function normalizeRuntimePolicyShape(raw: unknown): { exec?: Partial<RuntimePolicyShape["exec"]>; slurm?: Partial<RuntimePolicyShape["slurm"]> } | null {
+function normalizeRuntimePolicyShape(raw: unknown): RuntimePolicyShape | null {
   const obj = normalizeObject(raw);
   if (!obj) return null;
 
   const execRaw = normalizeObject(obj.exec);
   const slurmRaw = normalizeObject(obj.slurm);
 
-  const exec: Partial<RuntimePolicyShape["exec"]> = {};
+  const exec: NonNullable<RuntimePolicyShape["exec"]> = {};
   if (execRaw) {
     const maxTimeoutMs = normalizePositiveInteger(execRaw.maxTimeoutMs);
     const maxConcurrent = normalizePositiveInteger(execRaw.maxConcurrent);
@@ -1489,7 +1478,7 @@ function normalizeRuntimePolicyShape(raw: unknown): { exec?: Partial<RuntimePoli
     if (maxConcurrent != null) exec.maxConcurrent = maxConcurrent;
   }
 
-  const slurm: Partial<RuntimePolicyShape["slurm"]> = {};
+  const slurm: NonNullable<RuntimePolicyShape["slurm"]> = {};
   if (slurmRaw) {
     const maxTimeMinutes = normalizePositiveInteger(slurmRaw.maxTimeMinutes);
     const maxCpus = normalizePositiveInteger(slurmRaw.maxCpus);

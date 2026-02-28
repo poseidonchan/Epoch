@@ -17,6 +17,7 @@ export type EngineStartTurnArgs = {
       developer_instructions: string | null;
     };
   } | null;
+  sandboxPolicy?: Record<string, unknown> | string | null;
 };
 
 export type EngineStreamNotification = {

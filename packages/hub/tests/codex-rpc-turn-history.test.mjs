@@ -1334,4 +1334,281 @@ test("handleTurnStart repairs codex thread when turn/start reports missing threa
   assert.equal(resumeCallCount >= 1, true);
 });
 
+test("handleTurnStart forwards workspaceWrite sandbox policy and forces network access on", async () => {
+  const threadId = "123e4567-e89b-12d3-a456-426614174333";
+  const thread = {
+    id: threadId,
+    preview: "",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 1,
+    path: null,
+    cwd: "/tmp/project",
+    cliVersion: "@labos/hub/0.1.0",
+    source: "appServer",
+    gitInfo: null,
+    turns: [],
+  };
+
+  let capturedStartArgs = null;
+  const repository = {
+    async query() {
+      return [];
+    },
+    async getThreadRecord(id) {
+      assert.equal(id, threadId);
+      return {
+        id: threadId,
+        projectId: null,
+        cwd: "/tmp/project",
+        modelProvider: "openai",
+        modelId: "gpt-5.3-codex",
+        preview: "",
+        createdAt: 1,
+        updatedAt: 1,
+        archived: false,
+        statusJson: JSON.stringify({
+          modelProvider: "openai",
+          model: "gpt-5.3-codex",
+          cwd: "/tmp/project",
+          approvalPolicy: "on-request",
+          sandbox: { type: "workspaceWrite", networkAccess: false },
+          reasoningEffort: null,
+        }),
+        engine: "codex-app-server",
+      };
+    },
+    async readThread(id) {
+      assert.equal(id, threadId);
+      return JSON.parse(JSON.stringify(thread));
+    },
+    async updateThread() {},
+    async createTurn() {},
+    async upsertItem() {},
+  };
+
+  const engines = {
+    async getEngine(name) {
+      assert.equal(name, "codex-app-server");
+      return {
+        async startTurn(args) {
+          capturedStartArgs = args;
+          return {
+            turn: {
+              id: args.turnId,
+              items: [],
+              status: "inProgress",
+              error: null,
+            },
+            events: emptyEvents(),
+          };
+        },
+      };
+    },
+  };
+
+  await handleTurnStart(
+    { repository, engines },
+    {
+      threadId,
+      input: [{ type: "text", text: "network please" }],
+    }
+  );
+
+  assert.deepEqual(capturedStartArgs?.sandboxPolicy, {
+    type: "workspaceWrite",
+    networkAccess: true,
+    writableRoots: ["/tmp/project"],
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  });
+});
+
+test("handleTurnStart forwards dangerFullAccess sandbox policy as danger-full-access mode", async () => {
+  const threadId = "123e4567-e89b-12d3-a456-426614174334";
+  const thread = {
+    id: threadId,
+    preview: "",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 1,
+    path: null,
+    cwd: "/tmp/project",
+    cliVersion: "@labos/hub/0.1.0",
+    source: "appServer",
+    gitInfo: null,
+    turns: [],
+  };
+
+  let capturedStartArgs = null;
+  const repository = {
+    async query() {
+      return [];
+    },
+    async getThreadRecord(id) {
+      assert.equal(id, threadId);
+      return {
+        id: threadId,
+        projectId: null,
+        cwd: "/tmp/project",
+        modelProvider: "openai",
+        modelId: "gpt-5.3-codex",
+        preview: "",
+        createdAt: 1,
+        updatedAt: 1,
+        archived: false,
+        statusJson: JSON.stringify({
+          modelProvider: "openai",
+          model: "gpt-5.3-codex",
+          cwd: "/tmp/project",
+          approvalPolicy: "on-request",
+          sandbox: { type: "dangerFullAccess" },
+          reasoningEffort: null,
+        }),
+        engine: "codex-app-server",
+      };
+    },
+    async readThread(id) {
+      assert.equal(id, threadId);
+      return JSON.parse(JSON.stringify(thread));
+    },
+    async updateThread() {},
+    async createTurn() {},
+    async upsertItem() {},
+  };
+
+  const engines = {
+    async getEngine(name) {
+      assert.equal(name, "codex-app-server");
+      return {
+        async startTurn(args) {
+          capturedStartArgs = args;
+          return {
+            turn: {
+              id: args.turnId,
+              items: [],
+              status: "inProgress",
+              error: null,
+            },
+            events: emptyEvents(),
+          };
+        },
+      };
+    },
+  };
+
+  await handleTurnStart(
+    { repository, engines },
+    {
+      threadId,
+      input: [{ type: "text", text: "go full access" }],
+    }
+  );
+
+  assert.equal(capturedStartArgs?.sandboxPolicy, "danger-full-access");
+});
+
+test("handleTurnStart applies updated sandbox immediately across turns in the same session", async () => {
+  const threadId = "123e4567-e89b-12d3-a456-426614174335";
+  const thread = {
+    id: threadId,
+    preview: "",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 1,
+    path: null,
+    cwd: "/tmp/project",
+    cliVersion: "@labos/hub/0.1.0",
+    source: "appServer",
+    gitInfo: null,
+    turns: [],
+  };
+
+  let currentSandbox = { type: "workspaceWrite", networkAccess: false };
+  const capturedSandboxPolicies = [];
+  const repository = {
+    async query() {
+      return [];
+    },
+    async getThreadRecord(id) {
+      assert.equal(id, threadId);
+      return {
+        id: threadId,
+        projectId: null,
+        cwd: "/tmp/project",
+        modelProvider: "openai",
+        modelId: "gpt-5.3-codex",
+        preview: "",
+        createdAt: 1,
+        updatedAt: 1,
+        archived: false,
+        statusJson: JSON.stringify({
+          modelProvider: "openai",
+          model: "gpt-5.3-codex",
+          cwd: "/tmp/project",
+          approvalPolicy: "on-request",
+          sandbox: currentSandbox,
+          reasoningEffort: null,
+        }),
+        engine: "codex-app-server",
+      };
+    },
+    async readThread(id) {
+      assert.equal(id, threadId);
+      return JSON.parse(JSON.stringify(thread));
+    },
+    async updateThread() {},
+    async createTurn() {},
+    async upsertItem() {},
+  };
+
+  const engines = {
+    async getEngine(name) {
+      assert.equal(name, "codex-app-server");
+      return {
+        async startTurn(args) {
+          capturedSandboxPolicies.push(args.sandboxPolicy);
+          return {
+            turn: {
+              id: args.turnId,
+              items: [],
+              status: "inProgress",
+              error: null,
+            },
+            events: emptyEvents(),
+          };
+        },
+      };
+    },
+  };
+
+  await handleTurnStart(
+    { repository, engines },
+    {
+      threadId,
+      input: [{ type: "text", text: "first turn default" }],
+    }
+  );
+
+  currentSandbox = { type: "dangerFullAccess" };
+
+  await handleTurnStart(
+    { repository, engines },
+    {
+      threadId,
+      input: [{ type: "text", text: "second turn full access" }],
+    }
+  );
+
+  assert.equal(capturedSandboxPolicies.length, 2);
+  assert.deepEqual(capturedSandboxPolicies[0], {
+    type: "workspaceWrite",
+    networkAccess: true,
+    writableRoots: ["/tmp/project"],
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  });
+  assert.equal(capturedSandboxPolicies[1], "danger-full-access");
+});
+
 async function* emptyEvents() {}

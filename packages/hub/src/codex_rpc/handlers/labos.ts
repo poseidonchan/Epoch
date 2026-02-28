@@ -7,6 +7,9 @@ import type { CodexEngineRegistry } from "../engine_registry.js";
 import type { CodexRepository } from "../repository.js";
 import { nowUnixSeconds, type Thread, type ThreadItem, type Turn, type UserInput } from "../types.js";
 import { handleThreadRollback, maybePersistThreadFromResponse } from "./thread.js";
+import { generateSessionTitle } from "../../indexing/summarize.js";
+import { getEnvApiKey } from "../../model.js";
+import { loadOpenAIApiKeyFromStateDir } from "../../openai_settings.js";
 
 type LabosHandlerContext = {
   repository: CodexRepository;
@@ -516,6 +519,59 @@ export async function handleLabosSessionDelete(
   };
 }
 
+export async function handleLabosSessionGenerateTitle(
+  ctx: LabosHandlerContext,
+  rawParams: Record<string, unknown> | undefined
+): Promise<Record<string, unknown>> {
+  const params = rawParams ?? {};
+  const projectId = normalizeNonEmptyString(params.projectId);
+  const sessionId = normalizeNonEmptyString(params.sessionId);
+  if (!projectId || !sessionId) {
+    throw new Error("Missing projectId or sessionId");
+  }
+
+  const stateDir = ctx.repository.stateDirectory();
+  const apiKey = await loadOpenAIApiKeyFromStateDir(stateDir) ?? getEnvApiKey("openai");
+  if (!apiKey) {
+    return {};
+  }
+
+  const messageRows = await ctx.repository.query<any>(
+    `SELECT role, content FROM messages
+     WHERE project_id=$1 AND session_id=$2
+     ORDER BY ts ASC LIMIT 20`,
+    [projectId, sessionId]
+  );
+  if (messageRows.length === 0) {
+    return {};
+  }
+
+  const title = await generateSessionTitle(
+    messageRows.map((r: any) => ({ role: String(r.role), text: String(r.content ?? "") })),
+    { apiKey }
+  );
+  if (!title) {
+    return {};
+  }
+
+  const now = new Date().toISOString();
+  await ctx.repository.query(
+    `UPDATE sessions SET title=$1, updated_at=$2
+     WHERE project_id=$3 AND id=$4`,
+    [title, now, projectId, sessionId]
+  );
+
+  const sessionRows = await ctx.repository.query<any>(
+    `SELECT * FROM sessions WHERE project_id=$1 AND id=$2`,
+    [projectId, sessionId]
+  );
+  if (sessionRows.length === 0) {
+    return {};
+  }
+
+  return { session: mapSessionRow(sessionRows[0]) };
+}
+
 export async function handleLabosSessionRead(
   ctx: LabosHandlerContext,
   rawParams: Record<string, unknown> | undefined
@@ -827,10 +883,12 @@ export async function handleLabosArtifactList(
   }
   const limit = Math.max(1, Math.min(500, Number(params.limit ?? 200) || 200));
   const rows = await ctx.repository.query<any>(
-    `SELECT *
-     FROM artifacts
-     WHERE project_id=$1
-     ORDER BY modified_at DESC, path ASC
+    `SELECT a.*, pfi.status AS index_status, pfi.summary AS index_summary, pfi.completed_at AS indexed_at
+     FROM artifacts a
+     LEFT JOIN project_file_index pfi
+       ON pfi.project_id = a.project_id AND pfi.artifact_path = a.path
+     WHERE a.project_id=$1
+     ORDER BY a.modified_at DESC, a.path ASC
      LIMIT $2`,
     [projectId, limit]
   );
@@ -852,9 +910,11 @@ export async function handleLabosArtifactGet(
   }
 
   const rows = await ctx.repository.query<any>(
-    `SELECT *
-     FROM artifacts
-     WHERE project_id=$1 AND path=$2
+    `SELECT a.*, pfi.status AS index_status, pfi.summary AS index_summary, pfi.completed_at AS indexed_at
+     FROM artifacts a
+     LEFT JOIN project_file_index pfi
+       ON pfi.project_id = a.project_id AND pfi.artifact_path = a.path
+     WHERE a.project_id=$1 AND a.path=$2
      LIMIT 1`,
     [projectId, pathValue]
   );
@@ -864,6 +924,42 @@ export async function handleLabosArtifactGet(
 
   return {
     artifact: mapArtifactRow(rows[0]),
+  };
+}
+
+export async function handleLabosArtifactDelete(
+  ctx: LabosHandlerContext,
+  rawParams: Record<string, unknown> | undefined
+): Promise<Record<string, unknown>> {
+  const params = rawParams ?? {};
+  const projectId = normalizeNonEmptyString(params.projectId);
+  const pathValue = normalizeNonEmptyString(params.path);
+  if (!projectId || !pathValue) {
+    throw new Error("Missing projectId or path");
+  }
+
+  const rows = await ctx.repository.query<any>(
+    `SELECT a.*, pfi.status AS index_status, pfi.summary AS index_summary, pfi.completed_at AS indexed_at
+     FROM artifacts a
+     LEFT JOIN project_file_index pfi
+       ON pfi.project_id = a.project_id AND pfi.artifact_path = a.path
+     WHERE a.project_id=$1 AND a.path=$2
+     LIMIT 1`,
+    [projectId, pathValue]
+  );
+  if (rows.length === 0) {
+    throw new Error("Artifact not found");
+  }
+
+  const artifact = mapArtifactRow(rows[0]);
+
+  await ctx.repository.query(`DELETE FROM project_file_chunk WHERE project_id=$1 AND artifact_path=$2`, [projectId, pathValue]);
+  await ctx.repository.query(`DELETE FROM project_file_index WHERE project_id=$1 AND artifact_path=$2`, [projectId, pathValue]);
+  await ctx.repository.query(`DELETE FROM artifacts WHERE project_id=$1 AND path=$2`, [projectId, pathValue]);
+
+  return {
+    ok: true,
+    artifact,
   };
 }
 
@@ -1021,7 +1117,16 @@ function mapArtifactRow(row: any) {
     sizeBytes: row.size_bytes == null ? null : Number(row.size_bytes),
     createdBySessionID: row.created_by_session_id == null ? null : String(row.created_by_session_id),
     createdByRunID: row.created_by_run_id == null ? null : String(row.created_by_run_id),
+    indexStatus: normalizeCodexIndexStatus(row.index_status),
+    indexSummary: typeof row.index_summary === "string" ? row.index_summary : null,
+    indexedAt: typeof row.indexed_at === "string" ? toIso(row.indexed_at) : null,
   };
+}
+
+function normalizeCodexIndexStatus(value: unknown): "processing" | "indexed" | "failed" | null {
+  const v = String(value ?? "").trim().toLowerCase();
+  if (v === "processing" || v === "indexed" || v === "failed") return v;
+  return null;
 }
 
 function mapRunRow(row: any) {

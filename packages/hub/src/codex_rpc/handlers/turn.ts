@@ -116,14 +116,14 @@ export async function handleTurnStart(
       throw new Error("Codex app-server engine does not support thread/start.");
     }
     const responseHistory = buildResponseHistoryFromTurns(historyTurns);
-    const sandboxParam = toCodexSandboxParam(settings.sandbox);
+    const sandboxMode = toCodexSandboxMode(settings.sandbox);
 
     const repaired = await engine.threadStart({
       cwd: settings.cwd,
       modelProvider: settings.modelProvider,
       ...(modelOverride ?? settings.model ? { model: modelOverride ?? settings.model } : {}),
       approvalPolicy: approvalPolicyOverride ?? settings.approvalPolicy,
-      ...(sandboxParam ? { sandbox: sandboxParam } : {}),
+      ...(sandboxMode ? { sandbox: sandboxMode } : {}),
     });
     const repairedThreadRaw = (repaired.thread ?? null) as Record<string, unknown> | null;
     const repairedThreadId = normalizeNonEmptyString(repairedThreadRaw?.id);
@@ -155,7 +155,7 @@ export async function handleTurnStart(
           modelProvider: repairedModelProvider,
           ...(repairedModelId ? { model: repairedModelId } : {}),
           approvalPolicy: approvalPolicyOverride ?? settings.approvalPolicy,
-          ...(sandboxParam ? { sandbox: sandboxParam } : {}),
+          ...(sandboxMode ? { sandbox: sandboxMode } : {}),
         });
         await maybePersistThreadFromResponse(ctx.repository, resumed, "codex-app-server");
         const resumedThreadRaw = (resumed.thread ?? null) as Record<string, unknown> | null;
@@ -281,6 +281,7 @@ export async function handleTurnStart(
       modelProvider: settings.modelProvider,
       approvalPolicy: approvalPolicyOverride ?? settings.approvalPolicy,
       collaborationMode,
+      sandboxPolicy: toCodexSandboxParam(injectWorkspaceRoots(settings.sandbox, settings.cwd)),
     });
   } catch (err) {
     if (!isLikelyCodexMissingThreadError(err)) {
@@ -314,6 +315,7 @@ export async function handleTurnStart(
       modelProvider: settings.modelProvider,
       approvalPolicy: approvalPolicyOverride ?? settings.approvalPolicy,
       collaborationMode: repairedCollaborationMode,
+      sandboxPolicy: toCodexSandboxParam(injectWorkspaceRoots(settings.sandbox, settings.cwd)),
     });
   }
 
@@ -409,30 +411,58 @@ function toCodexSandboxParam(
 ): Record<string, unknown> | string | null {
   if (!raw) return null;
   if (typeof raw === "string") {
-    const normalized = raw.trim().toLowerCase();
-    if (normalized === "danger-full-access" || normalized === "dangerfullaccess" || normalized === "danger_full_access")
-      return "danger-full-access";
-    if (normalized === "read-only" || normalized === "readonly" || normalized === "read_only") return "read-only";
-    if (normalized === "workspace-write" || normalized === "workspacewrite" || normalized === "workspace_write")
-      return "workspace-write";
+    const mode = normalizeSandboxModeValue(raw);
+    if (mode === "workspace-write") {
+      return {
+        type: "workspaceWrite",
+        networkAccess: true,
+        writableRoots: [],
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      };
+    }
+    if (mode) return mode;
     return null;
   }
   if (typeof raw !== "object" || Array.isArray(raw)) return null;
   const obj = raw as Record<string, unknown>;
-  const mode = normalizeNonEmptyString(obj.mode) ?? normalizeNonEmptyString(obj.type);
-  if (mode === "danger-full-access" || mode === "dangerfullaccess" || mode === "danger_full_access")
-    return "danger-full-access";
-  if (mode === "read-only" || mode === "readonly" || mode === "read_only") return "read-only";
-  if (mode === "workspace-write" || mode === "workspacewrite" || mode === "workspace_write") {
-    // Preserve networkAccess for workspace-write mode
+  const mode = normalizeSandboxModeValue(obj.mode ?? obj.type);
+  if (mode === "danger-full-access") return "danger-full-access";
+  if (mode === "read-only") return "read-only";
+  if (mode === "workspace-write") {
+    const writableRoots = Array.isArray(obj.writableRoots)
+      ? obj.writableRoots.map((entry) => String(entry)).filter((entry) => entry.trim().length > 0)
+      : [];
     return {
       type: "workspaceWrite",
-      networkAccess: Boolean(obj.networkAccess ?? false),
-      writableRoots: Array.isArray(obj.writableRoots) ? obj.writableRoots : [],
+      // Keep workspace-write online regardless of stale persisted flags.
+      networkAccess: true,
+      writableRoots,
       excludeTmpdirEnvVar: Boolean(obj.excludeTmpdirEnvVar ?? false),
       excludeSlashTmp: Boolean(obj.excludeSlashTmp ?? false),
     };
   }
+  return null;
+}
+
+function injectWorkspaceRoots(
+  sandbox: Record<string, unknown>,
+  cwd: string
+): Record<string, unknown> {
+  const mode = normalizeSandboxModeValue(sandbox.mode ?? sandbox.type);
+  if (mode !== "workspace-write") return sandbox;
+  const roots = Array.isArray(sandbox.writableRoots) ? sandbox.writableRoots : [];
+  if (roots.length > 0) return sandbox;
+  return { ...sandbox, writableRoots: [cwd] };
+}
+
+function normalizeSandboxModeValue(raw: unknown): "read-only" | "workspace-write" | "danger-full-access" | null {
+  const normalized = normalizeNonEmptyString(raw);
+  if (!normalized) return null;
+  const compact = normalized.trim().toLowerCase().replace(/[\s_-]/g, "");
+  if (compact === "readonly") return "read-only";
+  if (compact === "workspacewrite") return "workspace-write";
+  if (compact === "dangerfullaccess") return "danger-full-access";
   return null;
 }
 
@@ -493,7 +523,17 @@ async function buildTurnInputWithProjectContext(
       })
     : [];
 
-  if (!agentsContent && snippets.length === 0) return { input: clonedInput, developerInstructions: null };
+  const fileCatalogEntries = stream.files
+    .filter((f) => f.indexStatus === "indexed" && f.indexSummary)
+    .map((f) => `- ${f.path}: ${f.indexSummary}`)
+    .slice(0, 20);
+
+  console.log(`[context] project=${projectId} files=${stream.files.length} snippets=${stream.snippets.length} catalogEntries=${fileCatalogEntries.length}`);
+
+  if (!agentsContent && snippets.length === 0 && fileCatalogEntries.length === 0) {
+    console.log(`[context] project=${projectId} no context injected (agents=${!!agentsContent} snippets=${snippets.length} catalog=${fileCatalogEntries.length})`);
+    return { input: clonedInput, developerInstructions: null };
+  }
 
   const contextParts: string[] = [];
   if (agentsContent) {
@@ -501,12 +541,18 @@ async function buildTurnInputWithProjectContext(
 Use this AGENTS.md context as authoritative project behavior guidance:
 ${agentsContent}`);
   }
-  if (snippets.length > 0) {
-    contextParts.push(`${PROJECT_CONTEXT_MARKER}
-Use these indexed project snippets as additional context:
-${snippets.join("\n\n")}`);
+  if (snippets.length > 0 || fileCatalogEntries.length > 0) {
+    const parts: string[] = [];
+    if (fileCatalogEntries.length > 0) {
+      parts.push(`Uploaded project files:\n${fileCatalogEntries.join("\n")}`);
+    }
+    if (snippets.length > 0) {
+      parts.push(`Relevant indexed snippets:\n${snippets.join("\n\n")}`);
+    }
+    contextParts.push(`${PROJECT_CONTEXT_MARKER}\n${parts.join("\n\n")}`);
   }
   const contextBlock = contextParts.join("\n\n").trim();
+  console.log(`[context] project=${projectId} injecting ${contextBlock.length} chars of developer_instructions`);
   return {
     input: clonedInput,
     developerInstructions: contextBlock || null,

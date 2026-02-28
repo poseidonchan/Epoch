@@ -27,9 +27,10 @@ export function getEnvApiKey(provider: string): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// Hardcoded model registry (replaces @mariozechner/pi-ai getModels)
-// The Codex App Server validates the actual model at runtime; this list is
-// only used for the iOS model-picker UI.
+// Hardcoded model registry — fallback only.
+// The primary path fetches models dynamically from the Codex app-server via
+// engine.modelList(). This registry is used only when the engine is
+// unavailable (e.g. during startup or if the app-server process crashes).
 // ---------------------------------------------------------------------------
 
 const MODEL_REGISTRY: Record<string, Array<{ id: string; name: string; reasoning: boolean }>> = {
