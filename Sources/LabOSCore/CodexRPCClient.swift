@@ -63,11 +63,11 @@ public final class CodexRPCClient: ObservableObject {
         self.token = token
 
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = .iso8601WithFractionalSeconds
         self.encoder = encoder
 
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .iso8601WithFractionalSeconds
         self.decoder = decoder
 
         var notificationsContinuation: AsyncStream<CodexRPCNotification>.Continuation?

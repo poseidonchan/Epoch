@@ -1,11 +1,22 @@
 import Foundation
 
+public struct AddLinkResponse: Codable, Sendable {
+    public let uploadId: String
+    public let path: String
+    public let indexStatus: String?
+}
+
 public protocol BackendClient: Sendable {
     func fetchArtifactContent(projectID: UUID, path: String) async -> String
+    func addLink(projectID: UUID, url: String) async throws -> AddLinkResponse
 }
 
 public struct MockBackendClient: BackendClient {
     public init() {}
+
+    public func addLink(projectID: UUID, url: String) async throws -> AddLinkResponse {
+        AddLinkResponse(uploadId: UUID().uuidString, path: "links/mock-link.txt", indexStatus: "processing")
+    }
 
     public func fetchArtifactContent(projectID: UUID, path: String) async -> String {
         let ext = URL(fileURLWithPath: path).pathExtension.lowercased()

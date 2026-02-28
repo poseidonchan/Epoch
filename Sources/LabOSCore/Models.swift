@@ -133,6 +133,7 @@ public enum ArtifactKind: String, Codable, CaseIterable, Sendable {
 public enum ArtifactOrigin: String, Codable, CaseIterable, Sendable {
     case userUpload = "user_upload"
     case generated = "generated"
+    case linkUpload = "link_upload"
 }
 
 public enum ArtifactIndexStatus: String, Codable, CaseIterable, Sendable {
@@ -399,11 +400,23 @@ public struct GatewayModelInfo: Identifiable, Hashable, Codable, Sendable {
     public let id: String
     public var name: String
     public var reasoning: Bool
+    public var thinkingLevels: [ThinkingLevel]
 
-    public init(id: String, name: String, reasoning: Bool) {
+    public init(id: String, name: String, reasoning: Bool, thinkingLevels: [ThinkingLevel] = []) {
         self.id = id
         self.name = name
         self.reasoning = reasoning
+        self.thinkingLevels = thinkingLevels
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        reasoning = try container.decode(Bool.self, forKey: .reasoning)
+        // Decode thinkingLevels from raw strings, dropping any unrecognized values
+        let rawLevels = try container.decodeIfPresent([String].self, forKey: .thinkingLevels) ?? []
+        thinkingLevels = rawLevels.compactMap { ThinkingLevel(rawValue: $0) }
     }
 }
 

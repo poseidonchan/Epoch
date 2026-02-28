@@ -268,11 +268,11 @@ private struct MarkdownMathWebView: UIViewRepresentable {
             if let cached = MarkdownMathRenderCache.entry(for: renderSignature) {
                 let nextHeight = max(20, cached.height)
                 if abs(height - nextHeight) > 1 {
-                    height = nextHeight
+                    DispatchQueue.main.async { height = nextHeight }
                 }
             }
             if !isReady {
-                isReady = true
+                DispatchQueue.main.async { isReady = true }
             }
             return
         }
@@ -285,12 +285,12 @@ private struct MarkdownMathWebView: UIViewRepresentable {
         if let cached = MarkdownMathRenderCache.entry(for: renderSignature) {
             let nextHeight = max(20, cached.height)
             if abs(height - nextHeight) > 1 {
-                height = nextHeight
+                DispatchQueue.main.async { height = nextHeight }
             }
         } else {
-            height = 20
+            DispatchQueue.main.async { height = 20 }
         }
-        isReady = false
+        DispatchQueue.main.async { isReady = false }
 
         let escaped = Self.escapeHTML(prepared)
         let highlightCSS = (colorScheme == .dark ? urls.highlightDarkCSS : urls.highlightLightCSS)?.absoluteString ?? ""

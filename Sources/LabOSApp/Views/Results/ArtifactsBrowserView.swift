@@ -10,7 +10,6 @@ struct ArtifactsBrowserView: View {
 
     @State private var searchText = ""
     @State private var includeHidden = false
-    @State private var generatedOnly = false
     @State private var expandedDirectoryPaths: Set<String> = ["."]
     @State private var pendingExternalSelectionPath: String?
     @State private var lastHandledExternalSelectionPath: String?
@@ -53,27 +52,24 @@ struct ArtifactsBrowserView: View {
         let presentation = treePresentation
 
         VStack(spacing: 0) {
-            VStack(spacing: 8) {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    TextField("Filter files in workspace...", text: $searchText)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Filter files in workspace...", text: $searchText)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button {
+                    includeHidden.toggle()
+                } label: {
+                    Image(systemName: includeHidden ? "eye" : "eye.slash")
+                        .font(.subheadline)
+                        .foregroundStyle(includeHidden ? .primary : .tertiary)
                 }
-                .padding(10)
-                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(.secondarySystemBackground)))
-
-                HStack(spacing: 12) {
-                    Toggle("Generated only", isOn: $generatedOnly)
-                        .toggleStyle(.switch)
-                    Spacer()
-                    Toggle("Hidden", isOn: $includeHidden)
-                        .toggleStyle(.switch)
-                }
-                .font(.caption)
-                .padding(.horizontal, 4)
+                .buttonStyle(.plain)
+                .accessibilityLabel(includeHidden ? "Hide hidden files" : "Show hidden files")
             }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(.secondarySystemBackground)))
             .padding(.horizontal, 12)
             .padding(.top, 10)
 
@@ -102,6 +98,15 @@ struct ArtifactsBrowserView: View {
                 )
                 reconcileSelectionForWorkspace()
                 resolvePendingExternalSelectionIfPossible()
+            }
+            .refreshable {
+                await store.refreshWorkspace(
+                    projectID: projectID,
+                    includeHidden: includeHidden,
+                    path: ".",
+                    recursive: true,
+                    limit: 20_000
+                )
             }
             .onAppear {
                 handleExternalSelectionChange(store.selectedArtifactPath)
@@ -200,12 +205,6 @@ struct ArtifactsBrowserView: View {
             return (
                 title: "No matching files in workspace",
                 subtitle: "Try a different filter keyword."
-            )
-        }
-        if generatedOnly {
-            return (
-                title: "No generated files in workspace",
-                subtitle: "Turn off the filter or generate files first."
             )
         }
         return (
@@ -321,8 +320,6 @@ struct ArtifactsBrowserView: View {
 
         var matchedPaths = Set<String>()
         for entry in workspaceEntries {
-            guard shouldIncludeInGeneratedFilter(entry) else { continue }
-
             let normalizedPath = normalizedRelativePath(entry.path)
             guard normalizedPath != "." else { continue }
 
@@ -445,31 +442,10 @@ struct ArtifactsBrowserView: View {
         return expanded
     }
 
-    private func shouldIncludeInGeneratedFilter(_ entry: WorkspaceEntry) -> Bool {
-        guard generatedOnly else { return true }
-        return isGeneratedEntry(entry)
-    }
-
     private func matchesSearch(_ entry: WorkspaceEntry, query: String) -> Bool {
         let name = displayName(forPath: entry.path)
         return name.localizedCaseInsensitiveContains(query)
             || entry.path.localizedCaseInsensitiveContains(query)
-    }
-
-    private func isGeneratedEntry(_ entry: WorkspaceEntry) -> Bool {
-        if entry.type == .dir {
-            return isGeneratedDirectoryPath(entry.path)
-        }
-        return isGeneratedPath(entry.path)
-    }
-
-    private func isGeneratedDirectoryPath(_ path: String) -> Bool {
-        path == "artifacts"
-            || path == "runs"
-            || path == "logs"
-            || path.hasPrefix("artifacts/")
-            || path.hasPrefix("runs/")
-            || path.hasPrefix("logs/")
     }
 
     private func isGeneratedPath(_ path: String) -> Bool {

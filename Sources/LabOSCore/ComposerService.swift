@@ -2,7 +2,7 @@ import Foundation
 
 @MainActor
 internal final class ComposerService {
-    private unowned let store: AppStore
+    private weak var store: AppStore?
 
     // Private state migrated from AppStore
     private var attachmentPayloadsBySessionMessageID: [UUID: [UUID: [ComposerAttachment]]] = [:]
@@ -17,12 +17,14 @@ internal final class ComposerService {
     // MARK: - Initialization helpers
 
     func loadHpcSettings() {
+        guard let store else { return }
         store.hpcPartition = store.defaults.string(forKey: AppStore.DefaultsKey.hpcPartition) ?? ""
         store.hpcAccount = store.defaults.string(forKey: AppStore.DefaultsKey.hpcAccount) ?? ""
         store.hpcQos = store.defaults.string(forKey: AppStore.DefaultsKey.hpcQos) ?? ""
     }
 
     func loadNotificationSettings() {
+        guard let store else { return }
         if store.defaults.object(forKey: AppStore.DefaultsKey.runCompletionNotificationsEnabled) == nil {
             store.runCompletionNotificationsEnabled = true
             return
@@ -35,6 +37,7 @@ internal final class ComposerService {
     // MARK: - Notification prefs
 
     func setRunCompletionNotificationsEnabled(_ enabled: Bool) {
+        guard let store else { return }
         store.runCompletionNotificationsEnabled = enabled
         store.defaults.set(enabled, forKey: AppStore.DefaultsKey.runCompletionNotificationsEnabled)
     }
@@ -42,6 +45,7 @@ internal final class ComposerService {
     // MARK: - HPC settings
 
     func saveHpcSettings(partition: String, account: String, qos: String) {
+        guard let store else { return }
         let partitionValue = partition.trimmingCharacters(in: .whitespacesAndNewlines)
         let accountValue = account.trimmingCharacters(in: .whitespacesAndNewlines)
         let qosValue = qos.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -54,6 +58,7 @@ internal final class ComposerService {
     }
 
     func pushHpcPreferencesToGateway() {
+        guard let store else { return }
         guard store.isGatewayConnected, let gatewayClient = store.gatewayClient else { return }
         struct Params: Codable, Sendable {
             var partition: String?
@@ -73,6 +78,7 @@ internal final class ComposerService {
     }
 
     func refreshOpenAISettingsFromGateway() {
+        guard let store else { return }
         guard store.isGatewayConnected, let gatewayClient = store.gatewayClient else { return }
         struct EmptyParams: Codable, Sendable {}
         Task {
@@ -102,6 +108,7 @@ internal final class ComposerService {
     @MainActor
     private func flushPendingOpenAIHubSyncIfNeeded() async {
         guard let pending = pendingOpenAIHubSync else { return }
+        guard let store else { return }
         guard store.isGatewayConnected, let gatewayClient = store.gatewayClient else { return }
 
         struct Params: Encodable, Sendable {
@@ -164,6 +171,7 @@ internal final class ComposerService {
     // MARK: - Model refresh
 
     func refreshModelsFromGateway() async {
+        guard let store else { return }
         guard let gatewayClient = store.gatewayClient else { return }
         struct EmptyParams: Codable, Sendable {}
         do {
@@ -184,24 +192,39 @@ internal final class ComposerService {
     // MARK: - Model/thinking level preferences
 
     func selectedModelId(for sessionID: UUID) -> String {
-        store.selectedModelIdBySession[sessionID] ?? store.defaultModelId ?? store.availableModels.first?.id ?? ""
+        guard let store else { return "" }
+        return store.selectedModelIdBySession[sessionID] ?? store.defaultModelId ?? store.availableModels.first?.id ?? ""
     }
 
     func setSelectedModelId(for sessionID: UUID, modelId: String) {
+        guard let store else { return }
         store.selectedModelIdBySession[sessionID] = modelId
         normalizeThinkingPrefs(sessionID: sessionID)
     }
 
     func selectedModelInfo(for sessionID: UUID) -> GatewayModelInfo? {
+        guard let store else { return nil }
         let id = selectedModelId(for: sessionID)
         return store.availableModels.first(where: { $0.id == id })
     }
 
+    func thinkingLevels(for sessionID: UUID) -> [ThinkingLevel] {
+        guard let store else { return [] }
+        let model = selectedModelInfo(for: sessionID)
+        if let levels = model?.thinkingLevels, !levels.isEmpty {
+            return levels
+        }
+        // Fall back to global levels
+        return store.availableThinkingLevels
+    }
+
     func selectedThinkingLevel(for sessionID: UUID) -> ThinkingLevel? {
-        store.selectedThinkingLevelBySession[sessionID]
+        guard let store else { return nil }
+        return store.selectedThinkingLevelBySession[sessionID]
     }
 
     func setSelectedThinkingLevel(for sessionID: UUID, level: ThinkingLevel?) {
+        guard let store else { return }
         guard selectedModelInfo(for: sessionID)?.reasoning == true else {
             store.selectedThinkingLevelBySession[sessionID] = nil
             return
@@ -214,6 +237,7 @@ internal final class ComposerService {
     }
 
     func contextRemainingFraction(for sessionID: UUID) -> Double? {
+        guard let store else { return nil }
         guard let total = store.sessionContextBySession[sessionID]?.contextWindowTokens,
               let remaining = store.sessionContextBySession[sessionID]?.remainingTokens,
               total > 0
@@ -222,10 +246,12 @@ internal final class ComposerService {
     }
 
     func contextWindowTokens(for sessionID: UUID) -> Int? {
-        store.sessionContextBySession[sessionID]?.contextWindowTokens
+        guard let store else { return nil }
+        return store.sessionContextBySession[sessionID]?.contextWindowTokens
     }
 
     func ensureComposerPrefs(sessionID: UUID) {
+        guard let store else { return }
         if store.planModeEnabledBySession[sessionID] == nil {
             store.planModeEnabledBySession[sessionID] = false
         }
@@ -243,36 +269,44 @@ internal final class ComposerService {
     }
 
     private func normalizeThinkingPrefs(sessionID: UUID) {
+        guard let store else { return }
         let modelId = store.selectedModelIdBySession[sessionID]
             ?? store.defaultModelId
             ?? store.availableModels.first?.id
-        let supportsReasoning = modelId.flatMap { id in
-            store.availableModels.first(where: { $0.id == id })?.reasoning
-        } ?? false
+        let model = modelId.flatMap { id in
+            store.availableModels.first(where: { $0.id == id })
+        }
 
-        guard supportsReasoning else {
+        guard model?.reasoning == true else {
             store.selectedThinkingLevelBySession[sessionID] = nil
             return
         }
 
+        // Use per-model thinking levels when available, falling back to global
+        let levels = (model?.thinkingLevels.isEmpty == false)
+            ? model!.thinkingLevels
+            : store.availableThinkingLevels
+
         if store.selectedThinkingLevelBySession[sessionID] == nil {
-            store.selectedThinkingLevelBySession[sessionID] = store.availableThinkingLevels.first ?? .medium
+            store.selectedThinkingLevelBySession[sessionID] = levels.first ?? .medium
         }
 
         if let selected = store.selectedThinkingLevelBySession[sessionID],
-           !store.availableThinkingLevels.isEmpty,
-           !store.availableThinkingLevels.contains(selected) {
-            store.selectedThinkingLevelBySession[sessionID] = store.availableThinkingLevels.first ?? .medium
+           !levels.isEmpty,
+           !levels.contains(selected) {
+            store.selectedThinkingLevelBySession[sessionID] = levels.first ?? .medium
         }
     }
 
     // MARK: - Permission level
 
     func permissionLevel(for sessionID: UUID) -> SessionPermissionLevel {
-        store.permissionLevelBySession[sessionID] ?? .default
+        guard let store else { return .default }
+        return store.permissionLevelBySession[sessionID] ?? .default
     }
 
     func setPermissionLevel(projectID: UUID, sessionID: UUID, level: SessionPermissionLevel) {
+        guard let store else { return }
         store.permissionLevelBySession[sessionID] = level
         store.codexFullAccessBySession[sessionID] = (level == .full)
         store.projectService.applyProjectPermissionLevelLocally(projectID: projectID, level: level)
@@ -297,6 +331,7 @@ internal final class ComposerService {
     }
 
     func handleSessionPermissionUpdated(_ payload: SessionPermissionUpdatedPayload) {
+        guard let store else { return }
         if let level = AppStore.parsePermissionLevel(payload.level) {
             store.permissionLevelBySession[payload.sessionId] = level
             store.codexFullAccessBySession[payload.sessionId] = (level == .full)
@@ -315,12 +350,14 @@ internal final class ComposerService {
     }
 
     private func syncPermissionRemotely(projectID: UUID, sessionID: UUID, level: SessionPermissionLevel) async {
+        guard let store else { return }
         await syncSessionPermissionRemotely(projectID: projectID, sessionID: sessionID, level: level)
         await syncSessionPermissionEventRemotely(projectID: projectID, sessionID: sessionID, level: level)
         await store.projectService.syncProjectPermissionLevelRemotely(projectID: projectID, level: level)
     }
 
     private func syncSessionPermissionRemotely(projectID: UUID, sessionID: UUID, level: SessionPermissionLevel) async {
+        guard let store else { return }
         let codexSandbox = AppStore.codexSandbox(for: level)
         let codexApprovalPolicy = AppStore.codexApprovalPolicyForPermissionChange
 
@@ -382,6 +419,7 @@ internal final class ComposerService {
     }
 
     private func syncSessionPermissionEventRemotely(projectID: UUID, sessionID: UUID, level: SessionPermissionLevel) async {
+        guard let store else { return }
         guard store.isGatewayConfigured else { return }
         let connected = await store.ensureGatewayConnectedForChat()
         guard connected, store.isGatewayConnected, let gatewayClient = store.gatewayClient else { return }
@@ -407,6 +445,7 @@ internal final class ComposerService {
     }
 
     private func applyUpdatedSessionFromPermissionSync(_ session: Session) {
+        guard let store else { return }
         store.projectService.upsertSession(session)
 
         let previousThreadId = store.codexThreadBySession[session.id]
@@ -434,20 +473,24 @@ internal final class ComposerService {
     // MARK: - Plan mode
 
     func planModeEnabled(for sessionID: UUID) -> Bool {
-        store.planModeEnabledBySession[sessionID] ?? false
+        guard let store else { return false }
+        return store.planModeEnabledBySession[sessionID] ?? false
     }
 
     func setPlanModeEnabled(for sessionID: UUID, enabled: Bool) {
+        guard let store else { return }
         store.planModeEnabledBySession[sessionID] = enabled
     }
 
     // MARK: - Pending composer attachments
 
     func pendingComposerAttachments(for sessionID: UUID) -> [ComposerAttachment] {
-        store.pendingComposerAttachmentsBySession[sessionID] ?? []
+        guard let store else { return [] }
+        return store.pendingComposerAttachmentsBySession[sessionID] ?? []
     }
 
     func addPendingComposerAttachments(sessionID: UUID, attachments: [ComposerAttachment]) {
+        guard let store else { return }
         let cleaned = attachments.filter {
             !$0.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
@@ -458,12 +501,14 @@ internal final class ComposerService {
     }
 
     func removePendingComposerAttachment(sessionID: UUID, attachmentID: UUID) {
+        guard let store else { return }
         guard var existing = store.pendingComposerAttachmentsBySession[sessionID] else { return }
         existing.removeAll { $0.id == attachmentID }
         store.pendingComposerAttachmentsBySession[sessionID] = existing.isEmpty ? nil : existing
     }
 
     func clearPendingComposerAttachments(sessionID: UUID) {
+        guard let store else { return }
         store.pendingComposerAttachmentsBySession[sessionID] = nil
     }
 

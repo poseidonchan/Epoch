@@ -295,7 +295,7 @@ private struct OpenAIAudioChunker: OpenAIAudioChunking {
         }
 
         let asset = AVURLAsset(url: fileURL)
-        let durationSeconds = CMTimeGetSeconds(asset.duration)
+        let durationSeconds = CMTimeGetSeconds(try await asset.load(.duration))
         guard durationSeconds.isFinite, durationSeconds > 0 else {
             throw OpenAIAudioTranscriptionError.chunkingFailed("Audio duration is unavailable.")
         }
@@ -350,17 +350,18 @@ private struct OpenAIAudioChunker: OpenAIAudioChunking {
 
 private extension AVAssetExportSession {
     func exportAsync() async throws {
-        try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            nonisolated(unsafe) let session = self
             exportAsynchronously {
-                switch self.status {
+                switch session.status {
                 case .completed:
                     continuation.resume()
                 case .failed:
-                    continuation.resume(throwing: OpenAIAudioTranscriptionError.chunkingFailed(self.error?.localizedDescription ?? "Unknown export failure."))
+                    continuation.resume(throwing: OpenAIAudioTranscriptionError.chunkingFailed(session.error?.localizedDescription ?? "Unknown export failure."))
                 case .cancelled:
                     continuation.resume(throwing: OpenAIAudioTranscriptionError.chunkingFailed("Export was cancelled."))
                 default:
-                    continuation.resume(throwing: OpenAIAudioTranscriptionError.chunkingFailed("Export ended in unexpected state: \(self.status.rawValue)."))
+                    continuation.resume(throwing: OpenAIAudioTranscriptionError.chunkingFailed("Export ended in unexpected state: \(session.status.rawValue)."))
                 }
             }
         }

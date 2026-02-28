@@ -29,6 +29,7 @@ struct ProjectPageView: View {
     private let maxInlineAttachmentBytes = 900 * 1024
     private let maxInlinePhotoDimension: CGFloat = 1_536
 
+    @State private var showAddLinkSheet = false
     @State private var renameProjectPresented = false
     @State private var renameSession: Session?
     @State private var deleteSession: Session?
@@ -237,6 +238,12 @@ struct ProjectPageView: View {
                     showProjectFilesSheet = false
                     showFileImporter = true
                 },
+                onAddLink: {
+                    showProjectFilesSheet = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        showAddLinkSheet = true
+                    }
+                },
                 onDeleteFile: { path in
                     store.removeUploadedFile(projectID: projectID, path: path)
                 },
@@ -244,6 +251,11 @@ struct ProjectPageView: View {
                     showProjectFilesSheet = false
                 }
             )
+        }
+        .sheet(isPresented: $showAddLinkSheet) {
+            AddLinkSheet(projectID: projectID) {
+                showAddLinkSheet = false
+            }
         }
         .sheet(isPresented: $showComposerAttachmentSheet) {
             ComposerAttachmentsSheet(
@@ -482,7 +494,10 @@ struct ProjectPageView: View {
                 composerCursorUTF16Offset = offset
             },
             modelOptions: store.availableModels,
-            thinkingLevelOptions: store.availableThinkingLevels.isEmpty ? ThinkingLevel.allCases : store.availableThinkingLevels,
+            thinkingLevelOptions: {
+                let levels = store.thinkingLevels(for: composerDraftSessionID)
+                return levels.isEmpty ? ThinkingLevel.allCases : levels
+            }(),
             skillOptions: projectComposerSkillOptions,
             skillsAreLoading: projectCodexSkillsState.isLoading,
             skillsErrorText: projectCodexSkillsState.error,
@@ -917,10 +932,17 @@ struct ProjectPageView: View {
 
             Spacer(minLength: 0)
 
-            Button("Workspace") {
+            Button {
                 store.openResults()
+            } label: {
+                Label("Workspace", systemImage: "folder")
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                    .fixedSize()
             }
             .buttonStyle(.bordered)
+            .buttonBorderShape(.capsule)
+            .tint(.blue)
 
             Menu {
                 Button("Rename Project") {

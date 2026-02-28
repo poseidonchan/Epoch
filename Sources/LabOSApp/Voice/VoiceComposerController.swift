@@ -392,23 +392,15 @@ final class VoiceComposerController: ObservableObject {
     }
 
     private func requestMicrophonePermissionIfNeeded() async -> MicrophonePermissionOutcome {
-        let permission = AVAudioSession.sharedInstance().recordPermission
+        let permission = AVAudioApplication.shared.recordPermission
         switch permission {
         case .granted:
             return MicrophonePermissionOutcome(granted: true, requiresSystemSettings: false)
         case .denied:
             return MicrophonePermissionOutcome(granted: false, requiresSystemSettings: true)
         case .undetermined:
-            return await withCheckedContinuation { continuation in
-                AVAudioSession.sharedInstance().requestRecordPermission { granted in
-                    continuation.resume(
-                        returning: MicrophonePermissionOutcome(
-                            granted: granted,
-                            requiresSystemSettings: !granted
-                        )
-                    )
-                }
-            }
+            let granted = await AVAudioApplication.requestRecordPermission()
+            return MicrophonePermissionOutcome(granted: granted, requiresSystemSettings: !granted)
         @unknown default:
             return MicrophonePermissionOutcome(granted: false, requiresSystemSettings: false)
         }

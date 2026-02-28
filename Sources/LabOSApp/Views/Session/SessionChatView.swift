@@ -11,6 +11,7 @@ struct SessionChatView: View {
     let sessionID: UUID
 
     @EnvironmentObject private var store: AppStore
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var composerText = ""
     @State private var codexPromptCurrentQuestionIndex = 0
@@ -98,6 +99,7 @@ struct SessionChatView: View {
 
     private var hasActiveSkillToken: Bool {
         guard isCodexSession else { return false }
+        guard let lastChar = composerText.last, !lastChar.isWhitespace else { return false }
         let normalizedText = CodexSkillMentionCodec.sanitizedUserInput(composerText)
         return CodexSkillMentionCodec.trailingToken(in: normalizedText) != nil
     }
@@ -675,7 +677,10 @@ struct SessionChatView: View {
                     composerCursorUTF16Offset = offset
                 },
                 modelOptions: store.availableModels,
-                thinkingLevelOptions: store.availableThinkingLevels.isEmpty ? ThinkingLevel.allCases : store.availableThinkingLevels,
+                thinkingLevelOptions: {
+                    let levels = store.thinkingLevels(for: sessionID)
+                    return levels.isEmpty ? ThinkingLevel.allCases : levels
+                }(),
                 skillOptions: composerSkillOptions,
                 skillsAreLoading: codexSkillsState.isLoading,
                 skillsErrorText: codexSkillsState.error,
@@ -725,7 +730,6 @@ struct SessionChatView: View {
         let question = questions[safeIndex]
         let displayOptions = codexPromptDisplayOptions(for: question)
         let selectedOptionID = codexPromptSelectedOptionByQuestionID[question.id]
-        let selectedOption = displayOptions.first(where: { $0.id == selectedOptionID })
         let allowsFreeform = CodexPromptAnswerBuilder.allowsFreeform(
             promptKind: prompt.kind,
             question: question,
@@ -1023,7 +1027,7 @@ struct SessionChatView: View {
     }
 
     private func codexApprovalCard(_ approval: CodexPendingApproval) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 5) {
             Text(approval.kind == .commandExecution ? "Command approval needed" : "File change approval needed")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
@@ -1041,26 +1045,108 @@ struct SessionChatView: View {
                             .fill(Color(.tertiarySystemFill))
                     )
             }
-            HStack(spacing: 8) {
-                Button("Accept Once") {
-                    store.respondToCodexApproval(sessionID: sessionID, requestID: approval.requestID, decision: "accept")
-                }
-                .buttonStyle(.borderedProminent)
-                Button("Accept Similar") {
-                    store.respondToCodexApproval(sessionID: sessionID, requestID: approval.requestID, decision: "acceptForSession")
-                }
-                .buttonStyle(.bordered)
-                Button("Reject") {
-                    store.respondToCodexApproval(sessionID: sessionID, requestID: approval.requestID, decision: "decline")
-                }
-                .buttonStyle(.bordered)
-            }
+            approvalActionRow(approval: approval)
         }
-        .padding(12)
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(.secondarySystemBackground))
+                .fill(Color.orange.opacity(colorScheme == .dark ? 0.14 : 0.08))
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.orange.opacity(colorScheme == .dark ? 0.25 : 0.15))
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private enum ApprovalActionTone {
+        case primary
+        case secondary
+        case danger
+    }
+
+    private func approvalActionRow(approval: CodexPendingApproval) -> some View {
+        HStack(spacing: 8) {
+            approvalActionButton(title: "Accept Once", tone: .primary) {
+                store.respondToCodexApproval(sessionID: sessionID, requestID: approval.requestID, decision: "accept")
+            }
+
+            approvalActionButton(title: "Accept Similar", tone: .secondary) {
+                store.respondToCodexApproval(sessionID: sessionID, requestID: approval.requestID, decision: "acceptForSession")
+            }
+
+            approvalActionButton(title: "Reject", tone: .danger) {
+                store.respondToCodexApproval(sessionID: sessionID, requestID: approval.requestID, decision: "decline")
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func approvalActionButton(
+        title: String,
+        tone: ApprovalActionTone,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 9)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(approvalActionForeground(tone))
+        .background(
+            Capsule()
+                .fill(approvalActionBackground(tone))
+        )
+        .overlay {
+            if let stroke = approvalActionBorderColor(tone) {
+                Capsule()
+                    .strokeBorder(stroke)
+            }
+        }
+    }
+
+    private func approvalActionForeground(_ tone: ApprovalActionTone) -> Color {
+        switch tone {
+        case .primary:
+            return .white
+        case .secondary:
+            return .blue
+        case .danger:
+            return Color.red.opacity(colorScheme == .dark ? 0.95 : 0.85)
+        }
+    }
+
+    private func approvalActionBackground(_ tone: ApprovalActionTone) -> AnyShapeStyle {
+        switch tone {
+        case .primary:
+            return AnyShapeStyle(
+                LinearGradient(
+                    colors: [Color.orange, Color.orange.opacity(colorScheme == .dark ? 0.78 : 0.86)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+        case .secondary:
+            return AnyShapeStyle(Color.blue.opacity(colorScheme == .dark ? 0.22 : 0.12))
+        case .danger:
+            return AnyShapeStyle(Color.red.opacity(colorScheme == .dark ? 0.16 : 0.10))
+        }
+    }
+
+    private func approvalActionBorderColor(_ tone: ApprovalActionTone) -> Color? {
+        switch tone {
+        case .primary:
+            return nil
+        case .secondary:
+            return Color.blue.opacity(colorScheme == .dark ? 0.5 : 0.35)
+        case .danger:
+            return Color.red.opacity(colorScheme == .dark ? 0.42 : 0.26)
+        }
     }
 
     private func handleImportResult(_ result: Result<[URL], Error>) {
@@ -1588,10 +1674,15 @@ struct SessionChatView: View {
 
             Spacer()
 
-            Button("Workspace") {
+            Button {
                 store.openResults()
+            } label: {
+                Label("Workspace", systemImage: "folder")
+                    .font(.caption.weight(.medium))
             }
             .buttonStyle(.bordered)
+            .buttonBorderShape(.capsule)
+            .tint(.blue)
 
             Menu {
                 Button("Rename Session") {

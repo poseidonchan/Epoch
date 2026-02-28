@@ -547,12 +547,11 @@ struct InlineComposerView: View {
 
     private var chatComposerFooter: some View {
         HStack(alignment: .center, spacing: 12) {
-            Spacer(minLength: 0)
             permissionMenu
+            Spacer(minLength: 0)
             if useEstimatedContextFallback || contextRemainingFraction != nil {
                 ContextRingView(progress: remainingContext, totalContextTokens: contextWindowTokens)
             }
-            Spacer(minLength: 0)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 10)
@@ -822,8 +821,8 @@ struct InlineComposerView: View {
             Image(systemName: "exclamationmark.shield")
                 .font(.system(size: size, weight: .semibold))
         } else {
-            Image(uiImage: DefaultPermissionIcon.image(pointSize: size, colorScheme: colorScheme))
-                .renderingMode(.original)
+            Image(systemName: "checkmark.shield")
+                .font(.system(size: size, weight: .semibold))
         }
     }
 
@@ -1131,7 +1130,10 @@ struct InlineComposerView: View {
                     fromAttributedSelection: textView.selectedRange,
                     in: rendered
                 )
-                parent.onSelectionUTF16OffsetChanged?(updatedSelection.location)
+                let offset = updatedSelection.location
+                DispatchQueue.main.async {
+                    self.parent.onSelectionUTF16OffsetChanged?(offset)
+                }
 
                 lastLookupSignature = lookupSignature
                 lastRawText = rawText
@@ -1545,6 +1547,7 @@ struct ProjectFilesSheet: View {
     let uploadedFiles: [Artifact]
     let onAddPhotos: () -> Void
     let onAddFiles: () -> Void
+    var onAddLink: (() -> Void)? = nil
     var onDeleteFile: ((String) -> Void)? = nil
     let onClose: () -> Void
 
@@ -1609,6 +1612,14 @@ struct ProjectFilesSheet: View {
                     systemImage: "paperclip",
                     action: onAddFiles
                 )
+
+                if let onAddLink {
+                    actionButton(
+                        title: "Add Link",
+                        systemImage: "link",
+                        action: onAddLink
+                    )
+                }
             }
             .padding(.top, 2)
         }
@@ -1687,7 +1698,7 @@ struct ProjectFilesSheet: View {
     }
 
     private func indexStatusBadge(for file: Artifact) -> some View {
-        let status = file.indexStatus ?? .processing
+        let status = file.indexStatus ?? ((file.origin == .userUpload || file.origin == .linkUpload) ? .processing : .indexed)
         let label: String
         let tint: Color
 
@@ -2553,6 +2564,8 @@ struct ComposerSkillSuggestionState: Equatable {
         skillsErrorText: String?,
         canRefresh: Bool
     ) -> ComposerSkillSuggestionState? {
+        // If the raw text ends with whitespace, any $token is already confirmed (not being typed).
+        guard let lastChar = text.last, !lastChar.isWhitespace else { return nil }
         let normalizedText = CodexSkillMentionCodec.sanitizedUserInput(text)
         guard let activeToken = CodexSkillMentionCodec.trailingToken(in: normalizedText) else { return nil }
 #if DEBUG

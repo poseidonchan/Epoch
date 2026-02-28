@@ -353,7 +353,6 @@ public enum CodexSkillMentionCodec {
         guard token.first == "$" else { return nil }
 
         let query = token.dropFirst()
-        guard !query.isEmpty else { return nil }
         guard query.allSatisfy({ isAllowedSkillNameCharacter($0) }) else { return nil }
 
         return CodexActiveSkillToken(query: String(query), range: tokenStart..<trimmed.endIndex)

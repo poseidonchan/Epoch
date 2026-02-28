@@ -17,6 +17,7 @@ struct SessionShelfView: View {
     let onRefreshSkillSuggestions: (() -> Void)?
 
     @EnvironmentObject private var store: AppStore
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var showQueueManager = false
     @State private var showDiffReview = false
@@ -279,40 +280,44 @@ struct SessionShelfView: View {
         let skillCount = state.entries.reduce(0) { $0 + $1.skills.count }
 
         return cardContainer {
-            HStack(alignment: .center, spacing: 10) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Skills")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
+            Button {
+                showSkillsSheet = true
+            } label: {
+                HStack(alignment: .center, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Skills")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
 
-                    if state.isLoading {
-                        Text("Loading…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else if let error = state.error, !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text(error)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .lineLimit(2)
-                    } else if state.updatedAt != nil {
-                        Text("\(skillCount) available")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("Tap View to load")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        if state.isLoading {
+                            Text("Loading…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else if let error = state.error, !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .lineLimit(2)
+                        } else if state.updatedAt != nil {
+                            Text("\(skillCount) available")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Tap to load")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                }
 
-                Spacer(minLength: 0)
+                    Spacer(minLength: 0)
 
-                Button("View") {
-                    showSkillsSheet = true
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.bordered)
-                .accessibilityIdentifier("session.shelf.skills.view")
             }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("session.shelf.skills.view")
         }
     }
 
@@ -487,10 +492,6 @@ struct SessionShelfView: View {
     private func approvalsCard(_ approvals: [CodexPendingApproval]) -> some View {
         cardContainer {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Approvals needed")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-
                 ForEach(approvals) { approval in
                     codexApprovalRow(approval)
                 }
@@ -499,7 +500,7 @@ struct SessionShelfView: View {
     }
 
     private func codexApprovalRow(_ approval: CodexPendingApproval) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 5) {
             Text(approval.kind == .commandExecution ? "Command approval" : "File change approval")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
@@ -551,36 +552,112 @@ struct SessionShelfView: View {
                             .font(.subheadline.weight(.semibold))
                     }
                     .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
             }
 
-            HStack(spacing: 10) {
-                Button("Accept Once") {
-                    store.respondToCodexApproval(sessionID: sessionID, requestID: approval.requestID, decision: "accept")
-                }
-                .buttonStyle(.borderedProminent)
-
-                Button("Accept Similar") {
-                    store.respondToCodexApproval(sessionID: sessionID, requestID: approval.requestID, decision: "acceptForSession")
-                }
-                .buttonStyle(.bordered)
-
-                Button("Reject") {
-                    store.respondToCodexApproval(sessionID: sessionID, requestID: approval.requestID, decision: "decline")
-                }
-                .buttonStyle(.bordered)
-            }
+            approvalActionRow(approval: approval)
         }
-        .padding(10)
+        .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(.secondarySystemBackground))
+                .fill(Color.orange.opacity(colorScheme == .dark ? 0.14 : 0.08))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.06))
+                .strokeBorder(Color.orange.opacity(colorScheme == .dark ? 0.25 : 0.15))
         )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private enum ApprovalActionTone {
+        case primary
+        case secondary
+        case danger
+    }
+
+    private func approvalActionRow(approval: CodexPendingApproval) -> some View {
+        HStack(spacing: 8) {
+            approvalActionButton(title: "Accept Once", tone: .primary) {
+                store.respondToCodexApproval(sessionID: sessionID, requestID: approval.requestID, decision: "accept")
+            }
+
+            approvalActionButton(title: "Accept Similar", tone: .secondary) {
+                store.respondToCodexApproval(sessionID: sessionID, requestID: approval.requestID, decision: "acceptForSession")
+            }
+
+            approvalActionButton(title: "Reject", tone: .danger) {
+                store.respondToCodexApproval(sessionID: sessionID, requestID: approval.requestID, decision: "decline")
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func approvalActionButton(
+        title: String,
+        tone: ApprovalActionTone,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 9)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(approvalActionForeground(tone))
+        .background(
+            Capsule()
+                .fill(approvalActionBackground(tone))
+        )
+        .overlay {
+            if let stroke = approvalActionBorderColor(tone) {
+                Capsule()
+                    .strokeBorder(stroke)
+            }
+        }
+    }
+
+    private func approvalActionForeground(_ tone: ApprovalActionTone) -> Color {
+        switch tone {
+        case .primary:
+            return .white
+        case .secondary:
+            return .blue
+        case .danger:
+            return Color.red.opacity(colorScheme == .dark ? 0.95 : 0.85)
+        }
+    }
+
+    private func approvalActionBackground(_ tone: ApprovalActionTone) -> AnyShapeStyle {
+        switch tone {
+        case .primary:
+            return AnyShapeStyle(
+                LinearGradient(
+                    colors: [Color.orange, Color.orange.opacity(colorScheme == .dark ? 0.78 : 0.86)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+        case .secondary:
+            return AnyShapeStyle(Color.blue.opacity(colorScheme == .dark ? 0.22 : 0.12))
+        case .danger:
+            return AnyShapeStyle(Color.red.opacity(colorScheme == .dark ? 0.16 : 0.10))
+        }
+    }
+
+    private func approvalActionBorderColor(_ tone: ApprovalActionTone) -> Color? {
+        switch tone {
+        case .primary:
+            return nil
+        case .secondary:
+            return Color.blue.opacity(colorScheme == .dark ? 0.5 : 0.35)
+        case .danger:
+            return Color.red.opacity(colorScheme == .dark ? 0.42 : 0.26)
+        }
     }
 
     private func fileChangeItem(for approval: CodexPendingApproval) -> CodexFileChangeItem? {

@@ -75,7 +75,16 @@ export async function handleThreadStart(
   if (engineName === "codex-app-server") {
     const engine = await ctx.engines.getEngine(engineName);
     if (engine.threadStart) {
-      const proxied = await engine.threadStart(stripEngineOverride(params));
+      const engineParams = stripEngineOverride(params);
+      // thread/start only accepts a plain string sandbox mode enum
+      // ("read-only" | "workspace-write" | "danger-full-access").
+      // The full SandboxPolicy object (with networkAccess, writableRoots, etc.)
+      // is passed via sandboxPolicy in turn/start instead.
+      const sandboxMode = toCodexSandboxModeFromPolicy(sandbox);
+      if (sandboxMode) {
+        engineParams.sandbox = sandboxMode;
+      }
+      const proxied = await engine.threadStart(engineParams);
       const threadRaw = (proxied.thread ?? null) as Record<string, unknown> | null;
       if (threadRaw && typeof threadRaw.id === "string") {
         const preview = normalizeNonEmptyString(threadRaw.preview) ?? "";
@@ -409,6 +418,14 @@ export function updateThreadPreviewFromItems(turns: Turn[]): string {
   return "";
 }
 
+function toCodexSandboxModeFromPolicy(policy: Record<string, unknown>): string | null {
+  const type = normalizeNonEmptyString(policy.type) ?? normalizeNonEmptyString(policy.mode);
+  if (type === "workspaceWrite" || type === "workspace-write" || type === "workspace_write") return "workspace-write";
+  if (type === "readOnly" || type === "read-only" || type === "read_only") return "read-only";
+  if (type === "dangerFullAccess" || type === "danger-full-access" || type === "danger_full_access") return "danger-full-access";
+  return null;
+}
+
 function normalizeApprovalPolicy(raw: unknown): string {
   const value = normalizeNonEmptyString(raw)?.toLowerCase();
   switch (value) {
@@ -469,7 +486,21 @@ function parseJsonObject(raw: unknown): Record<string, unknown> | null {
 
 function normalizeSandboxPolicy(raw: unknown): Record<string, unknown> {
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    return raw as Record<string, unknown>;
+    const obj = raw as Record<string, unknown>;
+    const mode = normalizeNonEmptyString(obj.mode) ?? normalizeNonEmptyString(obj.type);
+    if (mode === "danger-full-access" || mode === "dangerfullaccess" || mode === "danger_full_access" || mode === "dangerFullAccess") {
+      return { type: "dangerFullAccess" };
+    }
+    if (mode === "read-only" || mode === "readonly" || mode === "read_only" || mode === "readOnly") {
+      return { type: "readOnly" };
+    }
+    return {
+      type: "workspaceWrite",
+      networkAccess: Boolean(obj.networkAccess ?? true),
+      writableRoots: Array.isArray(obj.writableRoots) ? obj.writableRoots : [],
+      excludeTmpdirEnvVar: Boolean(obj.excludeTmpdirEnvVar ?? false),
+      excludeSlashTmp: Boolean(obj.excludeSlashTmp ?? false),
+    };
   }
   const mode = normalizeNonEmptyString(raw)?.toLowerCase();
   switch (mode) {
@@ -477,19 +508,11 @@ function normalizeSandboxPolicy(raw: unknown): Record<string, unknown> {
       return { type: "dangerFullAccess" };
     case "read-only":
       return { type: "readOnly" };
-    case "workspace-write":
-      return {
-        type: "workspaceWrite",
-        writableRoots: [process.cwd()],
-        networkAccess: false,
-        excludeTmpdirEnvVar: false,
-        excludeSlashTmp: false,
-      };
     default:
       return {
         type: "workspaceWrite",
         writableRoots: [process.cwd()],
-        networkAccess: false,
+        networkAccess: true,
         excludeTmpdirEnvVar: false,
         excludeSlashTmp: false,
       };

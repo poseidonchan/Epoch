@@ -44,6 +44,7 @@ type IndexUploadDeps = {
   getOpenAIApiKey: () => Promise<string | undefined>;
   getOpenAIOcrModel?: () => Promise<string | undefined>;
   onStatusChange?: (status: ProjectFileIndexStatus) => Promise<void> | void;
+  syncFileToHpc?: (artifactPath: string, extractedText: string, summary: string) => Promise<void>;
 };
 
 export async function queueProjectUploadIndexing(input: IndexUploadInput, deps: IndexUploadDeps): Promise<void> {
@@ -65,9 +66,11 @@ export async function queueProjectUploadIndexing(input: IndexUploadInput, deps: 
 }
 
 export async function runProjectUploadIndexing(input: IndexUploadInput, deps: IndexUploadDeps): Promise<void> {
-  const startedAt = new Date().toISOString();
+  const ac = new AbortController();
+  const timeout = setTimeout(() => ac.abort(), 120_000);
+  timeout.unref?.();
   try {
-    await deps.onStatusChange?.("processing");
+    void deps.onStatusChange?.("processing")?.catch?.(() => {});
 
     const apiKey = await deps.getOpenAIApiKey();
     const ocrModel = await deps.getOpenAIOcrModel?.();
@@ -75,6 +78,7 @@ export async function runProjectUploadIndexing(input: IndexUploadInput, deps: In
       openAIApiKey: apiKey,
       enablePdfOcrFallback: true,
       ocrModel,
+      signal: ac.signal,
     });
     const extractedText = extraction.text.slice(0, MAX_EXTRACTED_TEXT_CHARS);
     const chunks = chunkTextForRag(extractedText);
@@ -85,7 +89,7 @@ export async function runProjectUploadIndexing(input: IndexUploadInput, deps: In
 
     if (apiKey) {
       try {
-        const embeddingsResult = await embedTextsWithOpenAI(chunks, { apiKey });
+        const embeddingsResult = await embedTextsWithOpenAI(chunks, { apiKey, signal: ac.signal });
         if (embeddingsResult.vectors.length !== chunks.length) {
           throw new Error(`Embedding count mismatch: expected ${chunks.length}, got ${embeddingsResult.vectors.length}`);
         }
@@ -105,7 +109,7 @@ export async function runProjectUploadIndexing(input: IndexUploadInput, deps: In
     let summaryText = fallbackExtractiveSummary(extractedText);
     if (apiKey) {
       try {
-        const summaryResult = await summarizeTextWithOpenAI(extractedText, { apiKey });
+        const summaryResult = await summarizeTextWithOpenAI(extractedText, { apiKey, signal: ac.signal });
         summaryModel = summaryResult.model;
         summaryText = summaryResult.summary || summaryText;
       } catch {
@@ -163,9 +167,11 @@ export async function runProjectUploadIndexing(input: IndexUploadInput, deps: In
         indexedAt,
       ]
     );
-    await deps.onStatusChange?.("indexed");
+    void deps.syncFileToHpc?.(input.artifactPath, extractedText, summaryText)?.catch(() => {});
+    void deps.onStatusChange?.("indexed")?.catch?.(() => {});
   } catch (err) {
     const message = normalizeErrorMessage(err);
+    console.error(`[indexing] Failed to index ${input.artifactPath} for project ${input.projectId}: ${message}`);
     await deps.pool.query(
       `UPDATE project_file_index SET
           status='failed',
@@ -174,9 +180,9 @@ export async function runProjectUploadIndexing(input: IndexUploadInput, deps: In
        WHERE project_id=$1 AND artifact_path=$2`,
       [input.projectId, input.artifactPath, message, new Date().toISOString()]
     );
-    await deps.onStatusChange?.("failed");
+    void deps.onStatusChange?.("failed")?.catch?.(() => {});
   } finally {
-    void startedAt;
+    clearTimeout(timeout);
   }
 }
 
@@ -199,7 +205,7 @@ export async function listProjectFileCatalog(
        ON pfi.project_id = a.project_id
       AND pfi.artifact_path = a.path
      WHERE a.project_id=$1
-       AND a.origin='user_upload'
+       AND a.origin IN ('user_upload', 'link_upload')
      ORDER BY a.modified_at DESC
      LIMIT $2`,
     [projectId, limit]
@@ -335,7 +341,7 @@ function tokenize(text: string): string[] {
     .toLowerCase()
     .split(/[^a-z0-9]+/g)
     .map((t) => t.trim())
-    .filter((t) => t.length > 2)
+    .filter((t) => t.length > 1)
     .slice(0, 24);
 }
 

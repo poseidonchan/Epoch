@@ -90,7 +90,7 @@ public final class GatewayClient: ObservableObject {
         self.encoder = encoder
 
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .iso8601WithFractionalSeconds
         self.decoder = decoder
 
         var continuation: AsyncStream<GatewayEvent>.Continuation?

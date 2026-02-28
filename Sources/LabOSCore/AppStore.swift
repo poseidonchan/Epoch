@@ -221,6 +221,7 @@ public final class AppStore: ObservableObject {
     internal struct GatewayUploadResponse: Decodable, Sendable {
         var uploadId: String
         var path: String
+        var indexStatus: String?
     }
     internal var artifactContentCache: [String: String] = [:]
     internal var artifactDataCache: [String: Data] = [:]
@@ -248,13 +249,13 @@ public final class AppStore: ObservableObject {
 
     internal let gatewayJSONEncoder: JSONEncoder = {
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = .iso8601WithFractionalSeconds
         return encoder
     }()
 
     internal let gatewayJSONDecoder: JSONDecoder = {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .iso8601WithFractionalSeconds
         return decoder
     }()
     internal let durationFormatter: DateComponentsFormatter = {
@@ -295,6 +296,7 @@ public final class AppStore: ObservableObject {
         applyE2EFixturesIfNeeded()
 
         if bootstrapDemo, isGatewayConfigured, !isRunningTests {
+            loadCachedProjectsIfEmpty()
             Task { [weak self] in
                 await self?.connectGateway()
             }
@@ -439,6 +441,36 @@ public final class AppStore: ObservableObject {
 
         if let data = try? gatewayJSONEncoder.encode(encodedMap) {
             defaults.set(data, forKey: DefaultsKey.codexTrajectoryDurations)
+        }
+    }
+
+    // MARK: - Project/session cache for fast launch
+
+    internal func persistProjectsCache(_ projects: [Project]) {
+        guard let data = try? JSONEncoder().encode(projects) else { return }
+        defaults.set(data, forKey: "labos.cachedProjects")
+    }
+
+    internal func persistSessionsCache() {
+        guard let data = try? JSONEncoder().encode(sessionsByProject) else { return }
+        defaults.set(data, forKey: "labos.cachedSessions")
+    }
+
+    private func loadCachedProjectsIfEmpty() {
+        guard projects.isEmpty else { return }
+        guard let data = defaults.data(forKey: "labos.cachedProjects"),
+              let cached = try? JSONDecoder().decode([Project].self, from: data),
+              !cached.isEmpty
+        else { return }
+        projects = cached
+
+        if let sessData = defaults.data(forKey: "labos.cachedSessions"),
+           let cachedSessions = try? JSONDecoder().decode([UUID: [Session]].self, from: sessData) {
+            for (pid, sessions) in cachedSessions {
+                if sessionsByProject[pid] == nil {
+                    sessionsByProject[pid] = sessions
+                }
+            }
         }
     }
 
@@ -1245,6 +1277,9 @@ public final class AppStore: ObservableObject {
                     Task { @MainActor [weak self] in
                         self?.chatService.drainCodexQueueIfPossible(projectID: session.projectID, sessionID: sessionID)
                     }
+                    Task { @MainActor [weak self] in
+                        await self?.refreshWorkspace(projectID: session.projectID)
+                    }
                 }
 
                 if let turnId {
@@ -1824,7 +1859,6 @@ public final class AppStore: ObservableObject {
         guard let data = defaults.data(forKey: key),
               let decoded = try? gatewayJSONDecoder.decode([CodexQueuedUserInputItem].self, from: data)
         else {
-            codexQueuedInputsBySession[sessionID] = codexQueuedInputsBySession[sessionID] ?? []
             return
         }
 
@@ -2685,8 +2719,12 @@ public final class AppStore: ObservableObject {
         case let .runsLogDelta(payload):
             projectService.applyRunLogDelta(payload)
 
-        case let .artifactsUpdated(projectID, artifact, change: _):
-            upsertArtifact(projectID: projectID, artifact: artifact)
+        case let .artifactsUpdated(projectID, artifact, change):
+            if change == "deleted" {
+                projectService.removeUploadedFileLocally(projectID: projectID, path: artifact.path)
+            } else {
+                upsertArtifact(projectID: projectID, artifact: artifact)
+            }
 
         case let .settingsOpenAIUpdated(payload):
             openAIHubSettingsStatus = payload
@@ -3814,6 +3852,10 @@ public final class AppStore: ObservableObject {
         composerService.setSelectedThinkingLevel(for: sessionID, level: level)
     }
 
+    public func thinkingLevels(for sessionID: UUID) -> [ThinkingLevel] {
+        composerService.thinkingLevels(for: sessionID)
+    }
+
     @discardableResult
     public func createProject(name: String) async -> Project? {
         await projectService.createProject(name: name)
@@ -3894,6 +3936,9 @@ public final class AppStore: ObservableObject {
     }
 
     public func backToProject() {
+        if let projectID = activeProjectID, let sessionID = activeSessionID {
+            projectService.generateSessionTitleIfNeeded(projectID: projectID, sessionID: sessionID)
+        }
         activeSessionID = nil
     }
 
@@ -3916,6 +3961,10 @@ public final class AppStore: ObservableObject {
 
     public func uploadProjectFiles(projectID: UUID, files: [ProjectUploadFile], createdBySessionID: UUID?) async {
         await projectService.uploadProjectFiles(projectID: projectID, files: files, createdBySessionID: createdBySessionID)
+    }
+
+    public func addProjectLink(projectID: UUID, url: String) async {
+        await projectService.addProjectLink(projectID: projectID, url: url)
     }
 
     public func addUploadedFiles(projectID: UUID, fileNames: [String], createdBySessionID: UUID?) {
@@ -4284,14 +4333,17 @@ public final class AppStore: ObservableObject {
     internal static let codexApprovalPolicyForPermissionChange = "on-request"
 
     internal static func codexSandbox(for level: SessionPermissionLevel) -> JSONValue {
-        let mode: String
         switch level {
         case .default:
-            mode = "workspace-write"
+            return .object([
+                "mode": .string("workspace-write"),
+                "networkAccess": .bool(true),
+            ])
         case .full:
-            mode = "danger-full-access"
+            return .object([
+                "mode": .string("danger-full-access"),
+            ])
         }
-        return .object(["mode": .string(mode)])
     }
 
     internal static func permissionLevel(forCodexSandbox sandbox: JSONValue?) -> SessionPermissionLevel? {

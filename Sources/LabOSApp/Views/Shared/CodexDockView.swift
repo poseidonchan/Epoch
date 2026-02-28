@@ -51,7 +51,7 @@ struct CodexDockView<Shelf: View, Composer: View, Footer: View>: View {
         )
         .padding(.horizontal, CodexDockTokens.horizontalInset)
         .padding(.top, 8)
-        .padding(.bottom, 10)
+        .padding(.bottom, 16)
         .background(
             Color(.systemBackground)
                 .opacity(CodexDockTokens.scrimOpacity(colorScheme))

@@ -2,7 +2,7 @@ import Foundation
 
 @MainActor
 internal final class ProjectService {
-    private unowned let store: AppStore
+    private weak var store: AppStore?
 
     // Private state migrated from AppStore
     var observedTerminalRunIDs: Set<UUID> = []
@@ -14,6 +14,7 @@ internal final class ProjectService {
     // MARK: - Project CRUD
 
     func createProject(name: String) async -> Project? {
+        guard let store else { return nil }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalName = trimmed.isEmpty ? "Untitled Project" : trimmed
 
@@ -75,6 +76,7 @@ internal final class ProjectService {
     }
 
     func renameProject(projectID: UUID, newName: String) {
+        guard let store else { return }
         guard let index = store.projects.firstIndex(where: { $0.id == projectID }) else { return }
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -102,6 +104,7 @@ internal final class ProjectService {
     }
 
     func deleteProject(projectID: UUID) {
+        guard let store else { return }
         if store.shouldUseCodexRPC {
             struct Params: Codable, Sendable { var projectId: String }
             Task {
@@ -128,6 +131,7 @@ internal final class ProjectService {
     }
 
     func projectPermissionLevel(for projectID: UUID) -> SessionPermissionLevel {
+        guard let store else { return .default }
         guard let project = store.projects.first(where: { $0.id == projectID }) else { return .default }
         return AppStore.permissionLevel(forCodexSandbox: project.codexSandbox) ?? .default
     }
@@ -141,6 +145,7 @@ internal final class ProjectService {
     }
 
     func applyProjectPermissionLevelLocally(projectID: UUID, level: SessionPermissionLevel) {
+        guard let store else { return }
         guard let index = store.projects.firstIndex(where: { $0.id == projectID }) else { return }
         store.projects[index].codexApprovalPolicy = AppStore.codexApprovalPolicyForPermissionChange
         store.projects[index].codexSandbox = AppStore.codexSandbox(for: level)
@@ -148,6 +153,7 @@ internal final class ProjectService {
     }
 
     func syncProjectPermissionLevelRemotely(projectID: UUID, level: SessionPermissionLevel) async {
+        guard let store else { return }
         let codexApprovalPolicy = AppStore.codexApprovalPolicyForPermissionChange
         let codexSandbox = AppStore.codexSandbox(for: level)
 
@@ -205,6 +211,7 @@ internal final class ProjectService {
     }
 
     func upsertProject(_ project: Project) {
+        guard let store else { return }
         if let idx = store.projects.firstIndex(where: { $0.id == project.id }) {
             store.projects[idx] = project
         } else {
@@ -213,6 +220,7 @@ internal final class ProjectService {
     }
 
     func removeProjectLocally(projectID: UUID) {
+        guard let store else { return }
         let removedSessionIDs = Set((store.sessionsByProject[projectID] ?? []).map(\.id))
 
         store.projects.removeAll { $0.id == projectID }
@@ -269,6 +277,7 @@ internal final class ProjectService {
     }
 
     func refreshProjectsFromGateway() async {
+        guard let store else { return }
         guard let gatewayClient = store.gatewayClient else { return }
         struct EmptyParams: Codable, Sendable {}
         do {
@@ -278,6 +287,7 @@ internal final class ProjectService {
             let sorted = projects.sorted { $0.updatedAt > $1.updatedAt }
             let projectIDs = Set(sorted.map(\.id))
             store.projects = sorted
+            store.persistProjectsCache(sorted)
 
             store.sessionsByProject = store.sessionsByProject.filter { projectIDs.contains($0.key) }
             store.artifactsByProject = store.artifactsByProject.filter { projectIDs.contains($0.key) }
@@ -302,6 +312,7 @@ internal final class ProjectService {
     }
 
     func refreshProjectsFromCodex() async {
+        guard let store else { return }
         struct EmptyParams: Codable, Sendable {}
         do {
             let response = try await store.requestCodex(method: "labos/project/list", params: EmptyParams())
@@ -310,6 +321,7 @@ internal final class ProjectService {
             let sorted = projects.sorted { $0.updatedAt > $1.updatedAt }
             let projectIDs = Set(sorted.map(\.id))
             store.projects = sorted
+            store.persistProjectsCache(sorted)
 
             store.sessionsByProject = store.sessionsByProject.filter { projectIDs.contains($0.key) }
             store.artifactsByProject = store.artifactsByProject.filter { projectIDs.contains($0.key) }
@@ -336,6 +348,7 @@ internal final class ProjectService {
     // MARK: - Session lifecycle
 
     func createSession(projectID: UUID, title: String?) async -> Session? {
+        guard let store else { return nil }
         if store.shouldUseCodexRPC {
             struct Params: Codable, Sendable {
                 var projectId: String
@@ -443,6 +456,7 @@ internal final class ProjectService {
     }
 
     func renameSession(projectID: UUID, sessionID: UUID, newTitle: String) {
+        guard let store else { return }
         guard var sessions = store.sessionsByProject[projectID],
               let index = sessions.firstIndex(where: { $0.id == sessionID })
         else { return }
@@ -481,7 +495,48 @@ internal final class ProjectService {
         store.sessionsByProject[projectID] = sessions
     }
 
+    func generateSessionTitleIfNeeded(projectID: UUID, sessionID: UUID) {
+        guard let store else { return }
+        guard let sessions = store.sessionsByProject[projectID],
+              let session = sessions.first(where: { $0.id == sessionID })
+        else { return }
+
+        // Only generate if title matches the default "Session N" pattern
+        let defaultPattern = /^Session \d+$/
+        guard session.title.wholeMatch(of: defaultPattern) != nil else { return }
+
+        if store.shouldUseCodexRPC {
+            struct Params: Codable, Sendable { var projectId: String; var sessionId: String }
+            Task { [weak store] in
+                guard let store else { return }
+                let response = try? await store.requestCodex(
+                    method: "labos/session/generateTitle",
+                    params: Params(
+                        projectId: AppStore.gatewayID(projectID),
+                        sessionId: AppStore.gatewayID(sessionID)
+                    )
+                )
+                if let response,
+                   let session: Session = try? store.decodeCodexResult(response.result, key: "session") {
+                    await MainActor.run { store.projectService.upsertSession(session) }
+                }
+            }
+        } else if store.isGatewayConnected, let gatewayClient = store.gatewayClient {
+            struct Params: Codable, Sendable { var projectId: String; var sessionId: String }
+            Task {
+                _ = try? await gatewayClient.request(
+                    method: "sessions.generateTitle",
+                    params: Params(
+                        projectId: AppStore.gatewayID(projectID),
+                        sessionId: AppStore.gatewayID(sessionID)
+                    )
+                )
+            }
+        }
+    }
+
     func archiveSession(projectID: UUID, sessionID: UUID) {
+        guard let store else { return }
         if store.shouldUseCodexRPC {
             struct Params: Codable, Sendable { var projectId: String; var sessionId: String; var lifecycle: String }
             Task {
@@ -515,6 +570,7 @@ internal final class ProjectService {
     }
 
     func unarchiveSession(projectID: UUID, sessionID: UUID) {
+        guard let store else { return }
         if store.shouldUseCodexRPC {
             struct Params: Codable, Sendable { var projectId: String; var sessionId: String; var lifecycle: String }
             Task {
@@ -545,6 +601,7 @@ internal final class ProjectService {
     }
 
     func deleteSession(projectID: UUID, sessionID: UUID) {
+        guard let store else { return }
         if store.shouldUseCodexRPC {
             struct Params: Codable, Sendable { var projectId: String; var sessionId: String }
             Task {
@@ -577,6 +634,7 @@ internal final class ProjectService {
     }
 
     func upsertSession(_ session: Session) {
+        guard let store else { return }
         var sessions = store.sessionsByProject[session.projectID, default: []]
         if let idx = sessions.firstIndex(where: { $0.id == session.id }) {
             sessions[idx] = session
@@ -589,6 +647,7 @@ internal final class ProjectService {
     }
 
     func updateSessionBackend(projectID: UUID, sessionID: UUID, backendEngine: String) async {
+        guard let store else { return }
         let normalized = store.normalizeBackendEngine(backendEngine) ?? "codex-app-server"
         if normalized == "codex-app-server", !store.shouldUseCodexRPC {
             _ = await store.ensureCodexConnectedForChat()
@@ -666,6 +725,7 @@ internal final class ProjectService {
     }
 
     private func mutateLocalSession(projectID: UUID, sessionID: UUID, apply: (inout Session) -> Void) {
+        guard let store else { return }
         guard var sessions = store.sessionsByProject[projectID],
               let index = sessions.firstIndex(where: { $0.id == sessionID })
         else { return }
@@ -677,6 +737,7 @@ internal final class ProjectService {
     }
 
     private func syncCodexSessionMapping(for session: Session) {
+        guard let store else { return }
         if let threadId = session.codexThreadId, !threadId.isEmpty {
             store.codexThreadBySession[session.id] = threadId
             store.codexSessionByThread[threadId] = session.id
@@ -687,6 +748,7 @@ internal final class ProjectService {
     }
 
     private func clearCodexSessionState(_ sessionID: UUID) {
+        guard let store else { return }
         store.codexItemsBySession[sessionID] = nil
         store.codexProposedPlanTextBySession[sessionID] = nil
         store.codexPendingApprovalsBySession[sessionID] = nil
@@ -718,6 +780,7 @@ internal final class ProjectService {
     }
 
     func removeSessionLocally(projectID: UUID, sessionID: UUID) {
+        guard let store else { return }
         guard var sessions = store.sessionsByProject[projectID] else { return }
         sessions.removeAll { $0.id == sessionID }
         store.sessionsByProject[projectID] = sessions
@@ -780,6 +843,7 @@ internal final class ProjectService {
     }
 
     func setSessionLifecycle(projectID: UUID, sessionID: UUID, lifecycle: SessionLifecycle) {
+        guard let store else { return }
         guard var sessions = store.sessionsByProject[projectID],
               let idx = sessions.firstIndex(where: { $0.id == sessionID })
         else { return }
@@ -790,12 +854,14 @@ internal final class ProjectService {
     }
 
     private func normalizeSessionPermissionState(_ session: Session) {
+        guard let store else { return }
         let level = AppStore.permissionLevel(forCodexSandbox: session.codexSandbox) ?? .default
         store.permissionLevelBySession[session.id] = level
         store.codexFullAccessBySession[session.id] = (level == .full)
     }
 
     private func mergeRuns(projectID: UUID, incoming: [RunRecord]) {
+        guard let store else { return }
         let existing = Dictionary(uniqueKeysWithValues: (store.runsByProject[projectID] ?? []).map { ($0.id, $0) })
         let merged = incoming.map { remote in
             var updated = remote
@@ -809,7 +875,9 @@ internal final class ProjectService {
     }
 
     private func applySessionsSnapshot(projectID: UUID, sessions: [Session]) {
+        guard let store else { return }
         store.sessionsByProject[projectID] = sessions
+        store.persistSessionsCache()
         for session in sessions {
             store.composerService.ensureComposerPrefs(sessionID: session.id)
             normalizeSessionPermissionState(session)
@@ -822,6 +890,7 @@ internal final class ProjectService {
 
     @discardableResult
     func refreshProjectSessionsFromCodex(projectID: UUID, failHard: Bool = false) async -> Bool {
+        guard let store else { return false }
         struct SessionsListParams: Codable, Sendable { var projectId: String; var includeArchived: Bool }
         do {
             let sessionsResponse = try await store.requestCodex(
@@ -842,6 +911,7 @@ internal final class ProjectService {
 
     @discardableResult
     func refreshProjectSessionsFromGateway(projectID: UUID, failHard: Bool = false) async -> Bool {
+        guard let store else { return false }
         guard let gatewayClient = store.gatewayClient else { return false }
 
         struct SessionsListParams: Codable, Sendable { var projectId: String; var includeArchived: Bool }
@@ -862,6 +932,7 @@ internal final class ProjectService {
     }
 
     func refreshProjectRunsFromCodex(projectID: UUID, failHard: Bool = false) async {
+        guard let store else { return }
         struct RunsListParams: Codable, Sendable { var projectId: String; var limit: Int }
         do {
             let runsResponse = try await store.requestCodex(
@@ -879,6 +950,7 @@ internal final class ProjectService {
     }
 
     func refreshProjectRunsFromGateway(projectID: UUID, failHard: Bool = false) async {
+        guard let store else { return }
         guard let gatewayClient = store.gatewayClient else { return }
 
         struct RunsListParams: Codable, Sendable { var projectId: String }
@@ -897,6 +969,7 @@ internal final class ProjectService {
     }
 
     func refreshProjectFromCodex(projectID: UUID) async {
+        guard let store else { return }
         struct ArtifactsListParams: Codable, Sendable { var projectId: String; var limit: Int }
 
         do {
@@ -918,6 +991,7 @@ internal final class ProjectService {
     }
 
     func refreshProjectFromGateway(projectID: UUID) async {
+        guard let store else { return }
         guard let gatewayClient = store.gatewayClient else { return }
 
         struct ArtifactsListParams: Codable, Sendable { var projectId: String; var prefix: String? }
@@ -946,6 +1020,7 @@ internal final class ProjectService {
         recursive: Bool = true,
         limit: Int = 10_000
     ) async {
+        guard let store else { return }
         guard let gatewayClient = store.gatewayClient else { return }
 
         struct WorkspaceListParams: Codable, Sendable {
@@ -968,6 +1043,24 @@ internal final class ProjectService {
                 )
             )
             let entries: [WorkspaceEntry] = try store.decodeGatewayPayload(response.payload, key: "entries")
+
+            // Invalidate content cache for files that changed
+            let oldEntries = store.workspaceEntriesByProject[projectID] ?? []
+            let oldByPath: [String: WorkspaceEntry] = Dictionary(
+                oldEntries.map { ($0.path, $0) },
+                uniquingKeysWith: { _, last in last }
+            )
+            let prefix = "\(projectID.uuidString)::"
+            for entry in entries {
+                if let old = oldByPath[entry.path],
+                   old.modifiedAt == entry.modifiedAt,
+                   old.sizeBytes == entry.sizeBytes {
+                    continue
+                }
+                store.workspaceContentCache.removeValue(forKey: prefix + entry.path)
+                store.workspaceDataCache.removeValue(forKey: prefix + entry.path)
+            }
+
             store.workspaceEntriesByProject[projectID] = entries.sorted { $0.path < $1.path }
         } catch {
             store.lastGatewayErrorMessage = error.localizedDescription
@@ -976,7 +1069,42 @@ internal final class ProjectService {
 
     // MARK: - Artifact management
 
+    func addProjectLink(projectID: UUID, url: String) async {
+        guard let store else { return }
+        guard store.projects.contains(where: { $0.id == projectID }) else { return }
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        if store.isGatewayConnected, let base = store.gatewayHTTPBaseURL() {
+            let endpoint = base.appendingPathComponent("projects/\(projectID.uuidString)/links")
+            var req = URLRequest(url: endpoint)
+            req.httpMethod = "POST"
+            req.setValue("Bearer \(store.gatewayToken)", forHTTPHeaderField: "Authorization")
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: ["url": trimmed])
+
+            do {
+                let (data, response) = try await URLSession.shared.data(for: req)
+                guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else { return }
+                let decoded = try store.gatewayJSONDecoder.decode(AppStore.GatewayUploadResponse.self, from: data)
+                _ = upsertArtifact(
+                    projectID: projectID,
+                    path: decoded.path,
+                    createdBySessionID: nil,
+                    origin: .linkUpload,
+                    sizeBytes: nil,
+                    indexStatus: .processing,
+                    indexSummary: nil,
+                    indexedAt: nil
+                )
+            } catch {
+                // Link upload failed silently
+            }
+        }
+    }
+
     func uploadProjectFiles(projectID: UUID, files: [AppStore.ProjectUploadFile], createdBySessionID: UUID?) async {
+        guard let store else { return }
         guard store.projects.contains(where: { $0.id == projectID }) else { return }
 
         let cleaned = files.compactMap { file -> AppStore.ProjectUploadFile? in
@@ -1042,6 +1170,7 @@ internal final class ProjectService {
     }
 
     func addUploadedFiles(projectID: UUID, fileNames: [String], createdBySessionID: UUID?) {
+        guard let store else { return }
         guard store.projects.contains(where: { $0.id == projectID }) else { return }
 
         let cleaned = fileNames
@@ -1070,10 +1199,45 @@ internal final class ProjectService {
     }
 
     func removeUploadedFile(projectID: UUID, path: String) {
+        guard let store else { return }
+        if store.shouldUseCodexRPC {
+            struct Params: Codable, Sendable { var projectId: String; var path: String }
+            Task {
+                _ = try? await store.requestCodex(
+                    method: "labos/artifact/delete",
+                    params: Params(
+                        projectId: AppStore.gatewayID(projectID),
+                        path: path
+                    )
+                )
+            }
+            removeUploadedFileLocally(projectID: projectID, path: path)
+            return
+        }
+        if store.isGatewayConnected, let gatewayClient = store.gatewayClient {
+            struct Params: Codable, Sendable { var projectId: String; var path: String }
+            Task {
+                _ = try? await gatewayClient.request(
+                    method: "artifacts.delete",
+                    params: Params(
+                        projectId: AppStore.gatewayID(projectID),
+                        path: path
+                    )
+                )
+            }
+            removeUploadedFileLocally(projectID: projectID, path: path)
+            return
+        }
+        removeUploadedFileLocally(projectID: projectID, path: path)
+    }
+
+    func removeUploadedFileLocally(projectID: UUID, path: String) {
+        guard let store else { return }
         guard store.projects.contains(where: { $0.id == projectID }) else { return }
 
         if var artifacts = store.artifactsByProject[projectID] {
-            guard artifacts.first(where: { $0.path == path })?.origin == .userUpload else { return }
+            let origin = artifacts.first(where: { $0.path == path })?.origin
+            guard origin == .userUpload || origin == .linkUpload else { return }
             artifacts.removeAll { $0.path == path }
             store.artifactsByProject[projectID] = artifacts
         }
@@ -1097,6 +1261,7 @@ internal final class ProjectService {
     }
 
     func fetchArtifactContent(projectID: UUID, path: String) async -> String {
+        guard let store else { return "" }
         let key = "\(projectID.uuidString)::\(path)"
         if let cached = store.artifactContentCache[key] { return cached }
 
@@ -1156,6 +1321,7 @@ internal final class ProjectService {
     }
 
     func fetchArtifactData(projectID: UUID, path: String) async -> Data? {
+        guard let store else { return nil }
         let key = "\(projectID.uuidString)::\(path)"
         if let cached = store.artifactDataCache[key] { return cached }
 
@@ -1224,6 +1390,7 @@ internal final class ProjectService {
         indexSummary: String? = nil,
         indexedAt: Date? = nil
     ) -> Artifact {
+        guard let store else { return Artifact(projectID: projectID, path: path, origin: origin) }
         var artifacts = store.artifactsByProject[projectID, default: []]
 
         if let idx = artifacts.firstIndex(where: { $0.path == path }) {
@@ -1261,6 +1428,7 @@ internal final class ProjectService {
     }
 
     func upsertArtifactFromEvent(projectID: UUID, artifact: Artifact) {
+        guard let store else { return }
         var artifacts = store.artifactsByProject[projectID, default: []]
         if let idx = artifacts.firstIndex(where: { $0.path == artifact.path }) {
             artifacts[idx] = artifact
@@ -1275,6 +1443,7 @@ internal final class ProjectService {
     }
 
     func setTemporaryArtifactHighlight(_ path: String) {
+        guard let store else { return }
         store.highlightedArtifactPath = path
         Task { [weak store] in
             try? await Task.sleep(for: .seconds(3))
@@ -1288,6 +1457,7 @@ internal final class ProjectService {
     // MARK: - Query helpers
 
     func sessions(for projectID: UUID) -> [Session] {
+        guard let store else { return [] }
         let sessions = store.sessionsByProject[projectID] ?? []
         return sessions.sorted { lhs, rhs in
             if lhs.lifecycle != rhs.lifecycle { return lhs.lifecycle == .active }
@@ -1296,11 +1466,12 @@ internal final class ProjectService {
     }
 
     func artifacts(for projectID: UUID) -> [Artifact] {
-        (store.artifactsByProject[projectID] ?? []).sorted { $0.path < $1.path }
+        guard let store else { return [] }
+        return (store.artifactsByProject[projectID] ?? []).sorted { $0.path < $1.path }
     }
 
     func uploadedArtifacts(for projectID: UUID) -> [Artifact] {
-        artifacts(for: projectID).filter { $0.origin == .userUpload }
+        artifacts(for: projectID).filter { $0.origin == .userUpload || $0.origin == .linkUpload }
     }
 
     func generatedArtifacts(for projectID: UUID) -> [Artifact] {
@@ -1308,10 +1479,12 @@ internal final class ProjectService {
     }
 
     func workspaceEntries(for projectID: UUID) -> [WorkspaceEntry] {
-        (store.workspaceEntriesByProject[projectID] ?? []).sorted { $0.path < $1.path }
+        guard let store else { return [] }
+        return (store.workspaceEntriesByProject[projectID] ?? []).sorted { $0.path < $1.path }
     }
 
     func fetchWorkspaceContent(projectID: UUID, path: String) async -> String {
+        guard let store else { return "" }
         let key = "\(projectID.uuidString)::\(path)"
         if let cached = store.workspaceContentCache[key] { return cached }
 
@@ -1343,6 +1516,7 @@ internal final class ProjectService {
     }
 
     func fetchWorkspaceData(projectID: UUID, path: String) async -> Data? {
+        guard let store else { return nil }
         let key = "\(projectID.uuidString)::\(path)"
         if let cached = store.workspaceDataCache[key] { return cached }
 
@@ -1379,10 +1553,12 @@ internal final class ProjectService {
     }
 
     func runs(for projectID: UUID) -> [RunRecord] {
-        (store.runsByProject[projectID] ?? []).sorted { $0.initiatedAt > $1.initiatedAt }
+        guard let store else { return [] }
+        return (store.runsByProject[projectID] ?? []).sorted { $0.initiatedAt > $1.initiatedAt }
     }
 
     func run(runID: UUID) -> RunRecord? {
+        guard let store else { return nil }
         for runs in store.runsByProject.values {
             if let matched = runs.first(where: { $0.id == runID }) { return matched }
         }
@@ -1390,7 +1566,8 @@ internal final class ProjectService {
     }
 
     func hasActiveRun(projectID: UUID, sessionID: UUID) -> Bool {
-        (store.runsByProject[projectID] ?? []).contains { run in
+        guard let store else { return false }
+        return (store.runsByProject[projectID] ?? []).contains { run in
             run.sessionID == sessionID && (run.status == .queued || run.status == .running)
         }
     }
@@ -1408,6 +1585,7 @@ internal final class ProjectService {
     // MARK: - Run management
 
     func mutateRun(projectID: UUID, runID: UUID, mutate: (inout RunRecord) -> Void) {
+        guard let store else { return }
         guard var runs = store.runsByProject[projectID],
               let idx = runs.firstIndex(where: { $0.id == runID })
         else { return }
@@ -1420,6 +1598,7 @@ internal final class ProjectService {
     }
 
     func upsertRun(projectID: UUID, run: RunRecord) {
+        guard let store else { return }
         var runs = store.runsByProject[projectID, default: []]
         var previousRun: RunRecord?
         var updatedRun = run
@@ -1448,6 +1627,7 @@ internal final class ProjectService {
         summary: String,
         detail: String
     ) {
+        guard let store else { return }
         let event = RunActionEvent(type: type, summary: summary, detail: detail)
         mutateRun(projectID: projectID, runID: runID) { run in
             run.activity.append(event)
@@ -1461,6 +1641,7 @@ internal final class ProjectService {
     }
 
     func applyRunLogDelta(_ payload: RunLogDeltaPayload) {
+        guard let store else { return }
         guard var runs = store.runsByProject[payload.projectId] else { return }
         guard let idx = runs.firstIndex(where: { $0.id == payload.runId }) else { return }
         let trimmed = payload.delta.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1475,6 +1656,7 @@ internal final class ProjectService {
         previousRun: RunRecord,
         updatedRun: RunRecord
     ) {
+        guard let store else { return }
         guard !Self.isTerminalRunStatus(previousRun.status),
               Self.isTerminalRunStatus(updatedRun.status)
         else { return }
@@ -1516,6 +1698,13 @@ internal final class ProjectService {
         projectID: UUID,
         file: AppStore.ProjectUploadFile
     ) async throws -> AppStore.GatewayUploadResponse {
+        guard let store else {
+            throw NSError(
+                domain: "LabOS",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Store is no longer available"]
+            )
+        }
         guard let base = store.gatewayHTTPBaseURL() else {
             throw NSError(
                 domain: "LabOS",

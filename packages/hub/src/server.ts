@@ -13,6 +13,7 @@ import { isNodeMethod, isOperatorMethod, type NodeMethod } from "@labos/protocol
 
 import { saveHubConfig, type HubConfig } from "./config.js";
 import type { DbPool } from "./db/db.js";
+import { CodexEngineRegistry } from "./codex_rpc/engine_registry.js";
 import { getEnvApiKey, listHubModelsForProvider, resolveHubProvider } from "./model.js";
 import { readOpenAISettingsStatus, resolveOpenAIApiKeyFromConfig, resolveOpenAIOcrModelFromConfig } from "./openai_settings.js";
 import { sendEvent, sendResError, sendResOk, broadcastEvent } from "./transport/frames.js";
@@ -43,6 +44,8 @@ import {
   queueProjectUploadIndexing,
 } from "./indexing/projectIndexing.js";
 import { extractInlineAttachmentTextForPrompt } from "./indexing/extract.js";
+import { fetchUrlContent } from "./indexing/fetchUrl.js";
+import { generateSessionTitle } from "./indexing/summarize.js";
 
 type Role = "operator" | "node";
 
@@ -264,6 +267,9 @@ export async function startHub(opts: HubStartOptions): Promise<HubHandle> {
         },
         getSessionPermissionLevel: async (projectId, sessionId) =>
           await getSessionPermissionLevel(state, projectId, sessionId).catch(() => "default"),
+        reconcileAgentsFile: async (projectId, source) => {
+          await reconcileAgentsFromHpc(state, projectId, source);
+        },
       },
     });
   });
@@ -318,10 +324,12 @@ export async function startHub(opts: HubStartOptions): Promise<HubHandle> {
 }
 
 function createHubState(opts: HubStartOptions) {
+  const engines = new CodexEngineRegistry({ config: opts.config, stateDir: opts.stateDir });
   return {
     config: opts.config,
     stateDir: opts.stateDir,
     pool: opts.pool,
+    engines,
     operators: new Set<OperatorConn>(),
     node: null as NodeConn | null,
     hpcPrefs: null as HpcPrefs | null,
@@ -409,6 +417,36 @@ function registerHttpRoutes(fastify: FastifyInstance, state: HubState) {
             change: "updated",
           });
         },
+        syncFileToHpc: async (artPath, extractedText, summary) => {
+          if (!state.node) return;
+          const textPath = artPath.replace(/\.[^.]+$/, ".txt");
+          // Sync original file
+          const originalData = await readFile(storedPath).catch(() => null);
+          if (originalData) {
+            await callNode(state, "runtime.fs.write", {
+              projectId,
+              path: `context/${artPath}`,
+              data: originalData.toString("base64"),
+              encoding: "base64",
+              permissionLevel: "full",
+            });
+          }
+          // Sync extracted text
+          await callNode(state, "runtime.fs.write", {
+            projectId,
+            path: `context/${textPath}`,
+            data: extractedText,
+            encoding: "utf8",
+            permissionLevel: "full",
+          });
+          await callNode(state, "runtime.fs.write", {
+            projectId,
+            path: `context/${textPath}.summary`,
+            data: summary,
+            encoding: "utf8",
+            permissionLevel: "full",
+          });
+        },
       }
     );
 
@@ -418,7 +456,7 @@ function registerHttpRoutes(fastify: FastifyInstance, state: HubState) {
       change: "created",
     });
 
-    return reply.send({ uploadId, path: artifactPath });
+    return reply.send({ uploadId, path: artifactPath, indexStatus: "processing" });
   });
 
   fastify.get("/projects/:projectId/uploads/:uploadId", async (req, reply) => {
@@ -436,6 +474,145 @@ function registerHttpRoutes(fastify: FastifyInstance, state: HubState) {
     const contentType = row.rows[0].content_type;
     if (contentType) reply.header("content-type", contentType);
     return reply.send(createReadStream(storedPath));
+  });
+
+  fastify.post("/projects/:projectId/links", async (req, reply) => {
+    if (!requireHttpAuth(state, req)) return reply.code(401).send({ error: "unauthorized" });
+    const projectId = normalizeId((req.params as any).projectId as string);
+    if (!projectId) return reply.code(400).send({ error: "missing projectId" });
+
+    const body = req.body as Record<string, unknown> | undefined;
+    const rawUrl = String(body?.url ?? "").trim();
+    if (!rawUrl) return reply.code(400).send({ error: "missing url" });
+
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      return reply.code(400).send({ error: "invalid url" });
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return reply.code(400).send({ error: "only http/https URLs are supported" });
+    }
+
+    const uploadId = uuidv4();
+    const hostSlug = sanitizeFilename(parsed.hostname).slice(0, 40);
+    const hash = createHash("sha256").update(rawUrl).digest("hex").slice(0, 12);
+    const artifactPath = `links/${hostSlug}-${hash}.txt`;
+
+    await ensureProjectDirs(state, projectId);
+
+    await upsertArtifact(state, {
+      projectId,
+      path: artifactPath,
+      origin: "link_upload",
+      modifiedAt: new Date().toISOString(),
+      sourceUrl: rawUrl,
+    });
+
+    const now = new Date().toISOString();
+    await state.pool.query(
+      `INSERT INTO project_file_index (
+          project_id, artifact_path, upload_id, status, created_at, updated_at
+        ) VALUES ($1,$2,$3,'processing',$4,$4)
+        ON CONFLICT (project_id, artifact_path) DO UPDATE SET
+          upload_id=EXCLUDED.upload_id,
+          status='processing',
+          error=NULL,
+          updated_at=EXCLUDED.updated_at,
+          completed_at=NULL`,
+      [projectId, artifactPath, uploadId, now]
+    );
+
+    broadcastEvent(state, "artifacts.updated", {
+      projectId,
+      artifact: await getArtifactByPath(state, projectId, artifactPath),
+      change: "created",
+    });
+
+    // Fire-and-forget: fetch URL, save text, run indexing pipeline
+    void (async () => {
+      try {
+        const fetched = await fetchUrlContent(rawUrl);
+        const storedDir = projectUploadsDir(state, projectId);
+        await mkdir(storedDir, { recursive: true });
+        const storedPath = path.join(storedDir, `${uploadId}__${hostSlug}-${hash}.txt`);
+        await writeFile(storedPath, fetched.textContent, "utf8");
+
+        await state.pool.query(
+          `INSERT INTO uploads (id, project_id, original_name, stored_path, content_type, size_bytes, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+          [uploadId, projectId, rawUrl, storedPath, fetched.contentType, fetched.byteLength, new Date().toISOString()]
+        );
+
+        await queueProjectUploadIndexing(
+          {
+            projectId,
+            artifactPath,
+            uploadId,
+            storedPath,
+            contentType: "text/plain",
+          },
+          {
+            pool: state.pool,
+            getOpenAIApiKey: () => getApiKeyForProvider(state, "openai"),
+            getOpenAIOcrModel: async () => resolveOpenAIOcrModelFromConfig(state.config),
+            onStatusChange: async () => {
+              broadcastEvent(state, "artifacts.updated", {
+                projectId,
+                artifact: await getArtifactByPath(state, projectId, artifactPath),
+                change: "updated",
+              });
+            },
+            syncFileToHpc: async (artPath, extractedText, summary) => {
+              if (!state.node) return;
+              const textPath = artPath.replace(/\.[^.]+$/, ".txt");
+              // Sync original file
+              const originalData = await readFile(storedPath).catch(() => null);
+              if (originalData) {
+                await callNode(state, "runtime.fs.write", {
+                  projectId,
+                  path: `context/${artPath}`,
+                  data: originalData.toString("base64"),
+                  encoding: "base64",
+                  permissionLevel: "full",
+                });
+              }
+              // Sync extracted text
+              await callNode(state, "runtime.fs.write", {
+                projectId,
+                path: `context/${textPath}`,
+                data: extractedText,
+                encoding: "utf8",
+                permissionLevel: "full",
+              });
+              await callNode(state, "runtime.fs.write", {
+                projectId,
+                path: `context/${textPath}.summary`,
+                data: summary,
+                encoding: "utf8",
+                permissionLevel: "full",
+              });
+            },
+          }
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err ?? "Unknown error");
+        console.error(`[link-upload] Failed to fetch/index ${rawUrl} for project ${projectId}: ${message}`);
+        await state.pool.query(
+          `UPDATE project_file_index SET status='failed', error=$3, updated_at=$4
+           WHERE project_id=$1 AND artifact_path=$2`,
+          [projectId, artifactPath, message.slice(0, 600), new Date().toISOString()]
+        );
+        broadcastEvent(state, "artifacts.updated", {
+          projectId,
+          artifact: await getArtifactByPath(state, projectId, artifactPath),
+          change: "updated",
+        });
+      }
+    })();
+
+    return reply.send({ uploadId, path: artifactPath, indexStatus: "processing" });
   });
 
   fastify.get("/projects/:projectId/artifacts/content", async (req, reply) => {
@@ -933,6 +1110,40 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
         broadcastEvent(state, "sessions.updated", { session, change: "updated" });
         return;
       }
+      case "sessions.generateTitle": {
+        const projectId = normalizeId(params.projectId);
+        const sessionId = normalizeId(params.sessionId);
+        if (!projectId || !sessionId) {
+          sendResError(ws, id, "BAD_REQUEST", "Missing projectId or sessionId");
+          return;
+        }
+        const apiKey = await getApiKeyForProvider(state, "openai");
+        if (!apiKey) {
+          sendResOk(ws, id, {});
+          return;
+        }
+        const messages = await listMessages(state, projectId, sessionId, { beforeTs: null, limit: 20 });
+        if (messages.length === 0) {
+          sendResOk(ws, id, {});
+          return;
+        }
+        const title = await generateSessionTitle(
+          messages.map((m: any) => ({ role: m.role, text: m.text })),
+          { apiKey }
+        );
+        if (!title) {
+          sendResOk(ws, id, {});
+          return;
+        }
+        const session = await updateSession(state, projectId, sessionId, { title });
+        if (!session) {
+          sendResOk(ws, id, {});
+          return;
+        }
+        sendResOk(ws, id, { session });
+        broadcastEvent(state, "sessions.updated", { session, change: "updated" });
+        return;
+      }
       case "sessions.permission.set": {
         const projectId = normalizeId(params.projectId);
         const sessionId = normalizeId(params.sessionId);
@@ -1004,6 +1215,59 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
       case "models.current": {
         const resolved = resolveHubProvider(state.config);
         const provider = resolved.provider;
+
+        // Try to fetch models dynamically from the Codex app-server engine
+        try {
+          const engine = await state.engines.getEngine(null);
+          if (engine.modelList) {
+            const engineResult = await engine.modelList({});
+            const data = (engineResult as any).data as Array<{
+              id: string;
+              displayName?: string;
+              supportedReasoningEfforts?: Array<{ reasoningEffort: string; description?: string }>;
+              defaultReasoningEffort?: string;
+              isDefault?: boolean;
+            }>;
+            if (Array.isArray(data) && data.length > 0) {
+              const models = data.map((m) => {
+                const efforts = m.supportedReasoningEfforts ?? [];
+                const hasReasoning = efforts.length > 0 && !efforts.every((e) => e.reasoningEffort === "none");
+                const thinkingLevels = hasReasoning
+                  ? efforts.map((e) => e.reasoningEffort).filter((e) => e !== "none")
+                  : [];
+                return {
+                  id: m.id,
+                  name: m.displayName ?? m.id,
+                  reasoning: hasReasoning,
+                  thinkingLevels,
+                };
+              });
+              let defaultModelId = data.find((m) => m.isDefault)?.id ?? resolved.defaultModelId;
+              if (defaultModelId && !models.some((m) => m.id === defaultModelId)) {
+                defaultModelId = null;
+              }
+              if (!defaultModelId) {
+                defaultModelId = models[0]?.id ?? "";
+              }
+              // Global thinkingLevels = union of all models' levels, preserving order
+              const allLevels = new Map<string, true>();
+              for (const m of models) {
+                for (const l of m.thinkingLevels) allLevels.set(l, true);
+              }
+              sendResOk(ws, id, {
+                provider,
+                defaultModelId,
+                models,
+                thinkingLevels: [...allLevels.keys()],
+              });
+              return;
+            }
+          }
+        } catch {
+          // Fall through to hardcoded registry
+        }
+
+        // Fallback: use hardcoded MODEL_REGISTRY
         const models = listHubModelsForProvider(provider);
         let defaultModelId = resolved.defaultModelId;
         if (defaultModelId && !models.some((m) => m.id === defaultModelId)) {
@@ -1015,7 +1279,7 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
         sendResOk(ws, id, {
           provider,
           defaultModelId,
-          models,
+          models: models.map((m) => ({ ...m, thinkingLevels: m.reasoning ? ["minimal", "low", "medium", "high", "xhigh"] : [] })),
           thinkingLevels: ["minimal", "low", "medium", "high", "xhigh"],
         });
         return;
@@ -1103,6 +1367,22 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
           return;
         }
         sendResOk(ws, id, { artifact });
+        return;
+      }
+      case "artifacts.delete": {
+        const projectId = normalizeId(params.projectId);
+        const artifactPath = String(params.path ?? "");
+        if (!projectId || !artifactPath) {
+          sendResError(ws, id, "BAD_REQUEST", "Missing projectId or path");
+          return;
+        }
+        const deleted = await deleteArtifact(state, projectId, artifactPath);
+        if (!deleted) {
+          sendResError(ws, id, "NOT_FOUND", "Artifact not found");
+          return;
+        }
+        sendResOk(ws, id, { ok: true });
+        broadcastEvent(state, "artifacts.updated", { projectId, artifact: deleted, change: "deleted" });
         return;
       }
       case "workspace.bootstrap.get": {
@@ -1620,54 +1900,23 @@ async function getSessionPermissionLevel(state: HubState, projectId: string, ses
 }
 
 type RuntimePolicy = {
-  exec: {
-    maxTimeoutMs: number;
-    maxConcurrent: number;
+  exec?: {
+    maxTimeoutMs?: number;
+    maxConcurrent?: number;
   };
-  slurm: {
-    maxTimeMinutes: number;
-    maxCpus: number;
-    maxMemMB: number;
-    maxGpus: number;
-    maxConcurrent: number;
+  slurm?: {
+    maxTimeMinutes?: number;
+    maxCpus?: number;
+    maxMemMB?: number;
+    maxGpus?: number;
+    maxConcurrent?: number;
   };
-};
-
-const DEFAULT_RUNTIME_POLICY_BY_LEVEL: Record<"default" | "full", RuntimePolicy> = {
-  default: {
-    exec: {
-      maxTimeoutMs: 15 * 60_000,
-      maxConcurrent: 2,
-    },
-    slurm: {
-      maxTimeMinutes: 60,
-      maxCpus: 4,
-      maxMemMB: 16 * 1024,
-      maxGpus: 1,
-      maxConcurrent: 2,
-    },
-  },
-  full: {
-    exec: {
-      maxTimeoutMs: 2 * 60 * 60_000,
-      maxConcurrent: 8,
-    },
-    slurm: {
-      maxTimeMinutes: 24 * 60,
-      maxCpus: 64,
-      maxMemMB: 256 * 1024,
-      maxGpus: 8,
-      maxConcurrent: 8,
-    },
-  },
 };
 
 async function getProjectRuntimePolicy(
   state: HubState,
-  projectId: string,
-  permissionLevel: "default" | "full"
-): Promise<RuntimePolicy> {
-  const base = DEFAULT_RUNTIME_POLICY_BY_LEVEL[permissionLevel];
+  projectId: string
+): Promise<RuntimePolicy | null> {
   const res = await state.pool.query<any>(
     `SELECT codex_sandbox_json
      FROM projects
@@ -1681,20 +1930,15 @@ async function getProjectRuntimePolicy(
     sandbox && typeof sandbox.runtimePolicy === "object" && sandbox.runtimePolicy && !Array.isArray(sandbox.runtimePolicy)
       ? (sandbox.runtimePolicy as Record<string, unknown>)
       : null;
-  if (!runtimePolicyRoot) return base;
-
-  const byLevelRaw =
-    runtimePolicyRoot[permissionLevel] && typeof runtimePolicyRoot[permissionLevel] === "object" && !Array.isArray(runtimePolicyRoot[permissionLevel])
-      ? (runtimePolicyRoot[permissionLevel] as Record<string, unknown>)
-      : runtimePolicyRoot;
+  if (!runtimePolicyRoot) return null;
 
   const execRaw =
-    byLevelRaw.exec && typeof byLevelRaw.exec === "object" && !Array.isArray(byLevelRaw.exec)
-      ? (byLevelRaw.exec as Record<string, unknown>)
+    runtimePolicyRoot.exec && typeof runtimePolicyRoot.exec === "object" && !Array.isArray(runtimePolicyRoot.exec)
+      ? (runtimePolicyRoot.exec as Record<string, unknown>)
       : null;
   const slurmRaw =
-    byLevelRaw.slurm && typeof byLevelRaw.slurm === "object" && !Array.isArray(byLevelRaw.slurm)
-      ? (byLevelRaw.slurm as Record<string, unknown>)
+    runtimePolicyRoot.slurm && typeof runtimePolicyRoot.slurm === "object" && !Array.isArray(runtimePolicyRoot.slurm)
+      ? (runtimePolicyRoot.slurm as Record<string, unknown>)
       : null;
 
   const normalizePositive = (value: unknown) => {
@@ -1710,18 +1954,35 @@ async function getProjectRuntimePolicy(
     return next >= 0 ? next : null;
   };
 
+  const exec: RuntimePolicy["exec"] = {};
+  if (execRaw) {
+    const maxTimeoutMs = normalizePositive(execRaw.maxTimeoutMs);
+    const maxConcurrent = normalizePositive(execRaw.maxConcurrent);
+    if (maxTimeoutMs != null) exec.maxTimeoutMs = maxTimeoutMs;
+    if (maxConcurrent != null) exec.maxConcurrent = maxConcurrent;
+  }
+
+  const slurm: RuntimePolicy["slurm"] = {};
+  if (slurmRaw) {
+    const maxTimeMinutes = normalizePositive(slurmRaw.maxTimeMinutes);
+    const maxCpus = normalizePositive(slurmRaw.maxCpus);
+    const maxMemMB = normalizePositive(slurmRaw.maxMemMB);
+    const maxGpus = normalizeNonNegative(slurmRaw.maxGpus);
+    const maxConcurrent = normalizePositive(slurmRaw.maxConcurrent);
+    if (maxTimeMinutes != null) slurm.maxTimeMinutes = maxTimeMinutes;
+    if (maxCpus != null) slurm.maxCpus = maxCpus;
+    if (maxMemMB != null) slurm.maxMemMB = maxMemMB;
+    if (maxGpus != null) slurm.maxGpus = maxGpus;
+    if (maxConcurrent != null) slurm.maxConcurrent = maxConcurrent;
+  }
+
+  const hasExec = Object.keys(exec).length > 0;
+  const hasSlurm = Object.keys(slurm).length > 0;
+  if (!hasExec && !hasSlurm) return null;
+
   return {
-    exec: {
-      maxTimeoutMs: normalizePositive(execRaw?.maxTimeoutMs) ?? base.exec.maxTimeoutMs,
-      maxConcurrent: normalizePositive(execRaw?.maxConcurrent) ?? base.exec.maxConcurrent,
-    },
-    slurm: {
-      maxTimeMinutes: normalizePositive(slurmRaw?.maxTimeMinutes) ?? base.slurm.maxTimeMinutes,
-      maxCpus: normalizePositive(slurmRaw?.maxCpus) ?? base.slurm.maxCpus,
-      maxMemMB: normalizePositive(slurmRaw?.maxMemMB) ?? base.slurm.maxMemMB,
-      maxGpus: normalizeNonNegative(slurmRaw?.maxGpus) ?? base.slurm.maxGpus,
-      maxConcurrent: normalizePositive(slurmRaw?.maxConcurrent) ?? base.slurm.maxConcurrent,
-    },
+    ...(hasExec ? { exec } : {}),
+    ...(hasSlurm ? { slurm } : {}),
   };
 }
 
@@ -2681,21 +2942,85 @@ function mapArtifact(r: any) {
   };
 }
 
+async function deleteArtifact(state: HubState, projectId: string, artifactPath: string) {
+  const artifact = await getArtifactByPath(state, projectId, artifactPath);
+  if (!artifact) return null;
+
+  // Look up upload record to delete stored file from disk
+  const indexRows = await state.pool.query<any>(
+    `SELECT upload_id FROM project_file_index WHERE project_id=$1 AND artifact_path=$2`,
+    [projectId, artifactPath]
+  );
+  const uploadId = indexRows.rows.length > 0 ? String(indexRows.rows[0].upload_id ?? "") : null;
+
+  if (uploadId) {
+    const uploadRows = await state.pool.query<any>(
+      `SELECT stored_path FROM uploads WHERE id=$1`,
+      [uploadId]
+    );
+    if (uploadRows.rows.length > 0) {
+      const storedPath = String(uploadRows.rows[0].stored_path ?? "");
+      if (storedPath) {
+        await rm(storedPath, { force: true }).catch(() => {});
+      }
+    }
+  }
+
+  // Delete DB records (chunks, index, uploads, artifact)
+  await state.pool.query(`DELETE FROM project_file_chunk WHERE project_id=$1 AND artifact_path=$2`, [projectId, artifactPath]);
+  await state.pool.query(`DELETE FROM project_file_index WHERE project_id=$1 AND artifact_path=$2`, [projectId, artifactPath]);
+  if (uploadId) {
+    await state.pool.query(`DELETE FROM uploads WHERE id=$1`, [uploadId]);
+  }
+  await state.pool.query(`DELETE FROM artifacts WHERE project_id=$1 AND path=$2`, [projectId, artifactPath]);
+
+  // Clean up synced files on HPC workspace
+  if (state.node) {
+    const textPath = artifactPath.replace(/\.[^.]+$/, ".txt");
+    // Remove original file
+    void callNode(state, "runtime.fs.write", {
+      projectId,
+      path: `context/${artifactPath}`,
+      data: "",
+      encoding: "utf8",
+      permissionLevel: "full",
+    }).catch(() => {});
+    // Remove extracted text
+    void callNode(state, "runtime.fs.write", {
+      projectId,
+      path: `context/${textPath}`,
+      data: "",
+      encoding: "utf8",
+      permissionLevel: "full",
+    }).catch(() => {});
+    void callNode(state, "runtime.fs.write", {
+      projectId,
+      path: `context/${textPath}.summary`,
+      data: "",
+      encoding: "utf8",
+      permissionLevel: "full",
+    }).catch(() => {});
+  }
+
+  return artifact;
+}
+
 async function upsertArtifact(
   state: HubState,
-  artifact: { projectId: string; path: string; origin: "user_upload" | "generated"; modifiedAt: string; sizeBytes?: number }
+  artifact: { projectId: string; path: string; origin: "user_upload" | "generated" | "link_upload"; modifiedAt: string; sizeBytes?: number; sourceUrl?: string }
 ) {
   const kind = inferArtifactKind(artifact.path);
   const id = uuidv4();
   await state.pool.query(
-    `INSERT INTO artifacts (id, project_id, path, kind, origin, modified_at, size_bytes)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
+    `INSERT INTO artifacts (id, project_id, path, kind, origin, modified_at, size_bytes, source_url)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
      ON CONFLICT (project_id, path) DO UPDATE SET
        kind=EXCLUDED.kind,
        origin=EXCLUDED.origin,
        modified_at=EXCLUDED.modified_at,
-       size_bytes=COALESCE(EXCLUDED.size_bytes, artifacts.size_bytes)`,
-    [id, artifact.projectId, artifact.path, kind, artifact.origin, artifact.modifiedAt, artifact.sizeBytes ?? null]
+       size_bytes=COALESCE(EXCLUDED.size_bytes, artifacts.size_bytes),
+       source_url=COALESCE(EXCLUDED.source_url, artifacts.source_url)`,
+    [id, artifact.projectId, artifact.path, kind, artifact.origin, artifact.modifiedAt, artifact.sizeBytes ?? null, artifact.sourceUrl ?? null]
   );
 }
 
@@ -2856,7 +3181,7 @@ async function ensureBootstrapDefaults(state: HubState, projectId: string) {
   const files: Array<[string, string]> = [
     [
       "AGENTS.md",
-      `# AGENTS.md\n\n- This workspace is managed by LabOS Hub.\n- Session memory is the canonical chat transcript JSONL.\n- Bootstrap memory files are injected into the agent context on every run.\n`,
+      `# AGENTS.md\n\n- This workspace is managed by LabOS Hub.\n- Uploaded project files are available in the \`context/uploads/\` directory.\n  - Original files are synced as-is (e.g. \`context/uploads/paper.pdf\`).\n  - Each file also has a \`.txt\` version with full extracted text (e.g. \`context/uploads/paper.txt\`).\n  - Each file also has a \`.txt.summary\` sidecar with a brief summary.\n  - To read an uploaded file, use: cat context/uploads/<filename>.txt\n- Session memory is the canonical chat transcript JSONL.\n- Bootstrap memory files are injected into the agent context on every run.\n`,
     ],
     [
       "USERS.md",
