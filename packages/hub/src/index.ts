@@ -15,3 +15,4 @@ export * from "./codex_rpc/handlers/initialize.js";
 export * from "./codex_rpc/handlers/labos.js";
 export * from "./codex_rpc/handlers/thread.js";
 export * from "./codex_rpc/handlers/turn.js";
+export * from "./commands/pair_qr.js";

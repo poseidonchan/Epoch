@@ -26,6 +26,9 @@
 		1F9DD9513CC41B09AC45D6F7 /* AppStoreSessionPrefetchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3A7AC2C1FB680E073FEA23 /* AppStoreSessionPrefetchTests.swift */; };
 		215F7FD44374892A5BFAB816 /* KaTeX_Size4-Regular.woff2 in Resources */ = {isa = PBXBuildFile; fileRef = 53DFC00E56A1723C4B15FA2B /* KaTeX_Size4-Regular.woff2 */; };
 		21C639B2FD960EBEEFE6F12B /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF33BCF594E0FEF19FB1D36E /* AppStore.swift */; };
+		A1C7F0D12E8B4A2093C5F611 /* QueueItemDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4FA03B45CBE7D53F608C944 /* QueueItemDetailView.swift */; };
+		B2D8E1F23A9C5B31D4E6A722 /* SteerQueuePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = E50B14C56DCF8E640719DA55 /* SteerQueuePresentation.swift */; };
+		C3E9F2A34BAD6C42E5F7B833 /* SteerQueuePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F61C25D67ED09F75182AEB66 /* SteerQueuePresentationTests.swift */; };
 		22261F587D9089AEF72D51CE /* ChatImageLightboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BA1103034F61F262A59DDFA /* ChatImageLightboxView.swift */; };
 		229E435623611882336A09B7 /* LabOSProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25C5BF0DD4E3B6E5314952BD /* LabOSProtocol.swift */; };
 		270490CAA4E177BE30BD4DFE /* AppSettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99FFAAAA100D7AB56230C593 /* AppSettingsSheet.swift */; };
@@ -80,6 +83,7 @@
 		838CBFCB75F2F298D73A23B2 /* LabOSCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9A843BC31C423DF184FB7A9B /* LabOSCore.framework */; };
 		8508C928A5B847E02B96A1BB /* SessionShelfView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4770C3384A2D61D0EEF1017F /* SessionShelfView.swift */; };
 		8AACFAD170A6D14B808F0396 /* AddLinkSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D754BDAAB7163DCF68C04B4 /* AddLinkSheet.swift */; };
+		8F7B9E2C14D34A6CB2E1F9A0 /* QRCodeScannerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91D4C8AB5F6E4309BE2A71D3 /* QRCodeScannerSheet.swift */; };
 		8C4D1865574A909B58FF4E46 /* ProjectService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35D2CBD7AECD6011FDEE5F1E /* ProjectService.swift */; };
 		8CE26E55A0918609921F8CFC /* MarkdownTheme+LabOS.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AE4E6E0BB1BDF87AFE4A61D /* MarkdownTheme+LabOS.swift */; };
 		8E652A83F1923B24AD64911C /* CodexAssistantActionTargets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20F37255D3D315F62CA2D626 /* CodexAssistantActionTargets.swift */; };
@@ -220,6 +224,9 @@
 		2BA1103034F61F262A59DDFA /* ChatImageLightboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatImageLightboxView.swift; sourceTree = "<group>"; };
 		2BD10C70F83D43B573E95BD6 /* KaTeX_Main-Regular.woff2 */ = {isa = PBXFileReference; path = "KaTeX_Main-Regular.woff2"; sourceTree = "<group>"; };
 		2F2A63CE55013CFDE15FACCA /* ProjectsDrawerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectsDrawerView.swift; sourceTree = "<group>"; };
+		D4FA03B45CBE7D53F608C944 /* QueueItemDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueItemDetailView.swift; sourceTree = "<group>"; };
+		E50B14C56DCF8E640719DA55 /* SteerQueuePresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteerQueuePresentation.swift; sourceTree = "<group>"; };
+		F61C25D67ED09F75182AEB66 /* SteerQueuePresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SteerQueuePresentationTests.swift; sourceTree = "<group>"; };
 		2FD5F27906402FA8A585201C /* ActivityShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityShareSheet.swift; sourceTree = "<group>"; };
 		313855932D9287FE61A8E9A7 /* LabOSAppTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = LabOSAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		3339C56973FA78D4BC9D5B36 /* StreamingMarkdownView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingMarkdownView.swift; sourceTree = "<group>"; };
@@ -270,6 +277,7 @@
 		8D8629BBAB929B267ACA5A59 /* E2ETestAttachmentFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = E2ETestAttachmentFactory.swift; sourceTree = "<group>"; };
 		8F875C7DCA032C300F110C79 /* python.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = python.min.js; sourceTree = "<group>"; };
 		8FB5A0D832A0F92313B9BEA1 /* DiffReviewSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiffReviewSheet.swift; sourceTree = "<group>"; };
+		91D4C8AB5F6E4309BE2A71D3 /* QRCodeScannerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRCodeScannerSheet.swift; sourceTree = "<group>"; };
 		92CE6023B893EA9183DFA4D1 /* LabOSApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = LabOSApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		96C16F517A15068A657D4DB7 /* CodexTrajectoryGroupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexTrajectoryGroupView.swift; sourceTree = "<group>"; };
 		970FE5379BDEC58044AA3729 /* ChatImageURLResolverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatImageURLResolverTests.swift; sourceTree = "<group>"; };
@@ -371,10 +379,12 @@
 				8FB5A0D832A0F92313B9BEA1 /* DiffReviewSheet.swift */,
 				F297B0CFEBA0A68BF3DFEF3F /* MessageBubbleView.swift */,
 				19B254147A56745578E16CBF /* QueueManagerSheet.swift */,
+				D4FA03B45CBE7D53F608C944 /* QueueItemDetailView.swift */,
 				75FB0C7A37D1FCE7DBCE5D93 /* RunningTerminalsSheet.swift */,
 				D92C4BA96A4950420952E8B8 /* SessionChatView.swift */,
 				4770C3384A2D61D0EEF1017F /* SessionShelfView.swift */,
 				FD12C6149D371837DD10F753 /* SkillsListSheet.swift */,
+				E50B14C56DCF8E640719DA55 /* SteerQueuePresentation.swift */,
 			);
 			path = Session;
 			sourceTree = "<group>";
@@ -462,6 +472,7 @@
 				AD868C2720E3412B2648601D /* MarkdownMathView.swift */,
 				7AE4E6E0BB1BDF87AFE4A61D /* MarkdownTheme+LabOS.swift */,
 				D1688F834B3194EB65F26759 /* NamePromptSheet.swift */,
+				91D4C8AB5F6E4309BE2A71D3 /* QRCodeScannerSheet.swift */,
 				EF4E725AC2CE9D1BD3596D1E /* SanitizedHTMLWebView.swift */,
 				468108B7F94F98B04905A6E0 /* SessionDeleteSheet.swift */,
 				3339C56973FA78D4BC9D5B36 /* StreamingMarkdownView.swift */,
@@ -525,6 +536,7 @@
 		6D1D25C76F403D30B9680A19 /* LabOSAppTests */ = {
 			isa = PBXGroup;
 			children = (
+				F61C25D67ED09F75182AEB66 /* SteerQueuePresentationTests.swift */,
 				261FEBB28E8ABF7C9CAD0117 /* VoiceComposerControllerTests.swift */,
 			);
 			name = LabOSAppTests;
@@ -937,6 +949,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C3E9F2A34BAD6C42E5F7B833 /* SteerQueuePresentationTests.swift in Sources */,
 				E61007988A371C57DC7D03B7 /* VoiceComposerControllerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -984,6 +997,8 @@
 				BA1D4AB0B586E5594A964FE0 /* ProjectPageView.swift in Sources */,
 				E1AD2001D831D093B578E2DD /* ProjectsDrawerView.swift in Sources */,
 				2AEECAD323C1E14F412A0CE7 /* QueueManagerSheet.swift in Sources */,
+				A1C7F0D12E8B4A2093C5F611 /* QueueItemDetailView.swift in Sources */,
+				8F7B9E2C14D34A6CB2E1F9A0 /* QRCodeScannerSheet.swift in Sources */,
 				7879A3325E9B8161BCFF565F /* ResultsPageView.swift in Sources */,
 				D7AE25DD04002541D006AF70 /* RootContainerView.swift in Sources */,
 				27817EF435966E41373AA706 /* RunningTerminalsSheet.swift in Sources */,
@@ -993,6 +1008,7 @@
 				8508C928A5B847E02B96A1BB /* SessionShelfView.swift in Sources */,
 				43531B3ED8B98DE7BE35D1C9 /* SessionsDrawerView.swift in Sources */,
 				52310DEC4B05801B3B0B9353 /* SkillsListSheet.swift in Sources */,
+				B2D8E1F23A9C5B31D4E6A722 /* SteerQueuePresentation.swift in Sources */,
 				BB4789CED3582ACF6E5760D9 /* StreamingMarkdownView.swift in Sources */,
 				5DFB7126B672566781E209E2 /* VoiceComposerController.swift in Sources */,
 			);
