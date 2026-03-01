@@ -596,6 +596,8 @@ struct SessionChatView: View {
             let pendingAttachments = store.pendingComposerAttachments(for: sessionID)
             let trimmed = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
             let hasContent = !trimmed.isEmpty || !pendingAttachments.isEmpty
+            let hasQueuedInputs = !store.codexQueuedInputs(for: sessionID).isEmpty
+            let composerPlaceholder = (isCodexSession && hasQueuedInputs) ? "Ask for follow-up changes" : "Ask LabOS"
 
             let primaryAction: InlineComposerView.PrimaryAction = {
                 if editingMessageID != nil { return .update }
@@ -617,7 +619,7 @@ struct SessionChatView: View {
             let submitDisabled = (primaryAction == .stop && !canInterrupt) || voiceController.isTranscribing
 
             InlineComposerView(
-                placeholder: "Ask LabOS",
+                placeholder: composerPlaceholder,
                 text: $composerText,
                 isPlanModeEnabled: Binding(
                     get: { store.planModeEnabled(for: sessionID) },

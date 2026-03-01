@@ -22,6 +22,7 @@ struct QueueManagerSheet: View {
                 if queuedItems.isEmpty {
                     Text("No queued messages.")
                         .foregroundStyle(.secondary)
+                        .listRowSeparator(.hidden)
                 } else {
                     ForEach(queuedItems) { item in
                         NavigationLink {
@@ -29,6 +30,9 @@ struct QueueManagerSheet: View {
                         } label: {
                             QueueRow(item: item)
                         }
+                        .listRowInsets(EdgeInsets(top: 6, leading: 14, bottom: 6, trailing: 14))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
                         .swipeActions(edge: .leading, allowsFullSwipe: false) {
                             if canInterrupt {
                                 Button("Steer") {
@@ -51,6 +55,7 @@ struct QueueManagerSheet: View {
                     }
                 }
             }
+            .listStyle(.plain)
             .navigationTitle("Queued messages")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -86,17 +91,25 @@ struct QueueManagerSheet: View {
         }
 
         var body: some View {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
+                    Spacer(minLength: 0)
+
+                    statusChip
+                }
 
                 if let subtitle {
                     Text(subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .truncationMode(.tail)
                 }
 
                 if item.status == .failed, let error = item.error, !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -106,134 +119,38 @@ struct QueueManagerSheet: View {
                         .lineLimit(2)
                 }
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(.secondarySystemBackground))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.06))
+            )
             .accessibilityIdentifier("session.shelf.queue.row.\(item.id.uuidString.lowercased())")
         }
-    }
 
-    private struct QueueItemDetailView: View {
-        let sessionID: UUID
-        let itemID: UUID
-
-        @EnvironmentObject private var store: AppStore
-
-        @State private var draftText: String = ""
-
-        private var canInterrupt: Bool {
-            store.canInterruptCodexTurn(sessionID: sessionID)
-        }
-
-        private var item: CodexQueuedUserInputItem? {
-            store.codexQueuedInputs(for: sessionID).first(where: { $0.id == itemID })
-        }
-
-        var body: some View {
-            Group {
-                if let item {
-                    detailBody(item)
-                } else {
-                    ContentUnavailableView("Message not found", systemImage: "bubble.left.and.bubble.right")
-                }
+        private var statusChip: some View {
+            let (label, tint): (String, Color) = switch item.status {
+            case .queued:
+                ("Queued", .secondary)
+            case .sending:
+                ("Sending", .blue)
+            case .failed:
+                ("Failed", .red)
             }
-            .navigationTitle("Queued message")
-            .navigationBarTitleDisplayMode(.inline)
-            .onAppear {
-                draftText = item?.text ?? ""
-            }
-        }
 
-        private func detailBody(_ item: CodexQueuedUserInputItem) -> some View {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Text")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-
-                        TextEditor(text: $draftText)
-                            .frame(minHeight: 110)
-                            .padding(10)
-                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .strokeBorder(Color.primary.opacity(0.08))
-                            )
-
-                        Button("Save changes") {
-                            saveDraft(item)
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-
-                    if !item.attachments.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Attachments")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-
-                            ForEach(item.attachments) { attachment in
-                                HStack(spacing: 8) {
-                                    Text(attachment.displayName)
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(1)
-                                    Spacer(minLength: 0)
-                                    Button(role: .destructive) {
-                                        removeAttachment(item: item, attachmentID: attachment.id)
-                                    } label: {
-                                        Image(systemName: "trash")
-                                            .font(.caption.weight(.semibold))
-                                    }
-                                }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 8)
-                                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            }
-                        }
-                    }
-
-                    if item.status == .failed, let error = item.error, !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text(error)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
-
-                    HStack(spacing: 10) {
-                        if canInterrupt {
-                            Button("Steer") {
-                                store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: item.id)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(item.status == .sending)
-                        }
-
-                        Button("Delete", role: .destructive) {
-                            store.removeQueuedCodexInput(sessionID: sessionID, queueItemID: item.id)
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                }
-                .padding(16)
-            }
-        }
-
-        private func saveDraft(_ item: CodexQueuedUserInputItem) {
-            var updated = item
-            updated.text = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if updated.status == .failed {
-                updated.status = .queued
-                updated.error = nil
-            }
-            store.updateCodexQueuedInput(sessionID: sessionID, item: updated)
-        }
-
-        private func removeAttachment(item: CodexQueuedUserInputItem, attachmentID: UUID) {
-            var updated = item
-            updated.attachments.removeAll { $0.id == attachmentID }
-            if updated.status == .failed {
-                updated.status = .queued
-                updated.error = nil
-            }
-            store.updateCodexQueuedInput(sessionID: sessionID, item: updated)
+            return Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(tint)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule()
+                        .fill(tint.opacity(0.12))
+                )
         }
     }
 }

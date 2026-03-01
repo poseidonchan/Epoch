@@ -50,6 +50,93 @@ final class AppStoreSettingsTests: XCTestCase {
         XCTAssertEqual(store2.gatewayToken, "abc123")
     }
 
+    func testApplyHubPairingQRCodeSavesGatewaySettingsFromValidPayload() async throws {
+        let suiteName = "LabOSCoreTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Unable to create isolated UserDefaults suite")
+            return
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = AppStore(bootstrapDemo: false, userDefaults: defaults)
+        let encodedWS = "ws://127.0.0.1:8787/ws".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        let raw = "labos-hub://pair?v=1&ws=\(encodedWS)&token=tok_123&serverId=srv_1"
+
+        try await store.applyHubPairingQRCode(raw)
+
+        XCTAssertEqual(store.gatewayWSURLString, "ws://127.0.0.1:8787/ws")
+        XCTAssertEqual(store.gatewayToken, "tok_123")
+    }
+
+    func testApplyHubPairingQRCodeRejectsInvalidSchemeWithoutMutatingSettings() async {
+        let suiteName = "LabOSCoreTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Unable to create isolated UserDefaults suite")
+            return
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = AppStore(bootstrapDemo: false, userDefaults: defaults)
+        store.saveGatewaySettings(wsURLString: "127.0.0.1:8787", token: "baseline")
+
+        do {
+            try await store.applyHubPairingQRCode("https://example.com/pair?v=1&ws=ws://a/ws&token=abc")
+            XCTFail("Expected invalid scheme payload to throw")
+        } catch {
+            // expected
+        }
+
+        XCTAssertEqual(store.gatewayWSURLString, "ws://127.0.0.1:8787/ws")
+        XCTAssertEqual(store.gatewayToken, "baseline")
+    }
+
+    func testApplyHubPairingQRCodeRejectsMissingTokenWithoutMutatingSettings() async {
+        let suiteName = "LabOSCoreTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Unable to create isolated UserDefaults suite")
+            return
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = AppStore(bootstrapDemo: false, userDefaults: defaults)
+        store.saveGatewaySettings(wsURLString: "127.0.0.1:8787", token: "baseline")
+        let encodedWS = "ws://10.0.0.2:8787/ws".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+
+        do {
+            try await store.applyHubPairingQRCode("labos-hub://pair?v=1&ws=\(encodedWS)")
+            XCTFail("Expected missing token payload to throw")
+        } catch {
+            // expected
+        }
+
+        XCTAssertEqual(store.gatewayWSURLString, "ws://127.0.0.1:8787/ws")
+        XCTAssertEqual(store.gatewayToken, "baseline")
+    }
+
+    func testApplyHubPairingQRCodeAttemptsConnectionAfterSaving() async throws {
+        let suiteName = "LabOSCoreTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Unable to create isolated UserDefaults suite")
+            return
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = AppStore(bootstrapDemo: false, userDefaults: defaults)
+        let encodedWS = "not-a-valid-ws-url".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+
+        try await store.applyHubPairingQRCode("labos-hub://pair?v=1&ws=\(encodedWS)&token=tok_abc")
+
+        if case .failed = store.gatewayConnectionState {
+            // expected invalid URL connect attempt failure
+        } else {
+            XCTFail("Expected connection attempt to update state to failed for invalid ws URL")
+        }
+    }
+
     func testHpcSettingsAreTrimmedAndPersisted() {
         let suiteName = "LabOSCoreTests.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {

@@ -1061,6 +1061,75 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         XCTAssertEqual(reloaded.codexQueuedInputs(for: sessionID).map(\.text), ["second", "first"])
     }
 
+    func testReorderCodexQueuedInputsPersistsExplicitIDOrder() throws {
+        let suiteName = "LabOSCoreTests.CodexQueuedInput.ReorderByIDs.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            return XCTFail("Failed to create suite-backed defaults.")
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = AppStore(bootstrapDemo: false, userDefaults: defaults)
+        let projectID = UUID()
+        let sessionID = UUID()
+        store.projects = [Project(id: projectID, name: "Queue Reorder IDs Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_queue_reorder_ids"
+            ),
+        ]
+        store.streamingSessions.insert(sessionID)
+
+        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "first")
+        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "second")
+        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "third")
+
+        let initial = store.codexQueuedInputs(for: sessionID)
+        XCTAssertEqual(initial.map(\.text), ["first", "second", "third"])
+        let reorderedIDs = [initial[2].id, initial[0].id, initial[1].id]
+
+        store.reorderCodexQueuedInputs(sessionID: sessionID, orderedIDs: reorderedIDs)
+        XCTAssertEqual(store.codexQueuedInputs(for: sessionID).map(\.id), reorderedIDs)
+
+        let reloaded = AppStore(bootstrapDemo: false, userDefaults: defaults)
+        XCTAssertEqual(reloaded.codexQueuedInputs(for: sessionID).map(\.id), reorderedIDs)
+    }
+
+    func testReorderCodexQueuedInputsIgnoresInvalidIDLists() throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        store.projects = [Project(id: projectID, name: "Queue Reorder Guardrails Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_queue_reorder_guardrails"
+            ),
+        ]
+        store.streamingSessions.insert(sessionID)
+
+        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "first")
+        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "second")
+        let initial = store.codexQueuedInputs(for: sessionID)
+        let initialIDs = initial.map(\.id)
+
+        store.reorderCodexQueuedInputs(sessionID: sessionID, orderedIDs: [initialIDs[0]])
+        XCTAssertEqual(store.codexQueuedInputs(for: sessionID).map(\.id), initialIDs)
+
+        store.reorderCodexQueuedInputs(sessionID: sessionID, orderedIDs: [initialIDs[0], initialIDs[0]])
+        XCTAssertEqual(store.codexQueuedInputs(for: sessionID).map(\.id), initialIDs)
+
+        store.reorderCodexQueuedInputs(sessionID: sessionID, orderedIDs: [UUID(), initialIDs[0]])
+        XCTAssertEqual(store.codexQueuedInputs(for: sessionID).map(\.id), initialIDs)
+    }
+
     func testTurnStartedAndCompletedTrackActiveTurnID() {
         let store = AppStore(bootstrapDemo: false)
         let sessionID = UUID()
@@ -1372,7 +1441,58 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
             store.codexQueuedInputs(for: sessionID).count == 1
         }
         XCTAssertEqual(store.codexQueuedInputs(for: sessionID).first?.text, "first queued steer")
+        XCTAssertEqual(localCodexUserEchoes(in: store, sessionID: sessionID).count, 1)
+        XCTAssertTrue((localCodexUserEchoes(in: store, sessionID: sessionID).first.map(codexUserText) ?? "").contains("second queued steer"))
         XCTAssertFalse(capturedRequests.contains(where: { $0.method == "turn/start" }))
+    }
+
+    func testSteerQueuedCodexInputShowsOptimisticEchoBeforeRPCCompletes() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        store.projects = [Project(id: projectID, name: "Steer Queue Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_queued"
+            ),
+        ]
+        store.codexThreadBySession[sessionID] = "thread_queued"
+        store.codexSessionByThread["thread_queued"] = sessionID
+        store.codexActiveTurnIDBySession[sessionID] = "turn_active"
+        store.streamingSessions.insert(sessionID)
+        store.codexConnectionState = .connected
+        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "optimistic steer now")
+
+        var didEnterSteerRequest = false
+        store.codexRequestOverrideForTests = { method, _ in
+            if method == "turn/steer" {
+                didEnterSteerRequest = true
+                try await Task.sleep(nanoseconds: 250_000_000)
+                return CodexRPCResponse(id: .string("ok"), result: .object([:]), error: nil)
+            }
+            XCTFail("Unexpected Codex request: \(method)")
+            return CodexRPCResponse(id: .string("ok"), result: .object([:]), error: nil)
+        }
+
+        let target = try XCTUnwrap(store.codexQueuedInputs(for: sessionID).first)
+        store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: target.id)
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            didEnterSteerRequest
+        }
+        try await waitUntil(timeoutSeconds: 0.4) {
+            self.localCodexUserEchoes(in: store, sessionID: sessionID).count == 1
+        }
+        XCTAssertEqual(localCodexUserEchoes(in: store, sessionID: sessionID).first.map(codexUserText), "optimistic steer now")
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            store.codexQueuedInputs(for: sessionID).isEmpty
+        }
+        XCTAssertEqual(localCodexUserEchoes(in: store, sessionID: sessionID).count, 1)
     }
 
     func testSteerQueuedCodexInputFallbackToInterruptWhenSteerUnsupported() async throws {
@@ -1431,6 +1551,8 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
 
         XCTAssertEqual(capturedRequests.first?.method, "turn/steer")
         XCTAssertEqual(capturedRequests.dropFirst().first?.method, "turn/interrupt")
+        XCTAssertEqual(localCodexUserEchoes(in: store, sessionID: sessionID).count, 1)
+        XCTAssertEqual(localCodexUserEchoes(in: store, sessionID: sessionID).first.map(codexUserText), "queued steer fallback")
 
         store._receiveCodexNotificationForTesting(
             CodexRPCNotification(
@@ -1451,6 +1573,7 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         try await waitUntil(timeoutSeconds: 1.0) {
             store.codexQueuedInputs(for: sessionID).isEmpty
         }
+        XCTAssertEqual(localCodexUserEchoes(in: store, sessionID: sessionID).count, 1)
     }
 
     func testSteerQueuedCodexInputRetriesWithTextWhenInputPayloadRejected() async throws {
@@ -1557,6 +1680,176 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
         XCTAssertEqual(queuedAfter.text, "retry steer")
         XCTAssertEqual(queuedAfter.status, .failed)
         XCTAssertNotNil(queuedAfter.error)
+        XCTAssertTrue(localCodexUserEchoes(in: store, sessionID: sessionID).isEmpty)
+    }
+
+    func testSteerQueuedCodexInputFallbackInterruptFailureRollsBackOptimisticEcho() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        store.projects = [Project(id: projectID, name: "Steer Fallback Failure Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_queued"
+            ),
+        ]
+        store.codexThreadBySession[sessionID] = "thread_queued"
+        store.codexSessionByThread["thread_queued"] = sessionID
+        store.codexActiveTurnIDBySession[sessionID] = "turn_active"
+        store.streamingSessions.insert(sessionID)
+        store.codexConnectionState = .connected
+        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "fallback interrupt failure")
+
+        var capturedMethods: [String] = []
+        store.codexRequestOverrideForTests = { method, _ in
+            capturedMethods.append(method)
+            switch method {
+            case "turn/steer":
+                throw NSError(domain: "Test", code: -32601, userInfo: [NSLocalizedDescriptionKey: "Method not found"])
+            case "turn/interrupt":
+                throw NSError(domain: "Test", code: -2, userInfo: [NSLocalizedDescriptionKey: "Interrupt call failed"])
+            default:
+                XCTFail("Unexpected Codex request: \(method)")
+                return CodexRPCResponse(id: .string("ok"), result: .object([:]), error: nil)
+            }
+        }
+
+        let target = try XCTUnwrap(store.codexQueuedInputs(for: sessionID).first)
+        store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: target.id)
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            store.codexQueuedInputs(for: sessionID).first?.status == .failed
+        }
+
+        XCTAssertEqual(Array(capturedMethods.prefix(2)), ["turn/steer", "turn/interrupt"])
+        XCTAssertTrue(localCodexUserEchoes(in: store, sessionID: sessionID).isEmpty)
+    }
+
+    func testSteerQueuedCodexInputFallbackInterruptTimeoutRollsBackOptimisticEcho() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        store.projects = [Project(id: projectID, name: "Steer Fallback Timeout Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: "thread_queued"
+            ),
+        ]
+        store.codexThreadBySession[sessionID] = "thread_queued"
+        store.codexSessionByThread["thread_queued"] = sessionID
+        store.codexActiveTurnIDBySession[sessionID] = "turn_active"
+        store.streamingSessions.insert(sessionID)
+        store.codexConnectionState = .connected
+        store.sendMessage(projectID: projectID, sessionID: sessionID, text: "fallback interrupt timeout")
+
+        var capturedMethods: [String] = []
+        store.codexRequestOverrideForTests = { method, _ in
+            capturedMethods.append(method)
+            switch method {
+            case "turn/steer":
+                throw NSError(domain: "Test", code: -32601, userInfo: [NSLocalizedDescriptionKey: "Method not found"])
+            case "turn/interrupt":
+                return CodexRPCResponse(id: .string("ok"), result: .object([:]), error: nil)
+            default:
+                XCTFail("Unexpected Codex request: \(method)")
+                return CodexRPCResponse(id: .string("ok"), result: .object([:]), error: nil)
+            }
+        }
+
+        let target = try XCTUnwrap(store.codexQueuedInputs(for: sessionID).first)
+        store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: target.id)
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            capturedMethods.contains("turn/interrupt")
+        }
+        try await waitUntil(timeoutSeconds: 16.5) {
+            store.codexQueuedInputs(for: sessionID).first?.status == .failed
+        }
+
+        let queuedAfter = try XCTUnwrap(store.codexQueuedInputs(for: sessionID).first)
+        XCTAssertEqual(queuedAfter.error, "Interrupt timed out.")
+        XCTAssertTrue(localCodexUserEchoes(in: store, sessionID: sessionID).isEmpty)
+    }
+
+    func testSteerQueuedCodexInputRemoteUserMessageReplacesLocalEcho() async throws {
+        let store = AppStore(bootstrapDemo: false)
+        let projectID = UUID()
+        let sessionID = UUID()
+        let threadID = "thread_queued"
+        let turnID = "turn_active"
+        let serverUserItemID = "user_item_server_steer"
+        let steerText = "replace local steer echo"
+        store.projects = [Project(id: projectID, name: "Steer Queue Project")]
+        store.sessionsByProject[projectID] = [
+            Session(
+                id: sessionID,
+                projectID: projectID,
+                title: "Session",
+                backendEngine: "codex-app-server",
+                codexThreadId: threadID
+            ),
+        ]
+        store.codexThreadBySession[sessionID] = threadID
+        store.codexSessionByThread[threadID] = sessionID
+        store.codexActiveTurnIDBySession[sessionID] = turnID
+        store.streamingSessions.insert(sessionID)
+        store.codexConnectionState = .connected
+        store.sendMessage(projectID: projectID, sessionID: sessionID, text: steerText)
+
+        store.codexRequestOverrideForTests = { method, _ in
+            if method == "turn/steer" {
+                return CodexRPCResponse(id: .string("ok"), result: .object([:]), error: nil)
+            }
+            XCTFail("Unexpected Codex request: \(method)")
+            return CodexRPCResponse(id: .string("ok"), result: .object([:]), error: nil)
+        }
+
+        let target = try XCTUnwrap(store.codexQueuedInputs(for: sessionID).first)
+        store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: target.id)
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            store.codexQueuedInputs(for: sessionID).isEmpty
+        }
+        XCTAssertEqual(localCodexUserEchoes(in: store, sessionID: sessionID).count, 1)
+
+        store._receiveCodexNotificationForTesting(
+            CodexRPCNotification(
+                method: "item/started",
+                params: .object([
+                    "threadId": .string(threadID),
+                    "turnId": .string(turnID),
+                    "item": .object([
+                        "type": .string("userMessage"),
+                        "id": .string(serverUserItemID),
+                        "content": .array([
+                            .object([
+                                "type": .string("text"),
+                                "text": .string(steerText),
+                            ]),
+                        ]),
+                    ]),
+                ])
+            )
+        )
+
+        try await waitUntil(timeoutSeconds: 1.0) {
+            self.localCodexUserEchoes(in: store, sessionID: sessionID).isEmpty
+        }
+        let userIDs = store.codexItems(for: sessionID).compactMap { item -> String? in
+            if case let .userMessage(userItem) = item {
+                return userItem.id
+            }
+            return nil
+        }
+        XCTAssertTrue(userIDs.contains(serverUserItemID))
     }
 
     func testCodexTurnCompletedInterruptedMarksTrajectoryTurnInterrupted() throws {
@@ -2380,6 +2673,25 @@ final class AppStoreCodexPendingInputTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(Int(interval * 1000)))
         }
         XCTFail("Timed out after \(timeoutSeconds)s")
+    }
+
+    private func localCodexUserEchoes(in store: AppStore, sessionID: UUID) -> [CodexUserMessageItem] {
+        store.codexItems(for: sessionID).compactMap { item in
+            guard case let .userMessage(userItem) = item else { return nil }
+            guard userItem.id.hasPrefix(AppStore.codexLocalUserItemPrefix) else { return nil }
+            return userItem
+        }
+    }
+
+    private func codexUserText(_ item: CodexUserMessageItem) -> String {
+        item.content
+            .compactMap { input in
+                let type = input.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard type == "text" else { return nil }
+                return input.text
+            }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func codexProjectJSON(

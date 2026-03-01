@@ -28,8 +28,14 @@ struct SessionShelfView: View {
     @State private var terminalEligibilityNow = Date()
     @State private var isRunProgressExpanded = false
     @State private var isPlanCardExpanded = false
+    @State private var queueDisplayOrderIDs: [UUID] = []
+    @State private var queueDetailSelection: QueueDetailSelection?
 
     private let terminalEligibilityTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    private struct QueueDetailSelection: Identifiable {
+        let id: UUID
+    }
 
     init(
         projectID: UUID,
@@ -181,6 +187,12 @@ struct SessionShelfView: View {
             QueueManagerSheet(sessionID: sessionID)
                 .environmentObject(store)
         }
+        .sheet(item: $queueDetailSelection) { selection in
+            QueueItemDetailView(sessionID: sessionID, itemID: selection.id)
+                .environmentObject(store)
+                .presentationDetents([.fraction(0.52)])
+                .presentationDragIndicator(.visible)
+        }
         .sheet(isPresented: $showDiffReview, onDismiss: {
             diffReviewPayload = ""
         }) {
@@ -201,6 +213,12 @@ struct SessionShelfView: View {
             if commandIDs.isEmpty {
                 isTerminalsExpanded = false
             }
+        }
+        .onChange(of: queuedInputs.map(\.id)) { _, _ in
+            syncQueueDisplayOrder(with: queuedInputs)
+        }
+        .onAppear {
+            syncQueueDisplayOrder(with: queuedInputs)
         }
     }
 
@@ -322,80 +340,145 @@ struct SessionShelfView: View {
     }
 
     private func queueCard(items: [CodexQueuedUserInputItem]) -> some View {
-        let previews = Array(items.prefix(2))
         let canInterrupt = store.canInterruptCodexTurn(sessionID: sessionID)
+        let byID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+        let syncedDisplayIDs = queueDisplayOrderIDs.filter { byID[$0] != nil }
+        let displayIDs = syncedDisplayIDs.isEmpty ? SteerQueuePresentation.displayIDs(from: items) : syncedDisplayIDs
+        let displayItems = displayIDs.compactMap { byID[$0] }
+        let priorityID = SteerQueuePresentation.priorityDisplayItem(in: displayItems)?.id
 
         return cardContainer {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 10) {
-                    Text("\(items.count) queued")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
-
-                    Spacer(minLength: 0)
-
-                    Button("Manage") { showQueueManager = true }
-                        .buttonStyle(.bordered)
-                        .accessibilityIdentifier("session.shelf.manageQueue")
-                }
-
-                ForEach(previews) { item in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(queuePreviewTitle(item))
-                            .font(.subheadline)
-                            .foregroundStyle(.primary)
-                            .lineLimit(2)
-
-                        if !item.attachments.isEmpty {
-                            Text(queueAttachmentSummary(item))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-
-                        if item.status == .failed,
-                           let error = item.error,
-                           !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            Text(error)
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                                .lineLimit(2)
-                        }
-
-                        HStack(spacing: 10) {
-                            Button("Steer") {
-                                store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: item.id)
+            VStack(alignment: .leading, spacing: 8) {
+                VStack(spacing: 8) {
+                    ForEach(displayItems) { item in
+                        queueSteerRow(
+                            item: item,
+                            isPriority: item.id == priorityID,
+                            canInterrupt: canInterrupt
+                        )
+                        .dropDestination(for: String.self) { droppedIDs, _ in
+                            guard let dropped = droppedIDs.first,
+                                  let draggedID = UUID(uuidString: dropped) else {
+                                return false
                             }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(!canInterrupt || item.status == .sending)
-
-                            Button {
-                                store.removeQueuedCodexInput(sessionID: sessionID, queueItemID: item.id)
-                            } label: {
-                                Image(systemName: "trash")
-                                    .font(.subheadline.weight(.semibold))
-                            }
-                            .buttonStyle(.bordered)
+                            return reorderQueueDisplay(draggedID: draggedID, targetID: item.id, allItems: items)
                         }
                     }
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(Color(.secondarySystemBackground))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.06))
-                    )
-                }
-
-                if items.count > previews.count {
-                    Text("+ \(items.count - previews.count) more")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func queueSteerRow(
+        item: CodexQueuedUserInputItem,
+        isPriority: Bool,
+        canInterrupt: Bool
+    ) -> some View {
+        let isSending = item.status == .sending
+        let canSteer = canInterrupt && !isSending
+        let rowID = item.id.uuidString.lowercased()
+
+        let row = HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(queuePreviewTitle(item))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                if !item.attachments.isEmpty {
+                    Text(queueAttachmentSummary(item))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+
+                if item.status == .failed,
+                   let error = item.error,
+                   !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            if isSending {
+                ProgressView()
+                    .controlSize(.small)
+            } else if isPriority {
+                Button {
+                    store.steerQueuedCodexInput(sessionID: sessionID, queueItemID: item.id)
+                } label: {
+                    Text("Steer")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(
+                            Capsule()
+                                .fill(Color.primary.opacity(colorScheme == .dark ? 0.18 : 0.10))
+                        )
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.22 : 0.16))
+                        )
+                        .foregroundStyle(.primary)
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSteer)
+                .accessibilityIdentifier("session.shelf.queue.row.\(rowID).steer")
+            }
+
+            if !isSending {
+                Button {
+                    store.removeQueuedCodexInput(sessionID: sessionID, queueItemID: item.id)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.secondary)
+                .frame(width: 30, height: 30)
+                .background(
+                    Circle()
+                        .fill(Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.06))
+                )
+                .accessibilityIdentifier("session.shelf.queue.row.\(rowID).delete")
+            }
+
+            Image(systemName: "line.3.horizontal")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(isSending ? .tertiary : .secondary)
+                .padding(.leading, 2)
+                .accessibilityIdentifier("session.shelf.queue.row.\(rowID).drag")
+                .accessibilityLabel("Drag to reorder")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06))
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            queueDetailSelection = QueueDetailSelection(id: item.id)
+        }
+        .accessibilityIdentifier("session.shelf.queue.row.\(rowID)")
+
+        if isSending {
+            row
+        } else {
+            row.draggable(item.id.uuidString)
         }
     }
 
@@ -929,6 +1012,34 @@ struct SessionShelfView: View {
     }
 
     // MARK: - Queue Helpers
+
+    private func syncQueueDisplayOrder(with items: [CodexQueuedUserInputItem]) {
+        queueDisplayOrderIDs = SteerQueuePresentation.displayIDs(from: items)
+    }
+
+    private func reorderQueueDisplay(
+        draggedID: UUID,
+        targetID: UUID,
+        allItems: [CodexQueuedUserInputItem]
+    ) -> Bool {
+        guard draggedID != targetID else { return false }
+        guard let fromIndex = queueDisplayOrderIDs.firstIndex(of: draggedID),
+              let toIndex = queueDisplayOrderIDs.firstIndex(of: targetID) else {
+            return false
+        }
+
+        var updatedDisplayIDs = queueDisplayOrderIDs
+        let moved = updatedDisplayIDs.remove(at: fromIndex)
+        updatedDisplayIDs.insert(moved, at: toIndex)
+
+        withAnimation(runProgressAnimation) {
+            queueDisplayOrderIDs = updatedDisplayIDs
+        }
+
+        let orderedIDs = SteerQueuePresentation.actualOrderIDs(fromDisplayOrder: updatedDisplayIDs, queue: allItems)
+        store.reorderCodexQueuedInputs(sessionID: sessionID, orderedIDs: orderedIDs)
+        return true
+    }
 
     private func queuePreviewTitle(_ item: CodexQueuedUserInputItem) -> String {
         let trimmed = item.text.trimmingCharacters(in: .whitespacesAndNewlines)

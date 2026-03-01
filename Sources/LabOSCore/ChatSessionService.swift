@@ -97,6 +97,7 @@ internal final class ChatSessionService {
     var sessionHistoryPrefetchTasksByProject: [UUID: Task<Void, Never>] = [:]
     private let sessionHistoryPrefetchCooldown: TimeInterval = 45
     private let sessionHistoryInteractiveFreshnessWindow: TimeInterval = 8
+    private var steerOptimisticEchoIDByQueueItemID: [UUID: String] = [:]
 
     init(store: AppStore) {
         self.store = store
@@ -259,11 +260,15 @@ internal final class ChatSessionService {
             queued.error = nil
         }
 
+        let payloads = loadQueuedAttachmentPayloads(item.attachments)
+        let localEchoContent = makeLocalEchoContent(text: trimmedText, queuedAttachments: payloads)
+        let localEchoID = appendLocalCodexUserEcho(sessionID: sessionID, content: localEchoContent)
+        rememberSteerOptimisticEcho(queueItemID: queueItemID, localEchoID: localEchoID)
+
         Task { @MainActor [weak self] in
             guard let self else { return }
             guard let store = self.store else { return }
 
-            let payloads = self.loadQueuedAttachmentPayloads(item.attachments)
             let hasAttachments = !payloads.isEmpty
             let inputParts = self.makeCodexSteerInputParts(text: trimmedText, queuedAttachments: payloads)
 
@@ -279,6 +284,7 @@ internal final class ChatSessionService {
                 )
                 store.lastGatewayErrorMessage = nil
                 self.removeQueuedCodexInput(sessionID: sessionID, queueItemID: queueItemID, deleteAttachmentFiles: true)
+                self.finalizeSteerOptimisticEcho(queueItemID: queueItemID)
             } catch {
                 if self.isUnsupportedSteerMethodError(error) {
                     self.performSteerFallbackInterrupt(
@@ -311,6 +317,7 @@ internal final class ChatSessionService {
                             )
                         } else {
                             store.lastGatewayErrorMessage = error.localizedDescription
+                            self.rollbackSteerOptimisticEcho(sessionID: sessionID, queueItemID: queueItemID)
                             self.updateCodexQueuedInput(sessionID: sessionID, itemID: queueItemID) { queued in
                                 queued.status = .failed
                                 queued.error = error.localizedDescription
@@ -346,6 +353,7 @@ internal final class ChatSessionService {
             } catch {
                 store.unsuppressCodexTurn(sessionID: sessionID, turnID: turnId)
                 store.lastGatewayErrorMessage = error.localizedDescription
+                self.rollbackSteerOptimisticEcho(sessionID: sessionID, queueItemID: queueItemID)
                 self.updateCodexQueuedInput(sessionID: sessionID, itemID: queueItemID) { queued in
                     queued.status = .failed
                     queued.error = error.localizedDescription
@@ -363,6 +371,7 @@ internal final class ChatSessionService {
                 guard store.isCodexTurnSuppressed(sessionID: sessionID, turnID: turnId) else { return }
 
                 store.unsuppressCodexTurn(sessionID: sessionID, turnID: turnId)
+                self.rollbackSteerOptimisticEcho(sessionID: sessionID, queueItemID: queueItemID)
                 self.updateCodexQueuedInput(sessionID: sessionID, itemID: queueItemID) { queued in
                     queued.status = .failed
                     queued.error = "Interrupt timed out."
@@ -477,6 +486,23 @@ internal final class ChatSessionService {
         }
         store.codexQueuedInputsBySession[sessionID] = queue.isEmpty ? nil : queue
         store.persistCodexQueuedInputs(sessionID: sessionID)
+    }
+
+    private func rememberSteerOptimisticEcho(queueItemID: UUID, localEchoID: String?) {
+        guard let localEchoID else {
+            steerOptimisticEchoIDByQueueItemID.removeValue(forKey: queueItemID)
+            return
+        }
+        steerOptimisticEchoIDByQueueItemID[queueItemID] = localEchoID
+    }
+
+    private func rollbackSteerOptimisticEcho(sessionID: UUID, queueItemID: UUID) {
+        guard let localEchoID = steerOptimisticEchoIDByQueueItemID.removeValue(forKey: queueItemID) else { return }
+        removeLocalCodexUserEcho(sessionID: sessionID, itemID: localEchoID)
+    }
+
+    private func finalizeSteerOptimisticEcho(queueItemID: UUID) {
+        steerOptimisticEchoIDByQueueItemID.removeValue(forKey: queueItemID)
     }
 
     private func moveQueuedCodexInputToFront(sessionID: UUID, itemID: UUID) {
@@ -757,6 +783,7 @@ internal final class ChatSessionService {
                 store.codexStatusTextBySession[sessionID] = "failed"
                 store.codexActiveTurnIDBySession[sessionID] = nil
                 if let draining = drainingQueuedItem {
+                    self.rollbackSteerOptimisticEcho(sessionID: sessionID, queueItemID: draining.id)
                     self.updateCodexQueuedInput(sessionID: sessionID, itemID: draining.id) { queued in
                         queued.status = .failed
                         queued.error = "Codex backend is not connected."
@@ -772,6 +799,7 @@ internal final class ChatSessionService {
                 store.codexStatusTextBySession[sessionID] = "failed"
                 store.codexActiveTurnIDBySession[sessionID] = nil
                 if let draining = drainingQueuedItem {
+                    self.rollbackSteerOptimisticEcho(sessionID: sessionID, queueItemID: draining.id)
                     self.updateCodexQueuedInput(sessionID: sessionID, itemID: draining.id) { queued in
                         queued.status = .failed
                         queued.error = "Session is missing codex thread mapping."
@@ -791,6 +819,7 @@ internal final class ChatSessionService {
                 store.codexStatusTextBySession[sessionID] = "failed"
                 store.codexActiveTurnIDBySession[sessionID] = nil
                 if let draining = drainingQueuedItem {
+                    self.rollbackSteerOptimisticEcho(sessionID: sessionID, queueItemID: draining.id)
                     self.updateCodexQueuedInput(sessionID: sessionID, itemID: draining.id) { queued in
                         queued.status = .failed
                         queued.error = "No Codex-compatible input was provided."
@@ -845,6 +874,7 @@ internal final class ChatSessionService {
                             queueItemID: draining.id,
                             deleteAttachmentFiles: true
                         )
+                        self.finalizeSteerOptimisticEcho(queueItemID: draining.id)
                     }
                 }
             } catch {
@@ -856,6 +886,7 @@ internal final class ChatSessionService {
                 store.codexActiveTurnIDBySession[sessionID] = nil
                 if let draining = drainingQueuedItem {
                     await MainActor.run {
+                        self.rollbackSteerOptimisticEcho(sessionID: sessionID, queueItemID: draining.id)
                         self.updateCodexQueuedInput(sessionID: sessionID, itemID: draining.id) { queued in
                             queued.status = .failed
                             queued.error = error.localizedDescription

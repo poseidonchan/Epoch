@@ -19,6 +19,7 @@ struct AppSettingsSheet: View {
     @State private var hpcAccount = ""
     @State private var hpcQos = ""
     @State private var saveToastText: String?
+    @State private var showHubQRScanner = false
 
     private static let ocrPresetModels = ["gpt-5.2", "gpt-5.2-chat-latest", "gpt-5.2-pro"]
     private static let ocrCustomSelection = "__custom__"
@@ -44,6 +45,13 @@ struct AppSettingsSheet: View {
 
                     LabeledContent("Status", value: gatewayStatusText)
                         .accessibilityIdentifier("settings.gateway.status")
+
+                    Button {
+                        showHubQRScanner = true
+                    } label: {
+                        Label("Scan Hub QR", systemImage: "qrcode.viewfinder")
+                    }
+                    .accessibilityIdentifier("settings.gateway.scanQr")
 
                     Button("Save") {
                         store.saveGatewaySettings(wsURLString: wsURLString, token: token)
@@ -235,6 +243,43 @@ struct AppSettingsSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
+        .sheet(isPresented: $showHubQRScanner) {
+            NavigationStack {
+                ZStack(alignment: .top) {
+                    QRCodeScannerSheet(
+                        onScanned: { scannedValue in
+                            showHubQRScanner = false
+                            handleScannedHubQRCode(scannedValue)
+                        },
+                        onError: { message in
+                            showHubQRScanner = false
+                            showToast(message)
+                        }
+                    )
+                    .ignoresSafeArea()
+
+                    VStack(spacing: 8) {
+                        Text("Scan Hub QR")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                        Text("Point your camera at the QR shown by `labos-hub init`.")
+                            .font(.footnote)
+                            .foregroundStyle(.white.opacity(0.88))
+                    }
+                    .padding(12)
+                    .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .padding(.top, 20)
+                    .padding(.horizontal, 16)
+                }
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Cancel") {
+                            showHubQRScanner = false
+                        }
+                    }
+                }
+            }
+        }
         .overlay(alignment: .bottom) {
             if let saveToastText {
                 Text(saveToastText)
@@ -345,6 +390,19 @@ struct AppSettingsSheet: View {
             guard saveToastText == text else { return }
             withAnimation(.easeOut(duration: 0.2)) {
                 saveToastText = nil
+            }
+        }
+    }
+
+    private func handleScannedHubQRCode(_ raw: String) {
+        Task { @MainActor in
+            do {
+                try await store.applyHubPairingQRCode(raw)
+                wsURLString = store.gatewayWSURLString
+                token = store.gatewayToken
+                showToast(store.isGatewayConnected ? "Hub paired" : gatewayStatusText)
+            } catch {
+                showToast(error.localizedDescription)
             }
         }
     }

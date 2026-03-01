@@ -4,6 +4,66 @@ import Foundation
 import ImageIO
 #endif
 
+public enum HubPairingQRCodeError: Error, LocalizedError, Equatable {
+    case invalidFormat
+    case unsupportedVersion(String)
+    case missingField(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidFormat:
+            return "Invalid Hub QR code."
+        case let .unsupportedVersion(version):
+            return "Unsupported Hub QR version: \(version)."
+        case let .missingField(field):
+            return "Hub QR code is missing required field: \(field)."
+        }
+    }
+}
+
+private struct HubPairingPayload: Equatable {
+    let wsURLString: String
+    let token: String
+    let serverID: String?
+
+    static func parse(_ raw: String) throws -> HubPairingPayload {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let url = URL(string: trimmed),
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else {
+            throw HubPairingQRCodeError.invalidFormat
+        }
+
+        guard components.scheme?.lowercased() == "labos-hub",
+              components.host?.lowercased() == "pair"
+        else {
+            throw HubPairingQRCodeError.invalidFormat
+        }
+
+        let queryItems = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let version = queryItems["v"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard version == "1" else {
+            throw HubPairingQRCodeError.unsupportedVersion(version.isEmpty ? "(missing)" : version)
+        }
+
+        let wsURL = queryItems["ws"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !wsURL.isEmpty else {
+            throw HubPairingQRCodeError.missingField("ws")
+        }
+
+        let token = queryItems["token"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !token.isEmpty else {
+            throw HubPairingQRCodeError.missingField("token")
+        }
+
+        let serverIDRaw = queryItems["serverId"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let serverID = serverIDRaw.isEmpty ? nil : serverIDRaw
+
+        return HubPairingPayload(wsURLString: wsURL, token: token, serverID: serverID)
+    }
+}
+
 @MainActor
 public final class AppStore: ObservableObject {
     internal enum DefaultsKey {
@@ -560,6 +620,12 @@ public final class AppStore: ObservableObject {
         gatewayToken = trimmedToken
         defaults.set(normalizedURL, forKey: DefaultsKey.gatewayWSURL)
         defaults.set(trimmedToken, forKey: DefaultsKey.gatewayToken)
+    }
+
+    public func applyHubPairingQRCode(_ raw: String) async throws {
+        let payload = try HubPairingPayload.parse(raw)
+        saveGatewaySettings(wsURLString: payload.wsURLString, token: payload.token)
+        await connectGateway()
     }
 
     public func savePreferredBackendEngine(_ backendEngine: String) {
@@ -3342,6 +3408,30 @@ public final class AppStore: ObservableObject {
         Self.moveArray(&ordered, from: from, to: to)
         // Keep the moved order; only reindex sortIndex.
         codexQueuedInputsBySession[sessionID] = ordered.enumerated().map { index, item in
+            var updated = item
+            updated.sortIndex = index
+            return updated
+        }
+        persistCodexQueuedInputs(sessionID: sessionID)
+    }
+
+    public func reorderCodexQueuedInputs(sessionID: UUID, orderedIDs: [UUID]) {
+        ensureCodexQueuedInputsLoaded(sessionID: sessionID)
+        let ordered = codexQueuedInputs(for: sessionID)
+        guard ordered.count == orderedIDs.count else { return }
+
+        let expectedIDs = Set(ordered.map(\.id))
+        let receivedIDs = Set(orderedIDs)
+        guard receivedIDs.count == orderedIDs.count,
+              receivedIDs == expectedIDs else {
+            return
+        }
+
+        let byID = Dictionary(uniqueKeysWithValues: ordered.map { ($0.id, $0) })
+        let reordered = orderedIDs.compactMap { byID[$0] }
+        guard reordered.count == ordered.count else { return }
+
+        codexQueuedInputsBySession[sessionID] = reordered.enumerated().map { index, item in
             var updated = item
             updated.sortIndex = index
             return updated
