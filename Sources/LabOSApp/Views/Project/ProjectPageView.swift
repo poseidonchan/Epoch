@@ -909,36 +909,14 @@ struct ProjectPageView: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("project.sidebar.button")
 
-            HStack(spacing: 6) {
-                Text(project?.name ?? "Project")
-                    .font(.headline.weight(.semibold))
-                    .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(
-                Capsule()
-                    .fill(Color(.secondarySystemBackground))
-            )
-            .overlay(
-                Capsule()
-                    .strokeBorder(Color.primary.opacity(0.08))
-            )
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(project?.name ?? "Project")
-
             Spacer(minLength: 0)
 
             Button {
                 store.openResults()
             } label: {
                 Label("Workspace", systemImage: "folder")
-                    .font(.caption.weight(.medium))
+                    .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
-                    .fixedSize()
             }
             .buttonStyle(.bordered)
             .buttonBorderShape(.capsule)

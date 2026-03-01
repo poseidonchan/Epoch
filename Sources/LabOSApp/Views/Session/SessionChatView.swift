@@ -1678,7 +1678,7 @@ struct SessionChatView: View {
                 store.openResults()
             } label: {
                 Label("Workspace", systemImage: "folder")
-                    .font(.caption.weight(.medium))
+                    .font(.subheadline.weight(.semibold))
             }
             .buttonStyle(.bordered)
             .buttonBorderShape(.capsule)
