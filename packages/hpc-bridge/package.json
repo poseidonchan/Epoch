@@ -12,9 +12,10 @@
   "scripts": {
     "build": "tsup src/cli.ts src/index.ts --format esm --clean",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "pnpm build && node --test tests/*.test.mjs"
+    "test": "pnpm -w --filter @labos/hpc-bridge... build && node --test tests/*.test.mjs"
   },
   "dependencies": {
+    "@labos/cli-utils": "workspace:*",
     "@labos/protocol": "workspace:*",
     "uuid": "^11.1.0",
     "ws": "^8.18.3"

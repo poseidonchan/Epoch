@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 import process from "node:process";
 
+import { initCommand } from "./commands/init.js";
+import { configCommand } from "./commands/config.js";
 import { pairCommand } from "./commands/pair.js";
 import { startCommand } from "./commands/start.js";
+import { restartCommand } from "./commands/restart.js";
+import { stopCommand } from "./commands/stop.js";
 import { statusCommand } from "./commands/status.js";
 import { doctorCommand } from "./commands/doctor.js";
 
@@ -12,11 +16,23 @@ const cmd = args[0];
 async function main() {
   try {
     switch (cmd) {
+      case "init":
+        await initCommand(args.slice(1));
+        return;
+      case "config":
+        await configCommand(args.slice(1));
+        return;
       case "pair":
         await pairCommand(args.slice(1));
         return;
       case "start":
         await startCommand(args.slice(1));
+        return;
+      case "restart":
+        await restartCommand(args.slice(1));
+        return;
+      case "stop":
+        await stopCommand(args.slice(1));
         return;
       case "status":
         await statusCommand(args.slice(1));
@@ -27,7 +43,7 @@ async function main() {
       case "-h":
       case "--help":
       case undefined:
-        console.log("Usage: labos-hpc-bridge <pair|start|status|doctor>");
+        console.log("Usage: labos-hpc-bridge <init|config|pair|start|restart|stop|status|doctor>");
         return;
       default:
         console.error(`Unknown command: ${cmd}`);
@@ -41,4 +57,3 @@ async function main() {
 }
 
 await main();
-
