@@ -1,13 +1,21 @@
 import process from "node:process";
 
 import { saveConfig } from "../config.js";
+import { configCommand } from "./config.js";
 
 export async function pairCommand(argv: string[]) {
   const hubUrl = flag(argv, "--hub");
   const token = flag(argv, "--token");
   const workspaceRoot = flag(argv, "--workspace-root");
+
   if (!hubUrl || !token || !workspaceRoot) {
-    console.error("Usage: labos-hpc-bridge pair --hub <wss://...> --token <token> --workspace-root <path>");
+    if (process.stdin.isTTY && process.stdout.isTTY) {
+      console.log("`pair` is a compatibility alias for `config`.");
+      await configCommand(argv, { mode: "config" });
+      return;
+    }
+    console.error("Usage: labos-hpc-bridge pair --hub <wss://...> --token <token> --workspace-root <absolute-path>");
+    console.error("Hint: run `labos-hpc-bridge config` for interactive setup.");
     process.exitCode = 1;
     return;
   }
@@ -31,6 +39,7 @@ export async function pairCommand(argv: string[]) {
   console.log(`- hubUrl: ${cfg.hubUrl}`);
   console.log(`- nodeId: ${cfg.nodeId}`);
   console.log(`- workspaceRoot: ${cfg.workspaceRoot}`);
+  console.log("Hint: run `labos-hpc-bridge start` to connect this bridge.");
 }
 
 function flag(argv: string[], name: string) {
@@ -45,4 +54,3 @@ function numFlag(argv: string[], name: string) {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
-

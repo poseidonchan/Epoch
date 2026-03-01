@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 
 import { v4 as uuidv4 } from "uuid";
 
@@ -40,7 +40,9 @@ export async function loadConfig(): Promise<BridgeConfig | null> {
 export async function saveConfig(cfg: Omit<BridgeConfig, "nodeId"> & { nodeId?: string }) {
   await mkdir(configDir(), { recursive: true });
   const final: BridgeConfig = { ...cfg, nodeId: cfg.nodeId ?? uuidv4() };
-  await writeFile(configPath(), JSON.stringify(final, null, 2) + "\n", "utf8");
+  await writeFile(configPath(), JSON.stringify(final, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  await chmod(configPath(), 0o600).catch(() => {
+    // best effort
+  });
   return final;
 }
-

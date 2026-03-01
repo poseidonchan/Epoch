@@ -47,7 +47,7 @@ type HpcStatus = {
 
 type PermissionLevel = "default" | "full";
 
-type RuntimePolicy = {
+export type RuntimePolicy = {
   exec?: {
     maxTimeoutMs?: number;
     maxConcurrent?: number;
@@ -60,6 +60,8 @@ type RuntimePolicy = {
     maxConcurrent?: number;
   };
 };
+
+export type RuntimeSandboxMode = "workspace-write" | "danger-full-access" | "read-only";
 
 const DANGEROUS_COMMANDS = new Set([
   "chown",
@@ -501,11 +503,11 @@ export class BridgeService {
           }
 
           const policy = this.runtimePolicyFor(policyOverride);
-          if (policy?.exec?.maxConcurrent != null &&
-              this.runtimeExecActive.size >= policy.exec.maxConcurrent) {
+          const maxExecConcurrent = policy?.exec?.maxConcurrent;
+          if (isRuntimeExecConcurrencyExceeded(this.runtimeExecActive.size, policy)) {
             this.sendRes(id, false, undefined, {
               code: "RATE_LIMITED",
-              message: `runtime.exec.start concurrency exceeded (${policy.exec.maxConcurrent})`,
+              message: `runtime.exec.start concurrency exceeded (${String(maxExecConcurrent)})`,
             });
             return;
           }
@@ -782,7 +784,8 @@ export class BridgeService {
   }
 
   private runtimePolicyFor(override?: RuntimePolicy | null): RuntimePolicy | null {
-    return override ?? null;
+    // Intentionally default-open: limits only apply when caller supplies a policy override.
+    return resolveRuntimePolicyOverride(override);
   }
 
   private async resolveProjectPath(projectId: string, inputPath: string, opts?: { forWrite?: boolean }): Promise<string> {
@@ -894,7 +897,7 @@ export class BridgeService {
     timeoutMs?: number;
     permissionLevel: PermissionLevel;
     policyOverride?: RuntimePolicy | null;
-    sandboxMode?: "workspace-write" | "danger-full-access" | "read-only";
+    sandboxMode?: RuntimeSandboxMode;
   }) {
     this.assertRuntimeCommandPolicy(opts.command, opts.permissionLevel);
 
@@ -929,16 +932,7 @@ export class BridgeService {
 
     let finalEnv: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
     if (opts.sandboxMode === "workspace-write") {
-      const wsEnv: Record<string, string> = {
-        HOME: projectRoot,
-        TMPDIR: path.join(projectRoot, "tmp"),
-        XDG_CACHE_HOME: path.join(projectRoot, ".cache"),
-        XDG_DATA_HOME: path.join(projectRoot, ".local", "share"),
-        XDG_CONFIG_HOME: path.join(projectRoot, ".config"),
-        PYTHONUSERBASE: path.join(projectRoot, ".local"),
-        PIP_USER: "0",
-        npm_config_prefix: path.join(projectRoot, ".npm-global"),
-      };
+      const wsEnv = buildWorkspaceWriteEnv(projectRoot);
       finalEnv = { ...process.env, ...wsEnv, ...(opts.env ?? {}) };
       await mkdir(path.join(projectRoot, "tmp"), { recursive: true });
     }
@@ -1323,9 +1317,9 @@ export class BridgeService {
     const user = await this.getSlurmUser();
     const runningCount = (await this.squeueJobIds({ user, state: "R" })).length;
     const pendingCount = (await this.squeueJobIds({ user, state: "PD" })).length;
-    if (policy?.slurm?.maxConcurrent != null &&
-        runningCount + pendingCount >= policy.slurm.maxConcurrent) {
-      throw new Error(`Slurm concurrency limit exceeded (${policy.slurm.maxConcurrent})`);
+    const maxSlurmConcurrent = policy?.slurm?.maxConcurrent;
+    if (isSlurmConcurrencyExceeded(runningCount, pendingCount, policy)) {
+      throw new Error(`Slurm concurrency limit exceeded (${String(maxSlurmConcurrent)})`);
     }
 
     const projectRoot = this.projectRoot(opts.projectId);
@@ -1711,6 +1705,34 @@ function normalizePermissionLevel(v: unknown): PermissionLevel | null {
   return null;
 }
 
+export function resolveRuntimePolicyOverride(override?: RuntimePolicy | null): RuntimePolicy | null {
+  return override ?? null;
+}
+
+export function isRuntimeExecConcurrencyExceeded(activeCount: number, policy: RuntimePolicy | null): boolean {
+  if (policy?.exec?.maxConcurrent == null) return false;
+  return activeCount >= policy.exec.maxConcurrent;
+}
+
+export function isSlurmConcurrencyExceeded(runningCount: number, pendingCount: number, policy: RuntimePolicy | null): boolean {
+  if (policy?.slurm?.maxConcurrent == null) return false;
+  return runningCount + pendingCount >= policy.slurm.maxConcurrent;
+}
+
+export function buildWorkspaceWriteEnv(projectRoot: string): Record<string, string> {
+  // Keep the sandbox env surface intentionally small and language-agnostic for now.
+  return {
+    HOME: projectRoot,
+    TMPDIR: path.join(projectRoot, "tmp"),
+    XDG_CACHE_HOME: path.join(projectRoot, ".cache"),
+    XDG_DATA_HOME: path.join(projectRoot, ".local", "share"),
+    XDG_CONFIG_HOME: path.join(projectRoot, ".config"),
+    PYTHONUSERBASE: path.join(projectRoot, ".local"),
+    PIP_USER: "0",
+    npm_config_prefix: path.join(projectRoot, ".npm-global"),
+  };
+}
+
 function normalizeRuntimePolicy(raw: unknown): RuntimePolicy | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const obj = raw as Record<string, unknown>;
@@ -1746,7 +1768,7 @@ function normalizeRuntimePolicy(raw: unknown): RuntimePolicy | null {
   };
 }
 
-function normalizeSandboxMode(raw: unknown): "workspace-write" | "danger-full-access" | "read-only" {
+function normalizeSandboxMode(raw: unknown): RuntimeSandboxMode {
   const v = typeof raw === "string" ? raw.trim().toLowerCase() : "";
   if (v === "danger-full-access") return "danger-full-access";
   if (v === "read-only") return "read-only";

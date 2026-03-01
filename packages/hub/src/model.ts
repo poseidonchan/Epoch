@@ -2,8 +2,12 @@ import process from "node:process";
 
 import type { HubConfig } from "./config.js";
 
-const DEFAULT_PROVIDER = "openai-codex";
-const DEFAULT_MODEL_ID = "gpt-5.3-codex";
+export const HUB_DEFAULT_PROVIDER = "openai-codex";
+export const HUB_DEFAULT_MODEL_ID = "gpt-5.3-codex";
+
+export function hubDefaultModelRef() {
+  return `${HUB_DEFAULT_PROVIDER}/${HUB_DEFAULT_MODEL_ID}`;
+}
 
 // ---------------------------------------------------------------------------
 // Environment-based API key lookup (replaces @mariozechner/pi-ai getEnvApiKey)
@@ -119,7 +123,7 @@ function hasConfiguredCredentials(config: HubConfig | null | undefined, provider
 export function resolveHubProvider(config?: HubConfig | null): HubProviderResolution {
   const ai = config?.ai;
   if (ai?.provider) {
-    const provider = String(ai.provider).trim() || DEFAULT_PROVIDER;
+    const provider = String(ai.provider).trim() || HUB_DEFAULT_PROVIDER;
     const defaultModelId = ai.defaultModelId ? String(ai.defaultModelId).trim() : null;
     const hasApiKey = hasConfiguredCredentials(config, provider) || Boolean(getEnvApiKey(provider));
     return {
@@ -133,16 +137,16 @@ export function resolveHubProvider(config?: HubConfig | null): HubProviderResolu
   const refRaw = process.env.LABOS_MODEL_PRIMARY ?? process.env.LABOS_MODEL ?? null;
   const ref = refRaw ? String(refRaw).trim() : null;
   if (!ref) {
-    const provider = DEFAULT_PROVIDER;
-    const defaultModelId = DEFAULT_MODEL_ID;
+    const provider = HUB_DEFAULT_PROVIDER;
+    const defaultModelId = HUB_DEFAULT_MODEL_ID;
     return { provider, defaultModelId, ref: `${provider}/${defaultModelId}`, hasApiKey: Boolean(getEnvApiKey(provider)) };
   }
 
   const idx = ref.indexOf("/");
-  const provider = (idx === -1 ? DEFAULT_PROVIDER : ref.slice(0, idx)).trim();
+  const provider = (idx === -1 ? HUB_DEFAULT_PROVIDER : ref.slice(0, idx)).trim();
   const modelId = (idx === -1 ? ref : ref.slice(idx + 1)).trim();
   const hasApiKey = Boolean(getEnvApiKey(provider));
-  return { provider: provider || DEFAULT_PROVIDER, defaultModelId: modelId || null, ref, hasApiKey };
+  return { provider: provider || HUB_DEFAULT_PROVIDER, defaultModelId: modelId || null, ref, hasApiKey };
 }
 
 export function listHubModelsForProvider(provider: string): Array<{ id: string; name: string; reasoning: boolean }> {
@@ -152,7 +156,7 @@ export function listHubModelsForProvider(provider: string): Array<{ id: string; 
 export function resolveHubModel(config?: HubConfig | null): HubModelResolution {
   const ai = config?.ai;
   if (ai?.provider) {
-    const provider = String(ai.provider).trim() || DEFAULT_PROVIDER;
+    const provider = String(ai.provider).trim() || HUB_DEFAULT_PROVIDER;
     const modelId = String(ai.defaultModelId ?? "").trim();
     if (!modelId) {
       return { ok: false, ref: `${provider}/(default)`, reason: "missing_ref", message: "Missing default model id. Run: labos-hub config" };
@@ -163,8 +167,8 @@ export function resolveHubModel(config?: HubConfig | null): HubModelResolution {
 
   const refRaw = process.env.LABOS_MODEL_PRIMARY ?? process.env.LABOS_MODEL ?? null;
   if (!refRaw) {
-    const provider = DEFAULT_PROVIDER;
-    const modelId = DEFAULT_MODEL_ID;
+    const provider = HUB_DEFAULT_PROVIDER;
+    const modelId = HUB_DEFAULT_MODEL_ID;
     const hasApiKey = Boolean(getEnvApiKey(provider));
     return { ok: true, ref: `${provider}/${modelId}`, provider, modelId, hasApiKey };
   }
@@ -175,7 +179,7 @@ export function resolveHubModel(config?: HubConfig | null): HubModelResolution {
   }
 
   const idx = ref.indexOf("/");
-  const provider = (idx === -1 ? DEFAULT_PROVIDER : ref.slice(0, idx)).trim();
+  const provider = (idx === -1 ? HUB_DEFAULT_PROVIDER : ref.slice(0, idx)).trim();
   const modelId = (idx === -1 ? ref : ref.slice(idx + 1)).trim();
   if (!provider || !modelId) {
     return { ok: false, ref, reason: "bad_ref", message: `Invalid model ref: ${ref}` };

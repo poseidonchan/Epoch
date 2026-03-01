@@ -1,68 +1,13 @@
-import process from "node:process";
-import { Writable } from "node:stream";
-import { createInterface } from "node:readline/promises";
-
-import { getStateDir, loadOrCreateHubConfig, saveHubConfig, type HubAiAuthConfig, type HubAiConfig } from "../config.js";
-
-type Prompter = {
-  close: () => void;
-  input: (opts: { message: string; defaultValue?: string; allowEmpty?: boolean }) => Promise<string>;
-  secret: (opts: { message: string; allowEmpty?: boolean }) => Promise<string>;
-  confirm: (opts: { message: string; defaultYes?: boolean }) => Promise<boolean>;
-};
-
-function createPrompter(): Prompter {
-  let muted = false;
-  const output = new Writable({
-    write(chunk, encoding, callback) {
-      if (!muted) {
-        process.stdout.write(chunk, encoding as any);
-      }
-      callback();
-    },
-  });
-  const rl = createInterface({ input: process.stdin, output, terminal: true });
-
-  const input = async (opts: { message: string; defaultValue?: string; allowEmpty?: boolean }) => {
-    const prompt = opts.defaultValue ? `${opts.message} [${opts.defaultValue}] ` : `${opts.message} `;
-    while (true) {
-      const raw = (await rl.question(prompt)).trimEnd();
-      const value = raw.trim();
-      if (value) return value;
-      if (opts.defaultValue != null) return String(opts.defaultValue);
-      if (opts.allowEmpty) return "";
-      process.stdout.write("Value required.\n");
-    }
-  };
-
-  const secret = async (opts: { message: string; allowEmpty?: boolean }) => {
-    while (true) {
-      process.stdout.write(`${opts.message} `);
-      muted = true;
-      const raw = (await rl.question("")).trimEnd();
-      muted = false;
-      process.stdout.write("\n");
-      const value = raw.trim();
-      if (value) return value;
-      if (opts.allowEmpty) return "";
-      process.stdout.write("Value required.\n");
-    }
-  };
-
-  const confirm = async (opts: { message: string; defaultYes?: boolean }) => {
-    const suffix = opts.defaultYes === false ? "[y/N]" : "[Y/n]";
-    const raw = (await rl.question(`${opts.message} ${suffix} `)).trim().toLowerCase();
-    if (!raw) return opts.defaultYes !== false;
-    return raw === "y" || raw === "yes";
-  };
-
-  return {
-    close: () => rl.close(),
-    input,
-    secret,
-    confirm,
-  };
-}
+import {
+  getStateDir,
+  loadOrCreateHubConfig,
+  saveHubConfig,
+  type HubAiAuthConfig,
+  type HubAiConfig,
+  type HubConfig,
+} from "../config.js";
+import { HUB_DEFAULT_MODEL_ID, HUB_DEFAULT_PROVIDER, hubDefaultModelRef } from "../model.js";
+import { createWizardPrompter, createWizardUI, type WizardPrompter, type WizardUI } from "./wizard_ui.js";
 
 function describeAiConfig(ai: HubAiConfig | undefined): string {
   if (!ai) return "not configured";
@@ -84,62 +29,97 @@ function preserveCodexOAuthAuth(ai: HubAiConfig | undefined): HubAiAuthConfig {
   return { type: "none" };
 }
 
-export async function configCommand(_argv: string[]) {
+type ConfigCommandOptions = {
+  ui?: WizardUI;
+  prompter?: WizardPrompter;
+};
+
+export async function configCommand(_argv: string[], options: ConfigCommandOptions = {}) {
   const stateDir = getStateDir();
   const config = await loadOrCreateHubConfig({ stateDir, allowCreate: true });
   if (!config) throw new Error("Failed to load hub config");
 
-  const prompter = createPrompter();
+  const ui = options.ui ?? createWizardUI();
+  const prompter = options.prompter ?? createWizardPrompter(ui);
+  const ownsPrompter = !options.prompter;
+
   try {
-    console.log("LabOS Hub configuration wizard\n");
-    console.log(`State dir: ${stateDir}`);
-    console.log(`Current AI config: ${describeAiConfig(config.ai)}`);
-    console.log(`Current embedding key (openai): ${config.providerApiKeys?.openai ? "configured" : "not configured"}\n`);
-
-    const wants = await prompter.confirm({
-      message: "Apply codex backend defaults and configure OPENAI_API_KEY for file embeddings?",
-      defaultYes: true,
-    });
-    if (!wants) {
-      console.log("No changes made.");
-      return;
-    }
-
-    const existingEmbeddingKey = config.providerApiKeys?.openai?.trim() ?? "";
-    const openAiApiKey = await prompter.secret({
-      message: existingEmbeddingKey
-        ? "Paste OPENAI_API_KEY for file embeddings (leave blank to keep current):"
-        : "Paste OPENAI_API_KEY for file embeddings (optional, leave blank to skip):",
-      allowEmpty: true,
-    });
-    const normalizedEmbeddingKey = openAiApiKey.trim() || existingEmbeddingKey;
-
-    config.ai = {
-      provider: "openai-codex",
-      defaultModelId: "gpt-5.3-codex",
-      auth: preserveCodexOAuthAuth(config.ai),
-    };
-
-    const providerApiKeys = { ...(config.providerApiKeys ?? {}) };
-    if (normalizedEmbeddingKey) {
-      providerApiKeys.openai = normalizedEmbeddingKey;
-    } else {
-      delete providerApiKeys.openai;
-    }
-
-    if (Object.keys(providerApiKeys).length === 0) {
-      delete config.providerApiKeys;
-    } else {
-      config.providerApiKeys = providerApiKeys;
-    }
-
-    await saveHubConfig({ stateDir, config });
-
-    console.log("\nSaved.");
-    console.log("Codex backend: openai-codex/gpt-5.3-codex");
-    console.log(`Embedding key (openai): ${normalizedEmbeddingKey ? "configured" : "not configured (uploads indexing will fail)"}`);
-    console.log("If the Hub is running, restart it to apply changes.");
+    await runConfigWizard({ stateDir, config, ui, prompter });
   } finally {
-    prompter.close();
+    if (ownsPrompter) prompter.close();
   }
+}
+
+async function runConfigWizard(args: {
+  stateDir: string;
+  config: HubConfig;
+  ui: WizardUI;
+  prompter: WizardPrompter;
+}) {
+  const { stateDir, config, ui, prompter } = args;
+
+  const previousAi = describeAiConfig(config.ai);
+  const previousEmbeddingState = config.providerApiKeys?.openai ? "configured" : "not configured";
+
+  ui.banner("LabOS Hub Configuration Wizard", "Guided setup for codex defaults and embedding key");
+  ui.step(1, 4, "Load existing settings", "ok");
+  ui.keyValue("State dir", stateDir);
+  ui.keyValue("Current AI config", previousAi);
+  ui.keyValue("Current embedding key (openai)", previousEmbeddingState);
+  ui.keyValue("Target codex model", hubDefaultModelRef());
+  ui.line();
+
+  const wants = await prompter.confirm({
+    message: "Apply codex backend defaults and configure OPENAI_API_KEY for file embeddings?",
+    defaultYes: true,
+  });
+  if (!wants) {
+    ui.step(2, 4, "No changes requested", "warn");
+    return;
+  }
+  ui.step(2, 4, "Collect credentials", "ok");
+
+  const existingEmbeddingKey = config.providerApiKeys?.openai?.trim() ?? "";
+  const openAiApiKey = await prompter.secret({
+    message: existingEmbeddingKey
+      ? "Paste OPENAI_API_KEY for file embeddings (leave blank to keep current):"
+      : "Paste OPENAI_API_KEY for file embeddings (optional, leave blank to skip):",
+    allowEmpty: true,
+  });
+  const normalizedEmbeddingKey = openAiApiKey.trim() || existingEmbeddingKey;
+
+  ui.step(3, 4, "Apply codex defaults", "ok");
+  config.ai = {
+    provider: HUB_DEFAULT_PROVIDER,
+    defaultModelId: HUB_DEFAULT_MODEL_ID,
+    auth: preserveCodexOAuthAuth(config.ai),
+  };
+
+  const providerApiKeys = { ...(config.providerApiKeys ?? {}) };
+  if (normalizedEmbeddingKey) {
+    providerApiKeys.openai = normalizedEmbeddingKey;
+  } else {
+    delete providerApiKeys.openai;
+  }
+
+  if (Object.keys(providerApiKeys).length === 0) {
+    delete config.providerApiKeys;
+  } else {
+    config.providerApiKeys = providerApiKeys;
+  }
+
+  await saveHubConfig({ stateDir, config });
+  ui.step(4, 4, "Persist settings", "ok");
+  ui.success("Hub configuration saved.");
+  ui.summary("Configuration summary", [
+    { key: "AI backend", before: previousAi, after: describeAiConfig(config.ai) },
+    { key: "AI target model", after: hubDefaultModelRef() },
+    {
+      key: "Embedding key (openai)",
+      before: previousEmbeddingState,
+      after: normalizedEmbeddingKey ? "configured" : "not configured (uploads indexing will fail)",
+    },
+  ]);
+
+  ui.note("If the Hub is running, restart it to apply changes.");
 }

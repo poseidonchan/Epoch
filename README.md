@@ -64,15 +64,19 @@ pnpm -w install
 ### 2) 启动 Hub
 
 ```bash
-pnpm -C packages/hub build
+pnpm build:hub
 node packages/hub/dist/cli.js init
-node packages/hub/dist/cli.js config
 node packages/hub/dist/cli.js start
+node packages/hub/dist/cli.js status
+node packages/hub/dist/cli.js stop
 ```
 
 说明：
 
-- `init` 会创建 `~/.labos/config.json`，执行 migration，并打印共享 token。
+- `labos-hub <init|config|start|restart|stop|status|doctor>`
+- `init/config` 在 TTY 下会进入向导式配置；非 TTY 模式保持脚本友好（不阻塞交互）。
+- `status` 用于查看 Hub 配置与守护进程状态；`doctor` 用于更深入诊断；`stop` 会安全停止后台 Hub 进程。
+- `init` 会创建 `~/.labos/config.json`，执行 migration，并打印共享 token/QR pairing 信息。
 - `config` 会配置 Codex backend 默认值与 OpenAI key（用于文件索引/embedding/OCR 等能力）。
 - 默认监听：
   - HTTP: `http://0.0.0.0:8787`
@@ -88,15 +92,24 @@ node packages/hub/dist/cli.js start
 ### 3) （可选）启动 HPC Bridge
 
 ```bash
-pnpm -C packages/hpc-bridge build
-node packages/hpc-bridge/dist/cli.js pair --hub ws://127.0.0.1:8787/ws --token <TOKEN> --workspace-root /tmp/labos
+pnpm build:hpc-bridge
+node packages/hpc-bridge/dist/cli.js init
+node packages/hpc-bridge/dist/cli.js config --hub ws://127.0.0.1:8787/ws --token <TOKEN> --workspace-root /tmp/labos
 node packages/hpc-bridge/dist/cli.js doctor
 node packages/hpc-bridge/dist/cli.js start
+node packages/hpc-bridge/dist/cli.js status
+node packages/hpc-bridge/dist/cli.js restart
+node packages/hpc-bridge/dist/cli.js stop
 ```
 
 说明：
 
-- `pair` 会写入 `~/.labos-hpc-bridge/config.json`。
+- `labos-hpc-bridge <init|config|pair|start|restart|stop|status|doctor>`
+- `pair` 保留为兼容别名；`pair --hub ... --token ... --workspace-root ...` 旧脚本仍可直接使用。
+- `start` 默认后台守护进程模式，`start --foreground` 可用于调试。
+- `init/config` 在 TTY 下会进入向导式配置；非 TTY 模式可通过 flags 批处理。
+- `runtime policy` 默认是 **open**：仅当请求里提供 `policy` override 时才会启用并发/资源上限。
+- 配置写入 `~/.labos-hpc-bridge/config.json`，PID/log 位于同目录下 `bridge.pid` / `bridge.log`。
 - 若宿主机缺少 `sbatch/squeue/sacct/scancel`，相关能力会降级/受限，但服务可启动。
 
 ### 4) 运行 iOS App
@@ -149,6 +162,8 @@ Hub 状态目录默认在 `~/.labos`，典型结构：
 
 ```bash
 pnpm -w build
+pnpm build:hub
+pnpm build:hpc-bridge
 pnpm -w typecheck
 pnpm -w test
 ```
