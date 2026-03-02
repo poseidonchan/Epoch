@@ -25,3 +25,10 @@ LabOS.zip
 /Epoch.xcodeproj/project.xcworkspace
 /projects
 /Epoch.xcodeproj
+/Sources/
+/Tests/
+/Epoch.xcodeproj/
+/Package.swift
+/Package.resolved
+/project.yml
+/tools/ios/
