@@ -1,4 +1,0 @@
-framework module LabOSCore {
-  header "LabOSCore-Swift.h"
-  requires objc
-}
