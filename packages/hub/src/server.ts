@@ -41,6 +41,7 @@ import { attachCodexTransport, closeAllCodexTransports, extractCodexAuthToken } 
 import { CodexRepository } from "./codex_rpc/repository.js";
 import {
   getProjectFileIndexRecord,
+  listOcrReindexCandidates,
   queueProjectUploadIndexing,
 } from "./indexing/projectIndexing.js";
 import { extractInlineAttachmentTextForPrompt } from "./indexing/extract.js";
@@ -204,6 +205,9 @@ export async function startHub(opts: HubStartOptions): Promise<HubHandle> {
   }
 
   registerHttpRoutes(fastify, state);
+  void runHighQualityOcrReindexSweep(state, "startup").catch((err) => {
+    fastify.log.error({ err }, "startup OCR reindex sweep failed");
+  });
 
   const legacyWss = new WebSocketServer({ noServer: true });
   const codexWss = new WebSocketServer({ noServer: true });
@@ -344,6 +348,7 @@ function createHubState(opts: HubStartOptions) {
       cpuPercent: 0,
       ramPercent: 0,
     } as ResourceSnapshot,
+    ocrReindexSweepInFlight: false,
     onClose: [] as Array<() => Promise<void>>,
   };
 }
@@ -398,57 +403,13 @@ function registerHttpRoutes(fastify: FastifyInstance, state: HubState) {
       sizeBytes: st.size,
     });
 
-    await queueProjectUploadIndexing(
-      {
-        projectId,
-        artifactPath,
-        uploadId,
-        storedPath,
-        contentType,
-      },
-      {
-        pool: state.pool,
-        getOpenAIApiKey: () => getApiKeyForProvider(state, "openai"),
-        getOpenAIOcrModel: async () => resolveOpenAIOcrModelFromConfig(state.config),
-        onStatusChange: async () => {
-          broadcastEvent(state, "artifacts.updated", {
-            projectId,
-            artifact: await getArtifactByPath(state, projectId, artifactPath),
-            change: "updated",
-          });
-        },
-        syncFileToHpc: async (artPath, extractedText, summary) => {
-          if (!state.node) return;
-          const textPath = artPath.replace(/\.[^.]+$/, ".txt");
-          // Sync original file
-          const originalData = await readFile(storedPath).catch(() => null);
-          if (originalData) {
-            await callNode(state, "runtime.fs.write", {
-              projectId,
-              path: `context/${artPath}`,
-              data: originalData.toString("base64"),
-              encoding: "base64",
-              permissionLevel: "full",
-            });
-          }
-          // Sync extracted text
-          await callNode(state, "runtime.fs.write", {
-            projectId,
-            path: `context/${textPath}`,
-            data: extractedText,
-            encoding: "utf8",
-            permissionLevel: "full",
-          });
-          await callNode(state, "runtime.fs.write", {
-            projectId,
-            path: `context/${textPath}.summary`,
-            data: summary,
-            encoding: "utf8",
-            permissionLevel: "full",
-          });
-        },
-      }
-    );
+    await enqueueUploadIndexing(state, {
+      projectId,
+      artifactPath,
+      uploadId,
+      storedPath,
+      contentType,
+    });
 
     broadcastEvent(state, "artifacts.updated", {
       projectId,
@@ -545,57 +506,13 @@ function registerHttpRoutes(fastify: FastifyInstance, state: HubState) {
           [uploadId, projectId, rawUrl, storedPath, fetched.contentType, fetched.byteLength, new Date().toISOString()]
         );
 
-        await queueProjectUploadIndexing(
-          {
-            projectId,
-            artifactPath,
-            uploadId,
-            storedPath,
-            contentType: "text/plain",
-          },
-          {
-            pool: state.pool,
-            getOpenAIApiKey: () => getApiKeyForProvider(state, "openai"),
-            getOpenAIOcrModel: async () => resolveOpenAIOcrModelFromConfig(state.config),
-            onStatusChange: async () => {
-              broadcastEvent(state, "artifacts.updated", {
-                projectId,
-                artifact: await getArtifactByPath(state, projectId, artifactPath),
-                change: "updated",
-              });
-            },
-            syncFileToHpc: async (artPath, extractedText, summary) => {
-              if (!state.node) return;
-              const textPath = artPath.replace(/\.[^.]+$/, ".txt");
-              // Sync original file
-              const originalData = await readFile(storedPath).catch(() => null);
-              if (originalData) {
-                await callNode(state, "runtime.fs.write", {
-                  projectId,
-                  path: `context/${artPath}`,
-                  data: originalData.toString("base64"),
-                  encoding: "base64",
-                  permissionLevel: "full",
-                });
-              }
-              // Sync extracted text
-              await callNode(state, "runtime.fs.write", {
-                projectId,
-                path: `context/${textPath}`,
-                data: extractedText,
-                encoding: "utf8",
-                permissionLevel: "full",
-              });
-              await callNode(state, "runtime.fs.write", {
-                projectId,
-                path: `context/${textPath}.summary`,
-                data: summary,
-                encoding: "utf8",
-                permissionLevel: "full",
-              });
-            },
-          }
-        );
+        await enqueueUploadIndexing(state, {
+          projectId,
+          artifactPath,
+          uploadId,
+          storedPath,
+          contentType: "text/plain",
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err ?? "Unknown error");
         console.error(`[link-upload] Failed to fetch/index ${rawUrl} for project ${projectId}: ${message}`);
@@ -1118,10 +1035,6 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
           return;
         }
         const apiKey = await getApiKeyForProvider(state, "openai");
-        if (!apiKey) {
-          sendResOk(ws, id, {});
-          return;
-        }
         const messages = await listMessages(state, projectId, sessionId, { beforeTs: null, limit: 20 });
         if (messages.length === 0) {
           sendResOk(ws, id, {});
@@ -1545,15 +1458,24 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
           sendResError(ws, id, "BAD_REQUEST", "settings.openai.set requires apiKey, ocrModel, or clear=true");
           return;
         }
-        const apiKey = hasApiKey ? (normalizeOptionalString(params.apiKey) ?? null) : null;
+        const hadOpenAIKey = Boolean(resolveOpenAIApiKeyFromConfig(state.config));
+        const apiKey = hasApiKey ? normalizeOptionalString(params.apiKey) : undefined;
         const ocrModel = hasOcrModel ? normalizeOptionalString(params.ocrModel) : undefined;
         await updateOpenAISettings(state, {
+          hasApiKey,
           apiKey: clear ? null : apiKey,
+          clear,
           ocrModel,
           hasOcrModel,
           source,
         });
         const status = readOpenAISettingsStatus(state.config);
+        const openAIKeyJustConfigured = !hadOpenAIKey && status.configured;
+        if (openAIKeyJustConfigured) {
+          void runHighQualityOcrReindexSweep(state, "settings.openai.set").catch(() => {
+            // best effort
+          });
+        }
         sendResOk(ws, id, status);
         broadcastEvent(state, "settings.openai.updated", {
           configured: status.configured,
@@ -2892,6 +2814,7 @@ async function listArtifacts(state: HubState, projectId: string, opts: { prefix:
       a.*,
       pfi.status AS index_status,
       pfi.summary AS index_summary,
+      pfi.error AS index_error,
       pfi.completed_at AS indexed_at
     FROM artifacts a
     LEFT JOIN project_file_index pfi
@@ -2913,6 +2836,7 @@ async function getArtifactByPath(state: HubState, projectId: string, artifactPat
        a.*,
        pfi.status AS index_status,
        pfi.summary AS index_summary,
+       pfi.error AS index_error,
        pfi.completed_at AS indexed_at
      FROM artifacts a
      LEFT JOIN project_file_index pfi
@@ -2938,8 +2862,118 @@ function mapArtifact(r: any) {
     createdByRunID: r.created_by_run_id ?? null,
     indexStatus: normalizeIndexStatus(r.index_status),
     indexSummary: typeof r.index_summary === "string" ? r.index_summary : null,
+    indexError: typeof r.index_error === "string" ? r.index_error : null,
     indexedAt: typeof r.indexed_at === "string" ? toIso(r.indexed_at) : null,
   };
+}
+
+async function enqueueUploadIndexing(
+  state: HubState,
+  input: { projectId: string; artifactPath: string; uploadId: string; storedPath: string; contentType: string | null }
+) {
+  await queueProjectUploadIndexing(input, {
+    pool: state.pool,
+    getOpenAIApiKey: () => getApiKeyForProvider(state, "openai"),
+    getOpenAIOcrModel: async () => resolveOpenAIOcrModelFromConfig(state.config),
+    onStatusChange: async () => {
+      broadcastEvent(state, "artifacts.updated", {
+        projectId: input.projectId,
+        artifact: await getArtifactByPath(state, input.projectId, input.artifactPath),
+        change: "updated",
+      });
+    },
+    syncFileToHpc: async (artPath, extractedText, summary) => {
+      await syncIndexedUploadToHpc(state, {
+        projectId: input.projectId,
+        artifactPath: artPath,
+        storedPath: input.storedPath,
+        extractedText,
+        summary,
+      });
+    },
+  });
+}
+
+async function syncIndexedUploadToHpc(
+  state: HubState,
+  args: {
+    projectId: string;
+    artifactPath: string;
+    storedPath: string;
+    extractedText: string;
+    summary: string;
+  }
+) {
+  if (!state.node) return;
+  const textPath = args.artifactPath.replace(/\.[^.]+$/, ".txt");
+  const originalData = await readFile(args.storedPath).catch(() => null);
+  if (originalData) {
+    await callNode(state, "runtime.fs.write", {
+      projectId: args.projectId,
+      path: `context/${args.artifactPath}`,
+      data: originalData.toString("base64"),
+      encoding: "base64",
+      permissionLevel: "full",
+    });
+  }
+
+  await callNode(state, "runtime.fs.write", {
+    projectId: args.projectId,
+    path: `context/${textPath}`,
+    data: args.extractedText,
+    encoding: "utf8",
+    permissionLevel: "full",
+  });
+  await callNode(state, "runtime.fs.write", {
+    projectId: args.projectId,
+    path: `context/${textPath}.summary`,
+    data: args.summary,
+    encoding: "utf8",
+    permissionLevel: "full",
+  });
+}
+
+const OCR_REINDEX_SWEEP_LIMIT = Number.isFinite(Number(process.env.EPOCH_OCR_REINDEX_SWEEP_LIMIT))
+  ? Math.max(1, Math.min(5_000, Math.floor(Number(process.env.EPOCH_OCR_REINDEX_SWEEP_LIMIT))))
+  : 1_000;
+const OCR_REINDEX_SWEEP_CONCURRENCY = Number.isFinite(Number(process.env.EPOCH_OCR_REINDEX_SWEEP_CONCURRENCY))
+  ? Math.max(1, Math.min(8, Math.floor(Number(process.env.EPOCH_OCR_REINDEX_SWEEP_CONCURRENCY))))
+  : 2;
+
+async function runHighQualityOcrReindexSweep(state: HubState, source: string) {
+  if (state.ocrReindexSweepInFlight) return;
+  const openAIKey = resolveOpenAIApiKeyFromConfig(state.config);
+  if (!openAIKey) return;
+
+  state.ocrReindexSweepInFlight = true;
+  try {
+    const candidates = await listOcrReindexCandidates(state.pool, { limit: OCR_REINDEX_SWEEP_LIMIT });
+    if (candidates.length === 0) return;
+
+    let cursor = 0;
+    const worker = async () => {
+      while (true) {
+        const candidate = candidates[cursor];
+        cursor += 1;
+        if (!candidate) return;
+        await enqueueUploadIndexing(state, {
+          projectId: candidate.projectId,
+          artifactPath: candidate.artifactPath,
+          uploadId: candidate.uploadId,
+          storedPath: candidate.storedPath,
+          contentType: candidate.contentType,
+        }).catch((err) => {
+          const message = err instanceof Error ? err.message : String(err ?? "unknown");
+          console.warn(`[ocr-reindex:${source}] failed for ${candidate.projectId}/${candidate.artifactPath}: ${message}`);
+        });
+      }
+    };
+
+    const workerCount = Math.min(OCR_REINDEX_SWEEP_CONCURRENCY, candidates.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  } finally {
+    state.ocrReindexSweepInFlight = false;
+  }
 }
 
 async function deleteArtifact(state: HubState, projectId: string, artifactPath: string) {
@@ -3762,14 +3796,26 @@ function classifyGatewayError(err: unknown): { code: "NODE_OFFLINE" | "BAD_REQUE
 
 async function updateOpenAISettings(
   state: HubState,
-  args: { apiKey: string | null; ocrModel?: string | null; hasOcrModel: boolean; source: string }
+  args: {
+    hasApiKey: boolean;
+    apiKey?: string | null;
+    clear: boolean;
+    ocrModel?: string | null;
+    hasOcrModel: boolean;
+    source: string;
+  }
 ) {
   const providerApiKeys = { ...(state.config.providerApiKeys ?? {}) };
   const providerApiKeyMetadata = { ...(state.config.providerApiKeyMetadata ?? {}) };
-  if (args.apiKey && args.apiKey.trim()) {
-    providerApiKeys.openai = args.apiKey.trim();
-  } else {
+  if (args.clear) {
     delete providerApiKeys.openai;
+  } else if (args.hasApiKey) {
+    const normalizedKey = normalizeOptionalString(args.apiKey);
+    if (normalizedKey) {
+      providerApiKeys.openai = normalizedKey;
+    } else {
+      delete providerApiKeys.openai;
+    }
   }
   providerApiKeyMetadata.openai = {
     updatedAt: new Date().toISOString(),

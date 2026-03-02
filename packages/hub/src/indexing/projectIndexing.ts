@@ -2,7 +2,7 @@ import type { DbPool } from "../db/db.js";
 import { toIso } from "../utils/time.js";
 import { chunkTextForRag, estimateTokenCount, pickTopScoredChunks, type RagChunk, type ScoredRagChunk } from "./chunking.js";
 import { embedQueryWithOpenAI, embedTextsWithOpenAI } from "./embeddings.js";
-import { extractFileTextForIndexing } from "./extract.js";
+import { ExtractionError, extractFileTextForIndexing } from "./extract.js";
 import { fallbackExtractiveSummary, summarizeTextWithOpenAI } from "./summarize.js";
 
 const MAX_EXTRACTED_TEXT_CHARS = 400_000;
@@ -31,7 +31,7 @@ export type ProjectFileContextStream = {
   snippets: ProjectFileContextSnippet[];
 };
 
-type IndexUploadInput = {
+export type IndexUploadInput = {
   projectId: string;
   artifactPath: string;
   uploadId: string;
@@ -39,12 +39,21 @@ type IndexUploadInput = {
   contentType: string | null;
 };
 
-type IndexUploadDeps = {
+export type IndexUploadDeps = {
   pool: DbPool;
   getOpenAIApiKey: () => Promise<string | undefined>;
   getOpenAIOcrModel?: () => Promise<string | undefined>;
   onStatusChange?: (status: ProjectFileIndexStatus) => Promise<void> | void;
   syncFileToHpc?: (artifactPath: string, extractedText: string, summary: string) => Promise<void>;
+};
+
+export type OcrReindexCandidate = {
+  projectId: string;
+  artifactPath: string;
+  uploadId: string;
+  storedPath: string;
+  contentType: string | null;
+  artifactUpdatedAt: string | null;
 };
 
 export async function queueProjectUploadIndexing(input: IndexUploadInput, deps: IndexUploadDeps): Promise<void> {
@@ -170,7 +179,7 @@ export async function runProjectUploadIndexing(input: IndexUploadInput, deps: In
     void deps.syncFileToHpc?.(input.artifactPath, extractedText, summaryText)?.catch(() => {});
     void deps.onStatusChange?.("indexed")?.catch?.(() => {});
   } catch (err) {
-    const message = normalizeErrorMessage(err);
+    const message = normalizeIndexingFailureMessage(err);
     console.error(`[indexing] Failed to index ${input.artifactPath} for project ${input.projectId}: ${message}`);
     await deps.pool.query(
       `UPDATE project_file_index SET
@@ -184,6 +193,76 @@ export async function runProjectUploadIndexing(input: IndexUploadInput, deps: In
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export function isOcrReindexEligiblePath(pathValue: string): boolean {
+  const ext = String(pathValue ?? "").trim().toLowerCase();
+  return (
+    ext.endsWith(".pdf")
+    || ext.endsWith(".png")
+    || ext.endsWith(".jpg")
+    || ext.endsWith(".jpeg")
+    || ext.endsWith(".gif")
+    || ext.endsWith(".webp")
+    || ext.endsWith(".heic")
+    || ext.endsWith(".heif")
+  );
+}
+
+export function dedupeOcrReindexCandidates(candidates: OcrReindexCandidate[]): OcrReindexCandidate[] {
+  const seen = new Set<string>();
+  const deduped: OcrReindexCandidate[] = [];
+  for (const candidate of candidates) {
+    const key = `${candidate.projectId}::${candidate.artifactPath}::${candidate.artifactUpdatedAt ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(candidate);
+  }
+  return deduped;
+}
+
+export async function listOcrReindexCandidates(pool: DbPool, opts?: { limit?: number }): Promise<OcrReindexCandidate[]> {
+  const limit = Math.max(1, Math.min(5_000, Math.floor(opts?.limit ?? 1_000)));
+  const rows = await pool.query<any>(
+    `SELECT
+       a.project_id,
+       a.path AS artifact_path,
+       a.modified_at AS artifact_updated_at,
+       pfi.upload_id,
+       u.stored_path,
+       u.content_type
+     FROM artifacts a
+     LEFT JOIN project_file_index pfi
+       ON pfi.project_id = a.project_id
+      AND pfi.artifact_path = a.path
+     LEFT JOIN uploads u
+       ON u.id = pfi.upload_id
+     WHERE a.origin IN ('user_upload', 'link_upload')
+     ORDER BY a.modified_at DESC
+     LIMIT $1`,
+    [limit]
+  );
+
+  return dedupeOcrReindexCandidates(
+    rows.rows
+      .map((row: any): OcrReindexCandidate | null => {
+        const projectId = String(row.project_id ?? "").trim();
+        const artifactPath = String(row.artifact_path ?? "").trim();
+        const uploadId = String(row.upload_id ?? "").trim();
+        const storedPath = String(row.stored_path ?? "").trim();
+        if (!projectId || !artifactPath || !uploadId || !storedPath) return null;
+        if (!isOcrReindexEligiblePath(artifactPath)) return null;
+        return {
+          projectId,
+          artifactPath,
+          uploadId,
+          storedPath,
+          contentType: typeof row.content_type === "string" ? row.content_type : null,
+          artifactUpdatedAt: typeof row.artifact_updated_at === "string" ? row.artifact_updated_at : null,
+        };
+      })
+      .filter((row): row is OcrReindexCandidate => row != null)
+  );
 }
 
 export async function listProjectFileCatalog(
@@ -348,6 +427,17 @@ function tokenize(text: string): string[] {
 function normalizeErrorMessage(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err ?? "Unknown indexing error");
   return message.trim().slice(0, 600);
+}
+
+function normalizeIndexingFailureMessage(err: unknown): string {
+  if (err instanceof ExtractionError) {
+    const normalized = normalizeErrorMessage(err);
+    if (normalized.startsWith(`${err.code}:`)) {
+      return normalized;
+    }
+    return `${err.code}: ${normalized}`.slice(0, 600);
+  }
+  return normalizeErrorMessage(err);
 }
 
 function normalizeIndexStatus(value: unknown): ProjectFileIndexStatus | null {

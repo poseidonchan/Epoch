@@ -530,26 +530,47 @@ export async function handleEpochSessionGenerateTitle(
     throw new Error("Missing projectId or sessionId");
   }
 
-  const stateDir = ctx.repository.stateDirectory();
-  const apiKey = await loadOpenAIApiKeyFromStateDir(stateDir) ?? getEnvApiKey("openai");
-  if (!apiKey) {
-    return {};
-  }
-
-  const messageRows = await ctx.repository.query<any>(
-    `SELECT role, content FROM messages
-     WHERE project_id=$1 AND session_id=$2
-     ORDER BY ts ASC LIMIT 20`,
+  const sessionRows = await ctx.repository.query<any>(
+    `SELECT *
+     FROM sessions
+     WHERE project_id=$1 AND id=$2`,
     [projectId, sessionId]
   );
-  if (messageRows.length === 0) {
+  if (sessionRows.length === 0) {
+    throw new Error("Session not found");
+  }
+  const sessionRow = sessionRows[0];
+
+  const threadId = normalizeNonEmptyString(sessionRow.codex_thread_id);
+  let titleMessages: Array<{ role: string; text: string }> = [];
+
+  if (threadId) {
+    const thread = await ctx.repository.readThread(threadId, true).catch(() => null);
+    if (thread) {
+      titleMessages = titleMessagesFromThread(thread);
+    }
+  }
+
+  if (titleMessages.length === 0) {
+    const messageRows = await ctx.repository.query<any>(
+      `SELECT role, content FROM messages
+       WHERE project_id=$1 AND session_id=$2
+       ORDER BY ts ASC LIMIT 20`,
+      [projectId, sessionId]
+    );
+    titleMessages = messageRows.map((r: any) => ({
+      role: String(r.role),
+      text: String(r.content ?? ""),
+    }));
+  }
+
+  if (titleMessages.length === 0) {
     return {};
   }
 
-  const title = await generateSessionTitle(
-    messageRows.map((r: any) => ({ role: String(r.role), text: String(r.content ?? "") })),
-    { apiKey }
-  );
+  const stateDir = ctx.repository.stateDirectory();
+  const apiKey = await loadOpenAIApiKeyFromStateDir(stateDir) ?? getEnvApiKey("openai");
+  const title = await generateSessionTitle(titleMessages, { apiKey });
   if (!title) {
     return {};
   }
@@ -561,15 +582,15 @@ export async function handleEpochSessionGenerateTitle(
     [title, now, projectId, sessionId]
   );
 
-  const sessionRows = await ctx.repository.query<any>(
+  const updatedRows = await ctx.repository.query<any>(
     `SELECT * FROM sessions WHERE project_id=$1 AND id=$2`,
     [projectId, sessionId]
   );
-  if (sessionRows.length === 0) {
+  if (updatedRows.length === 0) {
     return {};
   }
 
-  return { session: mapSessionRow(sessionRows[0]) };
+  return { session: mapSessionRow(updatedRows[0]) };
 }
 
 export async function handleEpochSessionRead(
@@ -883,7 +904,7 @@ export async function handleEpochArtifactList(
   }
   const limit = Math.max(1, Math.min(500, Number(params.limit ?? 200) || 200));
   const rows = await ctx.repository.query<any>(
-    `SELECT a.*, pfi.status AS index_status, pfi.summary AS index_summary, pfi.completed_at AS indexed_at
+    `SELECT a.*, pfi.status AS index_status, pfi.summary AS index_summary, pfi.error AS index_error, pfi.completed_at AS indexed_at
      FROM artifacts a
      LEFT JOIN project_file_index pfi
        ON pfi.project_id = a.project_id AND pfi.artifact_path = a.path
@@ -910,7 +931,7 @@ export async function handleEpochArtifactGet(
   }
 
   const rows = await ctx.repository.query<any>(
-    `SELECT a.*, pfi.status AS index_status, pfi.summary AS index_summary, pfi.completed_at AS indexed_at
+    `SELECT a.*, pfi.status AS index_status, pfi.summary AS index_summary, pfi.error AS index_error, pfi.completed_at AS indexed_at
      FROM artifacts a
      LEFT JOIN project_file_index pfi
        ON pfi.project_id = a.project_id AND pfi.artifact_path = a.path
@@ -939,7 +960,7 @@ export async function handleEpochArtifactDelete(
   }
 
   const rows = await ctx.repository.query<any>(
-    `SELECT a.*, pfi.status AS index_status, pfi.summary AS index_summary, pfi.completed_at AS indexed_at
+    `SELECT a.*, pfi.status AS index_status, pfi.summary AS index_summary, pfi.error AS index_error, pfi.completed_at AS indexed_at
      FROM artifacts a
      LEFT JOIN project_file_index pfi
        ON pfi.project_id = a.project_id AND pfi.artifact_path = a.path
@@ -1119,6 +1140,7 @@ function mapArtifactRow(row: any) {
     createdByRunID: row.created_by_run_id == null ? null : String(row.created_by_run_id),
     indexStatus: normalizeCodexIndexStatus(row.index_status),
     indexSummary: typeof row.index_summary === "string" ? row.index_summary : null,
+    indexError: typeof row.index_error === "string" ? row.index_error : null,
     indexedAt: typeof row.indexed_at === "string" ? toIso(row.indexed_at) : null,
   };
 }
@@ -1421,6 +1443,45 @@ async function ensureMappedThreadForSession(
 
 function isValidCodexAppServerThreadId(threadId: string): boolean {
   return CODEX_APP_SERVER_THREAD_ID_RE.test(threadId);
+}
+
+function titleMessagesFromThread(thread: Thread): Array<{ role: string; text: string }> {
+  const rows: Array<{ role: string; text: string }> = [];
+
+  for (const turn of thread.turns) {
+    for (const item of turn.items) {
+      if (item.type === "userMessage") {
+        const content = Array.isArray(item.content) ? item.content : [];
+        const text = content
+          .filter((part) => part.type === "text")
+          .map((part) => String(part.text ?? "").trim())
+          .filter(Boolean)
+          .join("\n")
+          .trim();
+        if (text) {
+          rows.push({ role: "user", text });
+        }
+        continue;
+      }
+
+      if (item.type === "agentMessage") {
+        const text = String(item.text ?? "").trim();
+        if (text) {
+          rows.push({ role: "assistant", text });
+        }
+        continue;
+      }
+
+      if (item.type === "plan") {
+        const text = String(item.text ?? "").trim();
+        if (text) {
+          rows.push({ role: "assistant", text });
+        }
+      }
+    }
+  }
+
+  return rows.slice(0, 20);
 }
 
 async function buildSessionHistoryForCodex(

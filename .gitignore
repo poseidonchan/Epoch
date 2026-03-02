@@ -22,3 +22,6 @@ LabOS.zip
 /.derivedData/SourcePackages/repositories
 /.derivedData
 /docs/plans
+/Epoch.xcodeproj/project.xcworkspace
+/projects
+/Epoch.xcodeproj
