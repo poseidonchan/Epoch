@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { lstat, mkdtemp, mkdir, open, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, open, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { execFile, spawn } from "node:child_process";
@@ -42,7 +42,58 @@ type HpcStatus = {
   limit?: HpcTres;
   inUse?: HpcTres;
   available?: HpcTres;
+  requestable?: HpcTres;
+  supplyPool?: HpcSupplyPool;
+  nodes?: HpcNodeUsage[];
   updatedAt: string;
+};
+
+type HpcSupplyPool = {
+  idleNodes: number;
+  mixedNodes: number;
+  totalNodes: number;
+  availableCpu?: number;
+  availableMemMB?: number;
+  availableGpus?: number;
+  scope: "IDLE+MIXED";
+  updatedAt: string;
+};
+
+type HpcNodeUsage = {
+  nodeName: string;
+  role: "login" | "compute";
+  source: "job" | "node_total_fallback";
+  jobIds?: string[];
+  cpuPercent: number;
+  ramPercent: number;
+  gpuPercent?: number;
+  updatedAt: string;
+};
+
+type LocalHostUsage = {
+  cpuPercent: number;
+  ramPercent: number;
+  gpuPercent?: number;
+};
+
+type ProcCpuSample = {
+  idle: number;
+  total: number;
+};
+
+type SlurmNodeState = {
+  nodeName: string;
+  state: "IDLE" | "MIXED";
+};
+
+type SlurmNodeAvailability = {
+  nodeName: string;
+  cpuAlloc?: number;
+  cpuTotal?: number;
+  allocMemMB?: number;
+  realMemMB?: number;
+  gpuUsed?: number;
+  gpuTotal?: number;
 };
 
 type PermissionLevel = "default" | "full";
@@ -116,7 +167,11 @@ const DEFAULT_ALLOWED_BINARIES = new Set([
   "srun",
   "sbatch",
   "squeue",
+  "scontrol",
+  "sinfo",
+  "sstat",
   "scancel",
+  "nvidia-smi",
 ]);
 
 const SHELL_BINARIES = new Set(["bash", "sh", "zsh", "fish"]);
@@ -132,6 +187,7 @@ export class BridgeService {
   private heartbeatInFlight = false;
   private slurmUser: string | null = null;
   private limitCache: { key: string; fetchedAt: number; limit: HpcTres | null } = { key: "", fetchedAt: 0, limit: null };
+  private prevCpuSample: ProcCpuSample | null = null;
   private runtimeExecActive = new Map<string, { child: ReturnType<typeof spawn>; startedAtMs: number; timedOut: boolean }>();
 
   public constructor(private cfg: BridgeConfig) {
@@ -251,7 +307,8 @@ export class BridgeService {
     if (this.heartbeatInFlight) return;
     this.heartbeatInFlight = true;
     try {
-      const hpc = await this.collectHpcStatus().catch(() => null);
+      const local = await this.collectLocalHostUsage().catch(() => ({ cpuPercent: 0, ramPercent: 0 } as LocalHostUsage));
+      const hpc = await this.collectHpcStatus(local).catch(() => null);
       const storage = await collectStorageUsage(this.cfg.workspaceRoot).catch(() => null);
       this.sendEvent("node.heartbeat", {
         nodeId: this.cfg.nodeId,
@@ -261,8 +318,9 @@ export class BridgeService {
         storageTotalBytes: storage?.totalBytes,
         storageUsedBytes: storage?.usedBytes,
         storageAvailableBytes: storage?.availableBytes,
-        cpuPercent: 0,
-        ramPercent: 0,
+        cpuPercent: local.cpuPercent,
+        ramPercent: local.ramPercent,
+        gpuPercent: local.gpuPercent,
         hpc,
       });
     } finally {
@@ -274,7 +332,7 @@ export class BridgeService {
     this.send({ type: "res", id, ok, payload, error });
   }
 
-  private async collectHpcStatus(): Promise<HpcStatus | null> {
+  private async collectHpcStatus(local: LocalHostUsage): Promise<HpcStatus | null> {
     const hasSqueue = await this.hasCommand("squeue");
     if (!hasSqueue) return null;
 
@@ -286,6 +344,19 @@ export class BridgeService {
     const limit = await this.getCachedLimitTres(user).catch(() => null);
 
     const available = limit && inUse ? subtractTres(limit, inUse) : undefined;
+    const requestable = available;
+    const supplyPool = await this.collectSupplyPool().catch(() => undefined);
+    const nodes = await this.collectHpcNodeUsages({ user, runningJobIds, local }).catch(() => [
+      {
+        nodeName: os.hostname(),
+        role: "login" as const,
+        source: "job" as const,
+        cpuPercent: local.cpuPercent,
+        ramPercent: local.ramPercent,
+        ...(local.gpuPercent == null ? {} : { gpuPercent: local.gpuPercent }),
+        updatedAt: new Date().toISOString(),
+      },
+    ]);
 
     return {
       partition: this.hpcPrefs.partition,
@@ -296,8 +367,267 @@ export class BridgeService {
       limit: limit ?? undefined,
       inUse: inUse ?? undefined,
       available,
+      requestable,
+      supplyPool,
+      nodes,
       updatedAt: new Date().toISOString(),
     };
+  }
+
+  private async collectLocalHostUsage(): Promise<LocalHostUsage> {
+    const [cpuPercent, ramPercent, gpuPercent] = await Promise.all([
+      this.readProcCpuPercent().catch(() => 0),
+      this.readProcRamPercent().catch(() => 0),
+      this.readGpuPercent().catch(() => undefined),
+    ]);
+    return {
+      cpuPercent,
+      ramPercent,
+      ...(gpuPercent == null ? {} : { gpuPercent }),
+    };
+  }
+
+  private async readProcCpuPercent(): Promise<number> {
+    let sample: ProcCpuSample | null = null;
+    try {
+      const raw = await readFile("/proc/stat", "utf8");
+      sample = parseProcStatSample(raw);
+    } catch {
+      sample = null;
+    }
+    if (!sample) {
+      sample = sampleCpuFromOsCpus(os.cpus());
+    }
+    if (!sample) return 0;
+    const prev = this.prevCpuSample;
+    this.prevCpuSample = sample;
+    if (!prev) return 0;
+    return computeCpuPercentFromSamples(prev, sample);
+  }
+
+  private async readProcRamPercent(): Promise<number> {
+    try {
+      const raw = await readFile("/proc/meminfo", "utf8");
+      const parsed = parseMemInfoUsagePercent(raw);
+      if (parsed != null) return parsed;
+    } catch {
+      // fall through to portable fallback
+    }
+    return computeRamPercentFromTotals(os.totalmem(), os.freemem()) ?? 0;
+  }
+
+  private async readGpuPercent(): Promise<number | undefined> {
+    const raw = await this.tryCommand("nvidia-smi", ["--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"]);
+    if (!raw) return undefined;
+    return parseNvidiaSmiUtilizationPercent(raw);
+  }
+
+  private async collectSupplyPool(): Promise<HpcSupplyPool | undefined> {
+    const hasSinfo = await this.hasCommand("sinfo");
+    const hasScontrol = await this.hasCommand("scontrol");
+    if (!hasSinfo || !hasScontrol) return undefined;
+
+    const sinfoArgs = ["-h", "-N", "-t", "idle,mix"];
+    if (this.hpcPrefs.partition) sinfoArgs.push("-p", this.hpcPrefs.partition);
+    sinfoArgs.push("-o", "%N|%T");
+    const { stdout } = await execFileAsync("sinfo", sinfoArgs, { env: { ...process.env, LC_ALL: "C" } });
+    const states = parseSinfoNodeStates(String(stdout ?? ""));
+    if (states.length === 0) return undefined;
+
+    const availabilityByNode = await this.collectNodeAvailability(states.map((row) => row.nodeName));
+    return summarizeSupplyPool({
+      updatedAt: new Date().toISOString(),
+      states,
+      availabilityByNode,
+    });
+  }
+
+  private async collectNodeAvailability(nodeNames: string[]): Promise<Map<string, SlurmNodeAvailability>> {
+    if (nodeNames.length === 0) return new Map();
+    const uniq = Array.from(new Set(nodeNames.filter(Boolean)));
+    if (uniq.length === 0) return new Map();
+    const { stdout } = await execFileAsync("scontrol", ["show", "node", ...uniq, "-o"], { env: { ...process.env, LC_ALL: "C" } });
+    const lines = String(stdout ?? "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const map = new Map<string, SlurmNodeAvailability>();
+    for (const line of lines) {
+      const parsed = parseScontrolNodeAvailability(line);
+      if (!parsed) continue;
+      map.set(parsed.nodeName, parsed);
+    }
+    return map;
+  }
+
+  private async collectHpcNodeUsages(opts: {
+    user: string;
+    runningJobIds: string[];
+    local: LocalHostUsage;
+  }): Promise<HpcNodeUsage[]> {
+    const nowIso = new Date().toISOString();
+    const login: HpcNodeUsage = {
+      nodeName: os.hostname(),
+      role: "login",
+      source: "job",
+      cpuPercent: opts.local.cpuPercent,
+      ramPercent: opts.local.ramPercent,
+      ...(opts.local.gpuPercent == null ? {} : { gpuPercent: opts.local.gpuPercent }),
+      updatedAt: nowIso,
+    };
+
+    if (opts.runningJobIds.length === 0) return [login];
+
+    const runningNodeMap = await this.collectRunningJobNodeMap(opts.user);
+    if (runningNodeMap.size === 0) return [login];
+    const nodeNames = Array.from(runningNodeMap.keys());
+    const availabilityByNode = await this.collectNodeAvailability(nodeNames).catch(() => new Map<string, SlurmNodeAvailability>());
+    const sstatByNode = await this.collectComputeNodeUsagesWithSstat({
+      jobIds: opts.runningJobIds,
+      availabilityByNode,
+      runningNodeMap,
+    }).catch(() => new Map<string, { cpuPercent: number; ramPercent: number; gpuPercent?: number }>());
+
+    const compute: HpcNodeUsage[] = [];
+    for (const nodeName of nodeNames.sort((a, b) => a.localeCompare(b))) {
+      const jobIds = Array.from(runningNodeMap.get(nodeName) ?? []).sort();
+      const fromSstat = sstatByNode.get(nodeName);
+      if (fromSstat) {
+        compute.push({
+          nodeName,
+          role: "compute",
+          source: "job",
+          jobIds,
+          cpuPercent: fromSstat.cpuPercent,
+          ramPercent: fromSstat.ramPercent,
+          ...(fromSstat.gpuPercent == null ? {} : { gpuPercent: fromSstat.gpuPercent }),
+          updatedAt: nowIso,
+        });
+        continue;
+      }
+
+      const fallback = availabilityByNode.get(nodeName);
+      const cpuPercent = fallback?.cpuTotal && fallback.cpuAlloc != null
+        ? normalizePercent((fallback.cpuAlloc / Math.max(1, fallback.cpuTotal)) * 100)
+        : 0;
+      const ramPercent = fallback?.realMemMB && fallback.allocMemMB != null
+        ? normalizePercent((fallback.allocMemMB / Math.max(1, fallback.realMemMB)) * 100)
+        : 0;
+      const gpuPercent = fallback?.gpuTotal && fallback.gpuUsed != null && fallback.gpuTotal > 0
+        ? normalizePercent((fallback.gpuUsed / fallback.gpuTotal) * 100)
+        : undefined;
+
+      compute.push({
+        nodeName,
+        role: "compute",
+        source: "node_total_fallback",
+        jobIds,
+        cpuPercent,
+        ramPercent,
+        ...(gpuPercent == null ? {} : { gpuPercent }),
+        updatedAt: nowIso,
+      });
+    }
+
+    return [login, ...compute];
+  }
+
+  private async collectComputeNodeUsagesWithSstat(opts: {
+    jobIds: string[];
+    availabilityByNode: Map<string, SlurmNodeAvailability>;
+    runningNodeMap: Map<string, Set<string>>;
+  }): Promise<Map<string, { cpuPercent: number; ramPercent: number; gpuPercent?: number }>> {
+    const hasSstat = await this.hasCommand("sstat");
+    if (!hasSstat || opts.jobIds.length === 0) return new Map();
+
+    const byNode = new Map<string, { cpu: number[]; ram: number[]; gpu: number[] }>();
+    for (const jobId of opts.jobIds) {
+      const out = await this.tryCommand("sstat", [
+        "-P",
+        "-n",
+        "-a",
+        "-j",
+        jobId,
+        "--format=JobIDRaw,NodeList,Elapsed,AveCPU,AveRSS,TRESUsageInAve",
+      ]);
+      if (!out) continue;
+
+      const rows = parseSstatRows(out);
+      for (const row of rows) {
+        const nodeExpr = row.nodeList.trim();
+        if (!nodeExpr || nodeExpr === "N/A" || nodeExpr === "(null)") continue;
+        const nodes = await this.expandSlurmNodeList(nodeExpr);
+        if (nodes.length === 0) continue;
+        const elapsedSeconds = parseSlurmDurationSeconds(row.elapsed);
+        const aveCpuSeconds = parseSlurmDurationSeconds(row.aveCpu);
+        const cpuPercent = elapsedSeconds > 0 ? normalizePercent((aveCpuSeconds / elapsedSeconds) * 100) : undefined;
+        const aveRssMB = parseSlurmSizeToMB(row.aveRss);
+        const gpuPercent = parseTresGpuUtilPercent(row.tresUsageInAve);
+
+        for (const nodeName of nodes) {
+          if (!opts.runningNodeMap.has(nodeName)) continue;
+          const bucket = byNode.get(nodeName) ?? { cpu: [], ram: [], gpu: [] };
+          if (cpuPercent != null) bucket.cpu.push(cpuPercent);
+          if (aveRssMB != null) {
+            const nodeAvail = opts.availabilityByNode.get(nodeName);
+            if (nodeAvail?.realMemMB && nodeAvail.realMemMB > 0) {
+              bucket.ram.push(normalizePercent((aveRssMB / nodeAvail.realMemMB) * 100));
+            }
+          }
+          if (gpuPercent != null) bucket.gpu.push(gpuPercent);
+          byNode.set(nodeName, bucket);
+        }
+      }
+    }
+
+    const out = new Map<string, { cpuPercent: number; ramPercent: number; gpuPercent?: number }>();
+    for (const [nodeName, bucket] of byNode.entries()) {
+      if (bucket.cpu.length === 0 && bucket.ram.length === 0 && bucket.gpu.length === 0) continue;
+      const cpuPercent = bucket.cpu.length > 0 ? average(bucket.cpu) : 0;
+      const ramPercent = bucket.ram.length > 0 ? average(bucket.ram) : 0;
+      const gpuPercent = bucket.gpu.length > 0 ? average(bucket.gpu) : undefined;
+      out.set(nodeName, {
+        cpuPercent,
+        ramPercent,
+        ...(gpuPercent == null ? {} : { gpuPercent }),
+      });
+    }
+
+    return out;
+  }
+
+  private async collectRunningJobNodeMap(user: string): Promise<Map<string, Set<string>>> {
+    const { stdout } = await execFileAsync("squeue", ["-h", "-u", user, "-t", "R", ...this.slurmFilterArgs(), "-o", "%A|%N"]);
+    const lines = String(stdout ?? "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const nodeMap = new Map<string, Set<string>>();
+    for (const line of lines) {
+      const [jobIdRaw, nodeExprRaw] = line.split("|", 2);
+      const jobId = String(jobIdRaw ?? "").trim();
+      const nodeExpr = String(nodeExprRaw ?? "").trim();
+      if (!jobId || !nodeExpr || nodeExpr === "(null)" || nodeExpr === "N/A") continue;
+      const nodes = await this.expandSlurmNodeList(nodeExpr);
+      for (const nodeName of nodes) {
+        const set = nodeMap.get(nodeName) ?? new Set<string>();
+        set.add(jobId);
+        nodeMap.set(nodeName, set);
+      }
+    }
+    return nodeMap;
+  }
+
+  private async expandSlurmNodeList(nodeExpr: string): Promise<string[]> {
+    const raw = String(nodeExpr ?? "").trim();
+    if (!raw) return [];
+    const out = await this.tryCommand("scontrol", ["show", "hostnames", raw]);
+    if (!out) return [raw];
+    const nodes = out
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    return nodes.length > 0 ? nodes : [raw];
   }
 
   private async getSlurmUser(): Promise<string> {
@@ -1788,6 +2118,224 @@ function firstNonEmptyLine(text: string | null): string | null {
   return null;
 }
 
+export function parseProcStatSample(raw: string): ProcCpuSample | null {
+  const first = String(raw ?? "")
+    .split(/\r?\n/, 1)[0]
+    ?.trim();
+  if (!first || !first.startsWith("cpu ")) return null;
+  const parts = first
+    .split(/\s+/)
+    .slice(1)
+    .map((v) => Number(v))
+    .filter((v) => Number.isFinite(v) && v >= 0);
+  if (parts.length < 4) return null;
+  const total = parts.reduce((acc, n) => acc + n, 0);
+  const idle = (parts[3] ?? 0) + (parts[4] ?? 0);
+  if (!Number.isFinite(total) || total <= 0) return null;
+  return { idle, total };
+}
+
+export function sampleCpuFromOsCpus(cpus: Array<{ times?: Record<string, unknown> }>): ProcCpuSample | null {
+  if (!Array.isArray(cpus) || cpus.length === 0) return null;
+  let idle = 0;
+  let total = 0;
+  for (const cpu of cpus) {
+    const times = cpu?.times;
+    if (!times || typeof times !== "object") continue;
+    for (const value of Object.values(times)) {
+      const n = Number(value);
+      if (Number.isFinite(n) && n >= 0) total += n;
+    }
+    const idleTicks = Number(times.idle);
+    if (Number.isFinite(idleTicks) && idleTicks >= 0) idle += idleTicks;
+  }
+  if (!Number.isFinite(total) || total <= 0) return null;
+  return {
+    idle: Math.max(0, idle),
+    total,
+  };
+}
+
+export function computeCpuPercentFromSamples(prev: ProcCpuSample, next: ProcCpuSample): number {
+  const deltaTotal = next.total - prev.total;
+  const deltaIdle = next.idle - prev.idle;
+  if (!Number.isFinite(deltaTotal) || deltaTotal <= 0) return 0;
+  const busy = Math.max(0, deltaTotal - Math.max(0, deltaIdle));
+  return normalizePercent((busy / deltaTotal) * 100);
+}
+
+export function computeRamPercentFromTotals(totalBytes: number, freeBytes: number): number | null {
+  if (!Number.isFinite(totalBytes) || totalBytes <= 0) return null;
+  if (!Number.isFinite(freeBytes)) return null;
+  const usedBytes = Math.max(0, totalBytes - freeBytes);
+  return normalizePercent((usedBytes / totalBytes) * 100);
+}
+
+export function parseMemInfoUsagePercent(raw: string): number | null {
+  let totalKB: number | null = null;
+  let availableKB: number | null = null;
+  for (const line of String(raw ?? "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("MemTotal:")) {
+      const n = parseIntToken(trimmed);
+      if (n != null) totalKB = n;
+      continue;
+    }
+    if (trimmed.startsWith("MemAvailable:")) {
+      const n = parseIntToken(trimmed);
+      if (n != null) availableKB = n;
+      continue;
+    }
+  }
+  if (totalKB == null || availableKB == null || totalKB <= 0) return null;
+  const used = Math.max(0, totalKB - availableKB);
+  return normalizePercent((used / totalKB) * 100);
+}
+
+export function parseNvidiaSmiUtilizationPercent(raw: string): number | undefined {
+  const values = String(raw ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => Number(line))
+    .filter((n) => Number.isFinite(n) && n >= 0 && n <= 100);
+  if (values.length === 0) return undefined;
+  return average(values);
+}
+
+export function parseSinfoNodeStates(raw: string): SlurmNodeState[] {
+  const out: SlurmNodeState[] = [];
+  for (const line of String(raw ?? "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const [nodeNameRaw, stateRaw] = trimmed.split("|", 2);
+    const nodeName = String(nodeNameRaw ?? "").trim();
+    const stateToken = String(stateRaw ?? "").trim().toUpperCase();
+    if (!nodeName) continue;
+    if (stateToken.startsWith("IDLE")) {
+      out.push({ nodeName, state: "IDLE" });
+      continue;
+    }
+    if (stateToken.startsWith("MIX")) {
+      out.push({ nodeName, state: "MIXED" });
+      continue;
+    }
+  }
+  return out;
+}
+
+export function parseScontrolNodeAvailability(line: string): SlurmNodeAvailability | null {
+  const tokens = String(line ?? "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (tokens.length === 0) return null;
+
+  const values = new Map<string, string>();
+  for (const token of tokens) {
+    const idx = token.indexOf("=");
+    if (idx === -1) continue;
+    const key = token.slice(0, idx);
+    const value = token.slice(idx + 1);
+    values.set(key, value);
+  }
+
+  const nodeName = values.get("NodeName")?.trim();
+  if (!nodeName) return null;
+
+  const cpuAlloc = parseIntToken(values.get("CPUAlloc"));
+  const cpuTotal = parseIntToken(values.get("CPUTot"));
+  const allocMemMB = parseIntToken(values.get("AllocMem"));
+  const realMemMB = parseIntToken(values.get("RealMemory"));
+  const gpuTotal = parseSlurmGpuCount(values.get("Gres") ?? "");
+  const gpuUsed = parseSlurmGpuCount(values.get("GresUsed") ?? "");
+
+  return {
+    nodeName,
+    ...(cpuAlloc == null ? {} : { cpuAlloc }),
+    ...(cpuTotal == null ? {} : { cpuTotal }),
+    ...(allocMemMB == null ? {} : { allocMemMB }),
+    ...(realMemMB == null ? {} : { realMemMB }),
+    ...(gpuUsed == null ? {} : { gpuUsed }),
+    ...(gpuTotal == null ? {} : { gpuTotal }),
+  };
+}
+
+export function summarizeSupplyPool(args: {
+  updatedAt: string;
+  states: SlurmNodeState[];
+  availabilityByNode: Map<string, SlurmNodeAvailability>;
+}): HpcSupplyPool | undefined {
+  if (args.states.length === 0) return undefined;
+  let idleNodes = 0;
+  let mixedNodes = 0;
+  let availableCpu = 0;
+  let availableMemMB = 0;
+  let availableGpus = 0;
+  let hasCpu = false;
+  let hasMem = false;
+  let hasGpu = false;
+
+  for (const row of args.states) {
+    if (row.state === "IDLE") idleNodes += 1;
+    else if (row.state === "MIXED") mixedNodes += 1;
+
+    const avail = args.availabilityByNode.get(row.nodeName);
+    if (!avail) continue;
+    if (avail.cpuTotal != null && avail.cpuAlloc != null) {
+      availableCpu += Math.max(0, avail.cpuTotal - avail.cpuAlloc);
+      hasCpu = true;
+    }
+    if (avail.realMemMB != null && avail.allocMemMB != null) {
+      availableMemMB += Math.max(0, avail.realMemMB - avail.allocMemMB);
+      hasMem = true;
+    }
+    if (avail.gpuTotal != null && avail.gpuUsed != null) {
+      availableGpus += Math.max(0, avail.gpuTotal - avail.gpuUsed);
+      hasGpu = true;
+    }
+  }
+
+  return {
+    idleNodes,
+    mixedNodes,
+    totalNodes: idleNodes + mixedNodes,
+    ...(hasCpu ? { availableCpu } : {}),
+    ...(hasMem ? { availableMemMB } : {}),
+    ...(hasGpu ? { availableGpus } : {}),
+    scope: "IDLE+MIXED",
+    updatedAt: args.updatedAt,
+  };
+}
+
+type SstatRow = {
+  jobIdRaw: string;
+  nodeList: string;
+  elapsed: string;
+  aveCpu: string;
+  aveRss: string;
+  tresUsageInAve: string;
+};
+
+function parseSstatRows(raw: string): SstatRow[] {
+  const out: SstatRow[] = [];
+  for (const line of String(raw ?? "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const parts = trimmed.split("|");
+    if (parts.length < 6) continue;
+    out.push({
+      jobIdRaw: String(parts[0] ?? "").trim(),
+      nodeList: String(parts[1] ?? "").trim(),
+      elapsed: String(parts[2] ?? "").trim(),
+      aveCpu: String(parts[3] ?? "").trim(),
+      aveRss: String(parts[4] ?? "").trim(),
+      tresUsageInAve: String(parts[5] ?? "").trim(),
+    });
+  }
+  return out;
+}
+
 function isEmptyTres(t: HpcTres) {
   return t.cpu == null && t.memMB == null && t.gpus == null;
 }
@@ -1892,6 +2440,92 @@ function parseSlurmSizeToMB(value: string): number | undefined {
             ? n * 1024 * 1024 * 1024
             : n;
   return Math.floor(mb);
+}
+
+function parseIntToken(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const m = String(value).match(/-?\d+/);
+  if (!m) return undefined;
+  const n = Number.parseInt(m[0], 10);
+  if (!Number.isFinite(n)) return undefined;
+  return n;
+}
+
+function parseSlurmGpuCount(raw: string): number | undefined {
+  const text = String(raw ?? "").trim();
+  if (!text || text.toUpperCase() === "N/A" || text === "(null)") return undefined;
+  let total = 0;
+  let matched = false;
+  const regex = /gpu(?::[A-Za-z0-9_.-]+)*:(\d+)/gi;
+  for (const m of text.matchAll(regex)) {
+    const n = Number.parseInt(m[1] ?? "", 10);
+    if (Number.isFinite(n) && n >= 0) {
+      total += n;
+      matched = true;
+    }
+  }
+  if (matched) return total;
+
+  if (text === "gpu" || text.startsWith("gpu:")) return 1;
+  return undefined;
+}
+
+function parseSlurmDurationSeconds(raw: string): number {
+  const text = String(raw ?? "").trim();
+  if (!text || text.toUpperCase() === "N/A" || text === "Unknown") return 0;
+  const [dayPart, timePartRaw] = text.includes("-") ? text.split("-", 2) : [null, text];
+  const timePart = String(timePartRaw ?? "").trim();
+  const timeSegments = timePart.split(":").map((seg) => Number.parseInt(seg, 10));
+  if (timeSegments.some((seg) => !Number.isFinite(seg) || seg < 0)) return 0;
+
+  let hours = 0;
+  let minutes = 0;
+  let seconds = 0;
+  if (timeSegments.length === 3) {
+    [hours, minutes, seconds] = timeSegments;
+  } else if (timeSegments.length === 2) {
+    [minutes, seconds] = timeSegments;
+  } else if (timeSegments.length === 1) {
+    [seconds] = timeSegments;
+  } else {
+    return 0;
+  }
+
+  const days = dayPart == null ? 0 : Number.parseInt(dayPart, 10);
+  const safeDays = Number.isFinite(days) && days > 0 ? days : 0;
+  return safeDays * 86_400 + hours * 3_600 + minutes * 60 + seconds;
+}
+
+function parseTresGpuUtilPercent(raw: string): number | undefined {
+  const text = String(raw ?? "").trim();
+  if (!text || text.toUpperCase() === "N/A") return undefined;
+  const entries = text.split(",").map((part) => part.trim()).filter(Boolean);
+  const values: number[] = [];
+  for (const entry of entries) {
+    const idx = entry.indexOf("=");
+    if (idx === -1) continue;
+    const key = entry.slice(0, idx).trim().toLowerCase();
+    if (key !== "gpuutil" && key !== "gres/gpuutil") continue;
+    const n = Number(entry.slice(idx + 1).trim());
+    if (Number.isFinite(n)) values.push(normalizePercent(n));
+  }
+  if (values.length === 0) return undefined;
+  return average(values);
+}
+
+function average(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sum = values.reduce((acc, n) => acc + n, 0);
+  return roundTo2(sum / values.length);
+}
+
+function normalizePercent(raw: number): number {
+  if (!Number.isFinite(raw)) return 0;
+  return roundTo2(Math.min(100, Math.max(0, raw)));
+}
+
+function roundTo2(raw: number): number {
+  return Math.round(raw * 100) / 100;
 }
 
 function addOptional(a: number | undefined, b: number | undefined) {

@@ -108,6 +108,31 @@ type HpcStatus = {
   limit?: HpcTres;
   inUse?: HpcTres;
   available?: HpcTres;
+  requestable?: HpcTres;
+  supplyPool?: HpcSupplyPool;
+  nodes?: HpcNodeUsage[];
+  updatedAt: string;
+};
+
+type HpcSupplyPool = {
+  idleNodes: number;
+  mixedNodes: number;
+  totalNodes: number;
+  availableCpu?: number;
+  availableMemMB?: number;
+  availableGpus?: number;
+  scope: "IDLE+MIXED";
+  updatedAt: string;
+};
+
+type HpcNodeUsage = {
+  nodeName: string;
+  role: "login" | "compute";
+  source: "job" | "node_total_fallback";
+  jobIds?: string[];
+  cpuPercent: number;
+  ramPercent: number;
+  gpuPercent?: number;
   updatedAt: string;
 };
 
@@ -120,6 +145,7 @@ type ResourceSnapshot = {
   storageAvailableBytes?: number;
   cpuPercent: number;
   ramPercent: number;
+  gpuPercent?: number;
   hpc?: HpcStatus;
 };
 
@@ -3421,23 +3447,7 @@ async function handleNodeEvent(state: HubState, event: string, payload: any) {
 
   switch (event) {
     case "node.heartbeat": {
-      state.resources.computeConnected = true;
-      if (typeof payload.queueDepth === "number") state.resources.queueDepth = payload.queueDepth;
-      if (typeof payload.storageUsedPercent === "number") state.resources.storageUsedPercent = payload.storageUsedPercent;
-      if (typeof payload.storageTotalBytes === "number") {
-        state.resources.storageTotalBytes = Math.max(0, Math.floor(payload.storageTotalBytes));
-      }
-      if (typeof payload.storageUsedBytes === "number") {
-        state.resources.storageUsedBytes = Math.max(0, Math.floor(payload.storageUsedBytes));
-      }
-      if (typeof payload.storageAvailableBytes === "number") {
-        state.resources.storageAvailableBytes = Math.max(0, Math.floor(payload.storageAvailableBytes));
-      }
-      if (typeof payload.cpuPercent === "number") state.resources.cpuPercent = payload.cpuPercent;
-      if (typeof payload.ramPercent === "number") state.resources.ramPercent = payload.ramPercent;
-      if (Object.prototype.hasOwnProperty.call(payload ?? {}, "hpc")) {
-        state.resources.hpc = normalizeHpcStatus(payload?.hpc);
-      }
+      state.resources = mergeResourceSnapshotFromHeartbeat(state.resources, payload);
       const connectedNode = state.node?.ctx?.role === "node" ? state.node.ctx : null;
       if (connectedNode) {
         await upsertNodeConnectionSnapshot(state.pool, connectedNode).catch(() => {
@@ -4040,6 +4050,38 @@ function normalizeIndexStatus(value: unknown): "processing" | "indexed" | "faile
   return null;
 }
 
+export function mergeResourceSnapshotFromHeartbeat(previous: ResourceSnapshot, payload: any): ResourceSnapshot {
+  const next: ResourceSnapshot = { ...previous, computeConnected: true };
+  if (typeof payload?.queueDepth === "number" && Number.isFinite(payload.queueDepth)) {
+    next.queueDepth = Math.max(0, Math.floor(payload.queueDepth));
+  }
+  if (typeof payload?.storageUsedPercent === "number" && Number.isFinite(payload.storageUsedPercent)) {
+    next.storageUsedPercent = payload.storageUsedPercent;
+  }
+  if (typeof payload?.storageTotalBytes === "number" && Number.isFinite(payload.storageTotalBytes)) {
+    next.storageTotalBytes = Math.max(0, Math.floor(payload.storageTotalBytes));
+  }
+  if (typeof payload?.storageUsedBytes === "number" && Number.isFinite(payload.storageUsedBytes)) {
+    next.storageUsedBytes = Math.max(0, Math.floor(payload.storageUsedBytes));
+  }
+  if (typeof payload?.storageAvailableBytes === "number" && Number.isFinite(payload.storageAvailableBytes)) {
+    next.storageAvailableBytes = Math.max(0, Math.floor(payload.storageAvailableBytes));
+  }
+  if (typeof payload?.cpuPercent === "number" && Number.isFinite(payload.cpuPercent)) {
+    next.cpuPercent = payload.cpuPercent;
+  }
+  if (typeof payload?.ramPercent === "number" && Number.isFinite(payload.ramPercent)) {
+    next.ramPercent = payload.ramPercent;
+  }
+  if (typeof payload?.gpuPercent === "number" && Number.isFinite(payload.gpuPercent)) {
+    next.gpuPercent = payload.gpuPercent;
+  }
+  if (Object.prototype.hasOwnProperty.call(payload ?? {}, "hpc")) {
+    next.hpc = normalizeHpcStatus(payload?.hpc);
+  }
+  return next;
+}
+
 function normalizeHpcStatus(v: unknown): HpcStatus | undefined {
   if (!v || typeof v !== "object") return undefined;
   const obj = v as any;
@@ -4053,6 +4095,9 @@ function normalizeHpcStatus(v: unknown): HpcStatus | undefined {
     limit: normalizeHpcTres(obj.limit),
     inUse: normalizeHpcTres(obj.inUse),
     available: normalizeHpcTres(obj.available),
+    requestable: normalizeHpcTres(obj.requestable),
+    supplyPool: normalizeHpcSupplyPool(obj.supplyPool),
+    nodes: normalizeHpcNodes(obj.nodes),
     updatedAt: typeof obj.updatedAt === "string" ? obj.updatedAt : new Date().toISOString(),
   };
 }
@@ -4066,4 +4111,70 @@ function normalizeHpcTres(v: unknown): HpcTres | undefined {
   if (typeof obj.gpus === "number" && Number.isFinite(obj.gpus)) out.gpus = Math.max(0, Math.floor(obj.gpus));
   if (out.cpu == null && out.memMB == null && out.gpus == null) return undefined;
   return out;
+}
+
+function normalizeHpcSupplyPool(v: unknown): HpcSupplyPool | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const obj = v as any;
+  const idleNodes = normalizeOptionalNonNegativeInt(obj.idleNodes);
+  const mixedNodes = normalizeOptionalNonNegativeInt(obj.mixedNodes);
+  const totalNodes = normalizeOptionalNonNegativeInt(obj.totalNodes);
+  if (idleNodes == null || mixedNodes == null || totalNodes == null) return undefined;
+  const scope = String(obj.scope ?? "").trim().toUpperCase();
+  if (scope !== "IDLE+MIXED") return undefined;
+  const out: HpcSupplyPool = {
+    idleNodes,
+    mixedNodes,
+    totalNodes,
+    scope: "IDLE+MIXED",
+    updatedAt: typeof obj.updatedAt === "string" ? obj.updatedAt : new Date().toISOString(),
+  };
+  const availableCpu = normalizeOptionalNonNegativeInt(obj.availableCpu);
+  const availableMemMB = normalizeOptionalNonNegativeInt(obj.availableMemMB);
+  const availableGpus = normalizeOptionalNonNegativeInt(obj.availableGpus);
+  if (availableCpu != null) out.availableCpu = availableCpu;
+  if (availableMemMB != null) out.availableMemMB = availableMemMB;
+  if (availableGpus != null) out.availableGpus = availableGpus;
+  return out;
+}
+
+function normalizeHpcNodes(v: unknown): HpcNodeUsage[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const rows: HpcNodeUsage[] = [];
+  for (const item of v) {
+    if (!item || typeof item !== "object") continue;
+    const obj = item as any;
+    const nodeName = typeof obj.nodeName === "string" ? obj.nodeName.trim() : "";
+    const roleRaw = typeof obj.role === "string" ? obj.role.trim().toLowerCase() : "";
+    const sourceRaw = typeof obj.source === "string" ? obj.source.trim().toLowerCase() : "";
+    if (!nodeName) continue;
+    if (roleRaw !== "login" && roleRaw !== "compute") continue;
+    if (sourceRaw !== "job" && sourceRaw !== "node_total_fallback") continue;
+    if (typeof obj.cpuPercent !== "number" || !Number.isFinite(obj.cpuPercent)) continue;
+    if (typeof obj.ramPercent !== "number" || !Number.isFinite(obj.ramPercent)) continue;
+    const row: HpcNodeUsage = {
+      nodeName,
+      role: roleRaw === "login" ? "login" : "compute",
+      source: sourceRaw === "job" ? "job" : "node_total_fallback",
+      cpuPercent: obj.cpuPercent,
+      ramPercent: obj.ramPercent,
+      updatedAt: typeof obj.updatedAt === "string" ? obj.updatedAt : new Date().toISOString(),
+    };
+    if (Array.isArray(obj.jobIds)) {
+      const ids = obj.jobIds
+        .map((jobId: unknown) => String(jobId ?? "").trim())
+        .filter(Boolean);
+      if (ids.length > 0) row.jobIds = ids;
+    }
+    if (typeof obj.gpuPercent === "number" && Number.isFinite(obj.gpuPercent)) {
+      row.gpuPercent = obj.gpuPercent;
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+function normalizeOptionalNonNegativeInt(v: unknown): number | undefined {
+  if (typeof v !== "number" || !Number.isFinite(v)) return undefined;
+  return Math.max(0, Math.floor(v));
 }
