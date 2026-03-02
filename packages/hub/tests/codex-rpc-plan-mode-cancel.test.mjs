@@ -79,7 +79,7 @@ test("turn/steer cancels pending implement-confirmation prompts for the same ses
     id: "req_init",
     method: "initialize",
     params: {
-      clientInfo: { name: "LabOS", version: "0.1.0" },
+      clientInfo: { name: "Epoch", version: "0.1.0" },
       capabilities: {},
     },
   });

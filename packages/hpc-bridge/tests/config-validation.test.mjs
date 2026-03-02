@@ -16,5 +16,5 @@ test("validateHubUrl rejects unsupported schemes", () => {
 test("validateWorkspaceRoot enforces absolute path", () => {
   assert.match(validateWorkspaceRoot(""), /required/i);
   assert.match(validateWorkspaceRoot("relative/path"), /absolute/i);
-  assert.equal(validateWorkspaceRoot("/tmp/labos"), null);
+  assert.equal(validateWorkspaceRoot("/tmp/epoch"), null);
 });

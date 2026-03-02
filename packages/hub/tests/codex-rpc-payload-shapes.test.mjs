@@ -90,9 +90,9 @@ test("command and file approval request/response payload shapes", () => {
       itemId: "item_cmd_1",
       reason: "Needs network access",
       command: "pnpm test",
-      cwd: "/Users/chan/Documents/GitHub/LabOS",
+      cwd: "/Users/chan/Documents/GitHub/Epoch",
       commandActions: [{ type: "unknown", command: "pnpm test" }],
-      proposedExecpolicyAmendment: ["allow command pnpm test in /Users/chan/Documents/GitHub/LabOS"],
+      proposedExecpolicyAmendment: ["allow command pnpm test in /Users/chan/Documents/GitHub/Epoch"],
     }),
     {
       method: "item/commandExecution/requestApproval",
@@ -103,9 +103,9 @@ test("command and file approval request/response payload shapes", () => {
         itemId: "item_cmd_1",
         reason: "Needs network access",
         command: "pnpm test",
-        cwd: "/Users/chan/Documents/GitHub/LabOS",
+        cwd: "/Users/chan/Documents/GitHub/Epoch",
         commandActions: [{ type: "unknown", command: "pnpm test" }],
-        proposedExecpolicyAmendment: ["allow command pnpm test in /Users/chan/Documents/GitHub/LabOS"],
+        proposedExecpolicyAmendment: ["allow command pnpm test in /Users/chan/Documents/GitHub/Epoch"],
       },
     }
   );
@@ -124,7 +124,7 @@ test("command and file approval request/response payload shapes", () => {
       turnId: "turn_456",
       itemId: "item_patch_1",
       reason: "Apply patch to tracked files",
-      grantRoot: "/Users/chan/Documents/GitHub/LabOS",
+      grantRoot: "/Users/chan/Documents/GitHub/Epoch",
     }),
     {
       method: "item/fileChange/requestApproval",
@@ -134,7 +134,7 @@ test("command and file approval request/response payload shapes", () => {
         turnId: "turn_456",
         itemId: "item_patch_1",
         reason: "Apply patch to tracked files",
-        grantRoot: "/Users/chan/Documents/GitHub/LabOS",
+        grantRoot: "/Users/chan/Documents/GitHub/Epoch",
       },
     }
   );

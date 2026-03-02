@@ -1,4 +1,4 @@
--- LabOS Hub v0.2: Codex thread/turn/item persistence
+-- Epoch Hub v0.2: Codex thread/turn/item persistence
 
 CREATE TABLE IF NOT EXISTS threads (
   id TEXT PRIMARY KEY,

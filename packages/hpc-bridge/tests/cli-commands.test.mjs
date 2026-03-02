@@ -28,7 +28,7 @@ test("hpc bridge start missing config points users to config command", async () 
   } catch (err) {
     failed = true;
     const stderr = String(err.stderr ?? "");
-    assert.match(stderr, /Config missing\. Run: labos-hpc-bridge config/);
+    assert.match(stderr, /Config missing\. Run: epoch-bridge config/);
   }
   assert.equal(failed, true);
 });

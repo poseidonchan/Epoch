@@ -7,13 +7,13 @@ export async function restartCommand(_argv: string[]) {
   const stateDir = getStateDir();
   const config = await loadOrCreateHubConfig({ stateDir, allowCreate: false });
   if (!config) {
-    throw new Error("Hub config missing. Run: labos-hub init");
+    throw new Error("Hub config missing. Run: epoch-hub init");
   }
 
   await stopHubDaemon(stateDir).catch(() => {});
 
-  const port = Number(process.env.LABOS_PORT ?? "8787");
-  const host = process.env.LABOS_HOST ?? "0.0.0.0";
+  const port = Number(process.env.EPOCH_PORT ?? "8787");
+  const host = process.env.EPOCH_HOST ?? "0.0.0.0";
 
   const info = await startHubDaemon({
     stateDir,
@@ -25,6 +25,5 @@ export async function restartCommand(_argv: string[]) {
     cwd: process.cwd(),
   });
 
-  console.log(`LabOS Hub restarted (pid ${info.pid}). Logs: ${info.logPath}`);
+  console.log(`Epoch Hub restarted (pid ${info.pid}). Logs: ${info.logPath}`);
 }
-

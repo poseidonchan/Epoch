@@ -1,196 +1,349 @@
-# LabOS
+<p align="center">
+  <!-- TODO: Add Epoch logo at docs/images/epoch-logo.png -->
+  <!-- <img src="docs/images/epoch-logo.png" alt="Epoch" width="120"> -->
+  <h1 align="center">Epoch</h1>
+  <p align="center">
+    <strong>An AI programming workbench for computational science &mdash; from your iPhone to your HPC cluster.</strong>
+  </p>
+</p>
 
-LabOS 是一个 iPhone 优先的 AI 编程工作台，核心由三部分组成：
+<p align="center">
+  <a href="#license"><img src="https://img.shields.io/badge/license-GPLv3-blue.svg" alt="License: GPL v3"></a>
+  <img src="https://img.shields.io/badge/iOS-17%2B-000000?logo=apple" alt="iOS 17+">
+  <img src="https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white" alt="Node.js 22+">
+  <img src="https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white" alt="Swift 6">
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey" alt="Platform: macOS | Linux">
+</p>
 
-- `LabOSApp`（SwiftUI iOS 客户端）
-- `@labos/hub`（Node.js Hub 守护进程，Fastify + WebSocket + SQLite）
-- `@labos/hpc-bridge`（可选，连接 HPC/Slurm 与远端工作区）
+---
 
-当前主执行链路是 **Codex RPC over `/codex`**；同时保留 legacy `/ws` 网关能力用于兼容与桥接。
+Epoch is an open-source, iPhone-first workbench that pairs an AI coding agent with your research infrastructure. Organize projects, chat with an AI that writes and runs code, upload papers and data for context, approve execution plans before they run, submit Slurm jobs, and browse results &mdash; all from your phone.
 
-## 架构总览
+<!-- TODO: Add hero screenshot (e.g., a composite showing chat + results views)
+<p align="center">
+  <img src="docs/images/screenshot-hero.png" alt="Epoch in action" width="800">
+</p>
+-->
 
-```text
-iOS App (LabOSApp)
-  ├─ UI + AppStore 状态管理
-  ├─ GatewayClient (legacy /ws)
-  └─ CodexRPCClient (/codex, JSON-RPC)
-            │
-            ▼
-LabOS Hub (@labos/hub)
-  ├─ HTTP API + WS endpoints (/ws, /codex)
-  ├─ Codex RPC router/handlers (thread/turn/labos/model/skills)
-  ├─ AI model/provider resolution
-  ├─ Project file indexing (extract/chunk/embed/summarize)
-  ├─ SQLite (migrations in packages/hub/migrations)
-  └─ JSONL transcripts + project storage (~/.labos/projects/...)
-            │
-            ▼
-HPC Bridge (@labos/hpc-bridge, optional)
-  ├─ outbound WS to Hub
-  ├─ Slurm/fs/runtime tools
-  └─ command/runtime safety policy (default/full)
+## Why Epoch?
+
+Computational science involves long feedback loops: write code, submit a job, wait, check results, iterate. Epoch shortens that loop by putting an AI agent and your cluster in your pocket.
+
+- **AI agent that codes for you** &mdash; Describe what you need; the agent writes, runs, and iterates on code with your approval at every step.
+- **HPC from your phone** &mdash; Submit and monitor Slurm jobs, browse workspace files, and view logs without SSHing into a head node.
+- **Human-in-the-loop** &mdash; Every plan, command execution, and file change requires your explicit approval before it runs. You stay in control.
+- **Rich context** &mdash; Upload papers (PDF with OCR), datasets, and code files. The agent uses them as context for better, grounded responses.
+- **Mobile-native experience** &mdash; Voice input, streaming Markdown, syntax-highlighted code, Jupyter notebook preview, and diff views &mdash; designed for iPhone.
+
+## Architecture
+
+```
+iPhone App (SwiftUI)              Hub (Node.js)                HPC Bridge (optional)
++-----------------------+    +------------------------+    +-----------------------+
+|                       |    |                        |    |                       |
+|  Projects & Sessions  +--->+  Fastify HTTP + WS     +--->+  Outbound WS to Hub  |
+|  AI Chat Interface    |REST|  AI Agent Runtime      |WS  |  Slurm Integration   |
+|  Voice Input          |    |  SQLite + JSONL Store   |    |  Filesystem Access   |
+|  Artifact Browser     +--->+  File Indexing (PDF/OCR)|    |  Job Lifecycle Mgmt  |
+|  Plan Approval        |WS  |  QR Pairing            |    |  Sandbox Policies    |
+|                       |    |                        |    |                       |
++-----------------------+    +------------------------+    +-----------------------+
 ```
 
-## 仓库结构
+| Component | What it does |
+|-----------|-------------|
+| **iPhone App** | SwiftUI client for chat, project management, result browsing, and approvals. Connects to the Hub over WebSocket and REST. |
+| **Hub** | Node.js daemon that orchestrates the AI agent, stores state (SQLite + append-only JSONL transcripts), indexes uploaded files, and serves the API. Runs on your Mac or a server. |
+| **HPC Bridge** | Optional Node.js daemon that runs on (or near) your cluster. Connects outbound to the Hub and provides Slurm job submission, filesystem access, and runtime execution. Falls back to simulation mode if Slurm is not installed. |
 
-- `Sources/LabOSApp`: iOS SwiftUI 应用与页面
-- `Sources/LabOSCore`: 应用核心状态、模型、网关/RPC 客户端、服务层
-- `Tests/LabOSCoreTests`, `Tests/LabOSAppTests`: Swift 单元测试
-- `packages/hub`: Hub 守护进程与 Codex RPC 实现
-- `packages/hpc-bridge`: HPC Bridge 守护进程
-- `packages/protocol`: 网关协议（TypeBox + schema 导出）
-- `packages/codex-spec`: codex app-server 协议 schema 产物与校验
-- `tools/codegen-swift`: 从协议 schema 生成 Swift 模型
-- `tools/ios/rebuild_reinstall_labos.sh`: 本地 iOS 重装/校验脚本
-- `project.yml`: XcodeGen 项目源（`LabOS.xcodeproj` 由其生成）
+## Prerequisites
 
-## 运行要求
+| Requirement | Version | Notes |
+|-------------|---------|-------|
+| **macOS** | 12+ | For building the iOS app (Xcode 15+) |
+| **Node.js** | 22+ | Hub and HPC Bridge runtime |
+| **pnpm** | 10+ | Use `corepack enable` to activate |
+| **iOS device or simulator** | iOS 17+ | iPhone only |
+| **Slurm** *(optional)* | Any | Only needed for HPC Bridge cluster integration |
 
-- macOS + Xcode（iOS 17+ 目标）
-- Node.js >= 22
-- pnpm（推荐 `corepack enable`）
-- SQLite（Hub 内嵌，无需单独服务）
+## Quick Start
 
-## 快速开始
-
-### 1) 安装依赖
+### 1. Clone and install
 
 ```bash
+git clone https://github.com/TODO/Epoch.git
+cd Epoch
 corepack enable
-pnpm -w install
+pnpm install
+pnpm -w build
 ```
 
-### 2) 启动 Hub
+### 2. Initialize the Hub
 
 ```bash
-pnpm build:hub
 node packages/hub/dist/cli.js init
-node packages/hub/dist/cli.js start
-node packages/hub/dist/cli.js status
-node packages/hub/dist/cli.js stop
 ```
 
-说明：
+The interactive wizard will:
+- Create the state directory (`~/.epoch/`)
+- Run database migrations (embedded SQLite)
+- Generate a shared authentication token
+- Print a **QR code** for pairing with the iPhone app
 
-- `labos-hub <init|config|start|restart|stop|status|doctor>`
-- `init/config` 在 TTY 下会进入向导式配置；非 TTY 模式保持脚本友好（不阻塞交互）。
-- `status` 用于查看 Hub 配置与守护进程状态；`doctor` 用于更深入诊断；`stop` 会安全停止后台 Hub 进程。
-- `init` 会创建 `~/.labos/config.json`，执行 migration，并打印共享 token/QR pairing 信息。
-- `config` 会配置 Codex backend 默认值与 OpenAI key（用于文件索引/embedding/OCR 等能力）。
-- 默认监听：
-  - HTTP: `http://0.0.0.0:8787`
-  - WS legacy: `ws://0.0.0.0:8787/ws`
-  - WS codex: `ws://0.0.0.0:8787/codex`
+Save the token &mdash; you'll need it to connect the app and the HPC Bridge.
 
-常用环境变量：
+<details>
+<summary>Example output</summary>
 
-- `LABOS_HOST`, `LABOS_PORT`, `LABOS_STATE_DIR`, `LABOS_DB_PATH`
-- `LABOS_REPAIR_ON_START=0` 可关闭 JSONL→SQLite 启动修复
-- `LABOS_PDF_OCR_MODEL` 可指定 PDF OCR 模型（默认 `gpt-5.2`）
+```
+================================
+Epoch Hub Initialization
+Create state/config, run migrations, and print pairing QR
+================================
+[1/4] OK Create or load Hub state directory
+[2/4] OK Database migrations
+[3/4] OK Hub config + token ready
+State dir: /Users/you/.epoch
+DB: /Users/you/.epoch/epoch.sqlite
+Server ID: 8f3cbf9f-4a30-429c-9e17-52cdf27d9a46
+Shared token (store this): 6-w2aCRIc2eWecJ-NH55Kxr_...
 
-### 3) （可选）启动 HPC Bridge
+[4/4] OK Pairing QR generated
+Scan this in Epoch iPhone app Settings > Gateway > Scan Hub QR
+< QR code renders here >
+```
+
+</details>
+
+### 3. Configure the Hub
 
 ```bash
-pnpm build:hpc-bridge
-node packages/hpc-bridge/dist/cli.js init
-node packages/hpc-bridge/dist/cli.js config --hub ws://127.0.0.1:8787/ws --token <TOKEN> --workspace-root /tmp/labos
-node packages/hpc-bridge/dist/cli.js doctor
-node packages/hpc-bridge/dist/cli.js start
-node packages/hpc-bridge/dist/cli.js status
-node packages/hpc-bridge/dist/cli.js restart
-node packages/hpc-bridge/dist/cli.js stop
+node packages/hub/dist/cli.js config
 ```
 
-说明：
+The config wizard sets up:
+- **AI backend** defaults (provider and model)
+- **OpenAI API key** *(optional)* for file indexing, PDF OCR, and voice transcription
 
-- `labos-hpc-bridge <init|config|pair|start|restart|stop|status|doctor>`
-- `pair` 保留为兼容别名；`pair --hub ... --token ... --workspace-root ...` 旧脚本仍可直接使用。
-- `start` 默认后台守护进程模式，`start --foreground` 可用于调试。
-- `init/config` 在 TTY 下会进入向导式配置；非 TTY 模式可通过 flags 批处理。
-- `runtime policy` 默认是 **open**：仅当请求里提供 `policy` override 时才会启用并发/资源上限。
-- 配置写入 `~/.labos-hpc-bridge/config.json`，PID/log 位于同目录下 `bridge.pid` / `bridge.log`。
-- 若宿主机缺少 `sbatch/squeue/sacct/scancel`，相关能力会降级/受限，但服务可启动。
+### 4. Start the Hub
 
-### 4) 运行 iOS App
+```bash
+node packages/hub/dist/cli.js start
+```
 
-1. 打开 `LabOS.xcodeproj`
-2. 选择 scheme `LabOSApp`
-3. 选择模拟器并运行（`Cmd+R`）
-4. 在 App 中进入 `Settings -> Gateway` 配置 WS URL 与 token
+Verify it's running:
 
-建议：
+```bash
+node packages/hub/dist/cli.js status
+```
 
-- 模拟器：`ws://127.0.0.1:8787/ws`
-- 真机：`ws://<你的局域网IP>:8787/ws`
+The Hub listens on `http://0.0.0.0:8787` by default (HTTP + WebSocket).
 
-## 主要能力（当前实现）
+### 5. Get the iPhone app
 
-- 项目/会话管理（创建、重命名、归档、删除）
-- Codex 线程与回合（start/read/resume/rollback/steer/interrupt）
-- 实时事件与流式展示（思考、工具调用、命令输出、文件变更）
-- 审批流（plan/exec approval + judgment 问答）
-- 会话级/项目级权限策略同步（default/full）
-- 项目文件上传与索引（文本/PDF；支持 OCR fallback）
-- 语音转写（OpenAI 音频转写模型）与图片/文件附件
-- 结果浏览（artifact 预览、diff、notebook、代码高亮）
-- 本地通知（任务完成、待用户输入）
+**Option A &mdash; TestFlight** *(recommended)*
 
-## 数据与存储
+<!-- TODO: Replace with actual TestFlight link -->
+> Join the TestFlight beta: [TestFlight link coming soon]
 
-Hub 状态目录默认在 `~/.labos`，典型结构：
+**Option B &mdash; Build from source**
 
-```text
-~/.labos/
-  config.json
-  labos.sqlite
-  hub.log
+Requires macOS with Xcode 15+ and [XcodeGen](https://github.com/yonaskolb/XcodeGen):
+
+```bash
+brew install xcodegen    # if not already installed
+xcodegen generate
+open Epoch.xcodeproj
+```
+
+In Xcode:
+1. Select the **EpochApp** scheme
+2. Choose your target (simulator or connected iPhone)
+3. Build and run (`Cmd + R`)
+
+### 6. Connect the app to your Hub
+
+Open the app and go to **Settings > Gateway**:
+
+| Method | How |
+|--------|-----|
+| **QR code** *(easiest)* | Tap **Scan Hub QR** and point your camera at the QR code from `init`. |
+| **Manual entry** | Enter the WebSocket URL and token. |
+
+**WebSocket URL reference:**
+
+| Scenario | URL |
+|----------|-----|
+| Simulator on same Mac | `ws://127.0.0.1:8787/ws` |
+| iPhone on same LAN | `ws://<your-mac-lan-ip>:8787/ws` |
+| Remote server | `wss://your-server.example.com/ws` |
+
+> The Hub prints your LAN IP during `init`. You can also find it with `ifconfig | grep "inet "`.
+
+---
+
+## HPC Bridge Setup *(optional)*
+
+The HPC Bridge connects Epoch to a Slurm-managed cluster. Run it on the cluster head node (or any machine that can reach both the Hub and the Slurm commands).
+
+### 1. Initialize and configure
+
+```bash
+node packages/hpc-bridge/dist/cli.js init
+```
+
+The wizard prompts for:
+- **Hub WebSocket URL** &mdash; e.g., `ws://your-hub-host:8787/ws`
+- **Shared token** &mdash; the token from `epoch-hub init`
+- **Workspace root** &mdash; an absolute path where project files and job artifacts will live
+- **Scheduler defaults** *(optional)* &mdash; partition, account, QOS, time limits, CPUs, memory, GPUs
+
+You can also configure non-interactively:
+
+```bash
+node packages/hpc-bridge/dist/cli.js config \
+  --hub ws://hub-host:8787/ws \
+  --token YOUR_TOKEN \
+  --workspace-root /scratch/epoch \
+  --partition gpu \
+  --time-mins 120 \
+  --cpus 4 \
+  --mem-mb 16000 \
+  --gpus 1
+```
+
+### 2. Start the Bridge
+
+```bash
+node packages/hpc-bridge/dist/cli.js start
+```
+
+The Bridge connects outbound to the Hub. If Slurm commands (`sbatch`, `squeue`, etc.) are not found, it runs in **simulation mode** &mdash; useful for development and testing.
+
+---
+
+## CLI Reference
+
+Both `epoch-hub` and `epoch-bridge` share a consistent set of lifecycle commands:
+
+| Command | Description |
+|---------|-------------|
+| `init` | First-time setup &mdash; creates config, runs migrations (Hub), generates pairing info |
+| `config` | Interactive configuration wizard (AI backend, credentials, scheduler defaults) |
+| `start` | Start the daemon in the background (use `--foreground` for debug) |
+| `stop` | Gracefully stop the daemon |
+| `restart` | Stop + start |
+| `status` | Show current config and daemon state |
+| `doctor` | Run diagnostic checks |
+
+**Hub:**
+
+```bash
+node packages/hub/dist/cli.js <command>
+```
+
+**HPC Bridge:**
+
+```bash
+node packages/hpc-bridge/dist/cli.js <command>
+```
+
+> The HPC Bridge also supports `pair` as a backward-compatible alias for `config`.
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EPOCH_STATE_DIR` | `~/.epoch` | Hub state directory (config, DB, projects) |
+| `EPOCH_HOST` | `0.0.0.0` | Hub listen address |
+| `EPOCH_PORT` | `8787` | Hub listen port |
+| `EPOCH_DB_PATH` | `$EPOCH_STATE_DIR/epoch.sqlite` | SQLite database path |
+| `EPOCH_PAIR_WS_URL` | Auto-detected LAN IP | Override the WebSocket URL in QR pairing |
+| `OPENAI_API_KEY` | *(none)* | Used for file embeddings, PDF OCR, and voice transcription |
+
+## Project Structure
+
+```
+Epoch/
+  Sources/
+    EpochApp/              SwiftUI views (Home, Session Chat, Results, Settings)
+    EpochCore/             App state, models, networking, services
+  Tests/
+    EpochCoreTests/        Swift unit tests
+    EpochE2ETests/         UI tests (Xcode simulator)
+  packages/
+    hub/                   Hub daemon (Fastify + SQLite + AI agent)
+      migrations/          SQL migration files
+    hpc-bridge/            HPC Bridge daemon (Slurm integration)
+    protocol/              Shared TypeBox schema (generates Swift models)
+    cli-utils/             Shared CLI formatting utilities
+  tools/
+    codegen-swift/         Schema-to-Swift code generator
+  project.yml             XcodeGen project definition (source of truth)
+  CLAUDE.md               Developer reference (architecture, conventions)
+```
+
+**Hub state directory** (`~/.epoch/`):
+
+```
+~/.epoch/
+  config.json              Hub configuration
+  epoch.sqlite             SQLite database
+  hub.log                  Daemon log
   projects/
     <projectId>/
-      sessions/<sessionId>.jsonl
-      uploads/
-      cache/
-      generated/
-      bootstrap/
+      sessions/
+        <sessionId>.jsonl  Canonical session transcript (append-only)
+      uploads/             User-uploaded files
+      cache/generated/     AI-generated artifacts
 ```
 
-其中 `sessions/*.jsonl` 是会话 canonical transcript，SQLite 用于索引与查询加速。
-
-## 开发命令
-
-### JS/TS
+## Development
 
 ```bash
+# Build all packages
 pnpm -w build
-pnpm build:hub
-pnpm build:hpc-bridge
+
+# Type-check all packages
 pnpm -w typecheck
+
+# Run all JS/TS tests
 pnpm -w test
-```
 
-### Swift
-
-```bash
+# Run Swift unit tests
 swift test
-```
 
-### 协议与代码生成
+# Run a single Swift test
+swift test --filter EpochCoreTests/AppStoreSemanticsTests/testDeleteSessionKeepsArtifacts
 
-```bash
-pnpm -w protocol:build
+# Regenerate Swift models from protocol schema
 pnpm -w protocol:gen:swift
-pnpm -w codex-spec:refresh
-pnpm -w codex-spec:check
-```
 
-### Xcode 项目再生成
-
-```bash
+# Regenerate Xcode project from project.yml
 xcodegen generate
 ```
 
-## 深链（内部）
+### Key conventions
 
-- `app://project/<projectId>/artifact?path=<urlencodedPath>`
-- `app://project/<projectId>/run/<runId>`
-- `app://project/<projectId>/session/<sessionId>`
+- **Swift**: Targets iOS 17+, Swift 6. All public types are `Sendable`. `AppStore` is the single `@MainActor` state container.
+- **TypeScript**: ESM (`"type": "module"`), built with `tsup`. Node.js 22+.
+- **State**: Append-only JSONL transcripts are the canonical source of truth; SQLite mirrors for query performance.
+- **Xcode**: Never edit `Epoch.xcodeproj` by hand &mdash; use `project.yml` with XcodeGen.
+
+## License
+
+Epoch is licensed under the [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0.html).
+
+```
+Copyright (C) 2025 Epoch Contributors
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+```

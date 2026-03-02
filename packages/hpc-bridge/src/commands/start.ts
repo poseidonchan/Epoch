@@ -12,7 +12,7 @@ function hasFlag(argv: string[], flag: string) {
 export async function startCommand(argv: string[]) {
   const cfg = await loadConfig();
   if (!cfg) {
-    throw new Error("Config missing. Run: labos-hpc-bridge config");
+    throw new Error("Config missing. Run: epoch-bridge config");
   }
 
   const foreground = hasFlag(argv, "--foreground") || hasFlag(argv, "-f");
@@ -20,7 +20,7 @@ export async function startCommand(argv: string[]) {
     const stateDir = configDir();
     const existing = await readBridgeDaemonInfo(stateDir);
     if (existing && Number.isFinite(existing.pid) && existing.pid > 1 && isProcessRunning(existing.pid)) {
-      console.log(`LabOS HPC Bridge already running (pid ${existing.pid}).`);
+      console.log(`Epoch Bridge already running (pid ${existing.pid}).`);
       return;
     }
     await stopBridgeDaemon(stateDir).catch(() => {});
@@ -32,7 +32,7 @@ export async function startCommand(argv: string[]) {
       env: process.env,
       cwd: process.cwd(),
     });
-    console.log(`LabOS HPC Bridge started (pid ${info.pid}). Logs: ${info.logPath}`);
+    console.log(`Epoch Bridge started (pid ${info.pid}). Logs: ${info.logPath}`);
     return;
   }
 

@@ -29,7 +29,7 @@ test("requestPlanImplementationConfirmation resolves session thread before start
         updatedAt: 1,
         path: null,
         cwd: "/tmp/project",
-        cliVersion: "@labos/hub/0.1.0",
+        cliVersion: "@epoch/hub/0.1.0",
         source: "appServer",
         gitInfo: null,
         turns: [
@@ -119,7 +119,7 @@ test("requestPlanImplementationConfirmation resolves session thread before start
       assert.equal(params.threadId, currentThreadId);
       return {
         answers: {
-          labos_plan_implementation_decision: {
+          epoch_plan_implementation_decision: {
             answers: ["Yes, implement this plan"],
           },
         },
@@ -177,7 +177,7 @@ test("requestPlanImplementationConfirmation keeps pending unresolved when follow
         updatedAt: 1,
         path: null,
         cwd: "/tmp/project",
-        cliVersion: "@labos/hub/0.1.0",
+        cliVersion: "@epoch/hub/0.1.0",
         source: "appServer",
         gitInfo: null,
         turns: [
@@ -251,7 +251,7 @@ test("requestPlanImplementationConfirmation keeps pending unresolved when follow
     async sendServerRequest() {
       return {
         answers: {
-          labos_plan_implementation_decision: {
+          epoch_plan_implementation_decision: {
             answers: ["Yes, implement this plan"],
           },
         },

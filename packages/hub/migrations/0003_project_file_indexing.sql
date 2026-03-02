@@ -1,4 +1,4 @@
--- LabOS Hub v0.1: project upload extraction + indexing metadata
+-- Epoch Hub v0.1: project upload extraction + indexing metadata
 
 CREATE TABLE IF NOT EXISTS project_file_index (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

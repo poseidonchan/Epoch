@@ -1,5 +1,5 @@
 {
-  "name": "@labos/codegen-swift",
+  "name": "@epoch/codegen-swift",
   "version": "0.1.0",
   "private": true,
   "type": "module",

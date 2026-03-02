@@ -16,14 +16,14 @@ test("upsertNodeConnectionSnapshot persists node workspace root and refreshes la
     role: "node",
     connectionId: "conn_node_1",
     deviceId: "node_device_1",
-    deviceName: "LabOS HPC Bridge",
+    deviceName: "Epoch HPC Bridge",
     platform: "darwin",
-    clientName: "@labos/hpc-bridge",
+    clientName: "@epoch/hpc-bridge",
     clientVersion: "0.1.0",
     caps: ["slurm", "fs"],
     commands: ["shell.exec", "runtime.exec.start"],
     permissions: {
-      workspaceRoot: "/tmp/labos",
+      workspaceRoot: "/tmp/epoch",
       defaults: { qos: "normal" },
     },
   };
@@ -44,7 +44,7 @@ test("upsertNodeConnectionSnapshot persists node workspace root and refreshes la
   assert.equal(queries[0].args[9], connectedAt);
 
   const persistedPermissions = JSON.parse(queries[0].args[7]);
-  assert.equal(persistedPermissions.workspaceRoot, "/tmp/labos");
+  assert.equal(persistedPermissions.workspaceRoot, "/tmp/epoch");
 
   assert.equal(queries[1].args[8], heartbeatAt);
   assert.equal(queries[1].args[9], heartbeatAt);

@@ -61,7 +61,7 @@ async function runConfigWizard(args: {
   const previousAi = describeAiConfig(config.ai);
   const previousEmbeddingState = config.providerApiKeys?.openai ? "configured" : "not configured";
 
-  ui.banner("LabOS Hub Configuration Wizard", "Guided setup for codex defaults and embedding key");
+  ui.banner("Epoch Hub Configuration Wizard", "Guided setup for codex defaults and embedding key");
   ui.step(1, 4, "Load existing settings", "ok");
   ui.keyValue("State dir", stateDir);
   ui.keyValue("Current AI config", previousAi);

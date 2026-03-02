@@ -4,17 +4,17 @@ import assert from "node:assert/strict";
 import { resolveHubModel, resolveHubProvider } from "../dist/index.js";
 
 function withClearedModelEnv(fn) {
-  const previousPrimary = process.env.LABOS_MODEL_PRIMARY;
-  const previousModel = process.env.LABOS_MODEL;
-  delete process.env.LABOS_MODEL_PRIMARY;
-  delete process.env.LABOS_MODEL;
+  const previousPrimary = process.env.EPOCH_MODEL_PRIMARY;
+  const previousModel = process.env.EPOCH_MODEL;
+  delete process.env.EPOCH_MODEL_PRIMARY;
+  delete process.env.EPOCH_MODEL;
   try {
     fn();
   } finally {
-    if (previousPrimary == null) delete process.env.LABOS_MODEL_PRIMARY;
-    else process.env.LABOS_MODEL_PRIMARY = previousPrimary;
-    if (previousModel == null) delete process.env.LABOS_MODEL;
-    else process.env.LABOS_MODEL = previousModel;
+    if (previousPrimary == null) delete process.env.EPOCH_MODEL_PRIMARY;
+    else process.env.EPOCH_MODEL_PRIMARY = previousPrimary;
+    if (previousModel == null) delete process.env.EPOCH_MODEL;
+    else process.env.EPOCH_MODEL = previousModel;
   }
 }
 
@@ -37,9 +37,9 @@ test("resolveHubModel defaults to openai-codex/gpt-5.3-codex when unset", () => 
   });
 });
 
-test("resolveHubProvider still respects LABOS_MODEL_PRIMARY when set", () => {
+test("resolveHubProvider still respects EPOCH_MODEL_PRIMARY when set", () => {
   withClearedModelEnv(() => {
-    process.env.LABOS_MODEL_PRIMARY = "anthropic/claude-sonnet-4.5";
+    process.env.EPOCH_MODEL_PRIMARY = "anthropic/claude-sonnet-4.5";
     const resolved = resolveHubProvider(null);
     assert.equal(resolved.provider, "anthropic");
     assert.equal(resolved.defaultModelId, "claude-sonnet-4.5");

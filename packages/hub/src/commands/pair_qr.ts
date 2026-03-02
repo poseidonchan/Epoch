@@ -47,7 +47,7 @@ function normalizePairingWSURL(raw: string): string {
 
 export function resolvePairingWSURL(opts: PairingWSResolverOptions = {}): PairingWSURLResolution {
   const env = opts.env ?? process.env;
-  const configured = String(env.LABOS_PAIR_WS_URL ?? "").trim();
+  const configured = String(env.EPOCH_PAIR_WS_URL ?? "").trim();
   if (configured) {
     return {
       wsURL: normalizePairingWSURL(configured),
@@ -55,7 +55,7 @@ export function resolvePairingWSURL(opts: PairingWSResolverOptions = {}): Pairin
     };
   }
 
-  const portRaw = String(env.LABOS_PORT ?? "").trim();
+  const portRaw = String(env.EPOCH_PORT ?? "").trim();
   const portValue = Number(portRaw);
   const port = Number.isFinite(portValue) && portValue > 0 ? Math.floor(portValue) : (opts.defaultPort ?? 8787);
   const interfaces = opts.networkInterfaces?.() ?? (os.networkInterfaces() as Record<string, Array<{ address: string; family: string | number; internal: boolean }> | undefined>);
@@ -86,7 +86,7 @@ export function buildHubPairingPayloadURL(opts: { wsURL: string; token: string; 
   const wsURL = String(opts.wsURL ?? "").trim();
   const token = String(opts.token ?? "").trim();
   const serverId = String(opts.serverId ?? "").trim();
-  const payload = new URL("labos-hub://pair");
+  const payload = new URL("epoch-hub://pair");
   payload.searchParams.set("v", "1");
   payload.searchParams.set("ws", wsURL);
   payload.searchParams.set("token", token);

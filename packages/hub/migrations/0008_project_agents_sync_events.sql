@@ -1,4 +1,4 @@
--- LabOS Hub v0.6: AGENTS.md sync audit
+-- Epoch Hub v0.6: AGENTS.md sync audit
 
 CREATE TABLE IF NOT EXISTS project_agents_sync_events (
   id TEXT PRIMARY KEY,

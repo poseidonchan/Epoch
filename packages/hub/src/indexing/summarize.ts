@@ -1,5 +1,5 @@
-const DEFAULT_SUMMARY_MODEL = process.env.LABOS_INDEX_SUMMARY_MODEL?.trim() || "gpt-4o-mini";
-const OPENAI_BASE_URL = (process.env.LABOS_OPENAI_BASE_URL?.trim() || "https://api.openai.com").replace(/\/+$/, "");
+const DEFAULT_SUMMARY_MODEL = process.env.EPOCH_INDEX_SUMMARY_MODEL?.trim() || "gpt-4o-mini";
+const OPENAI_BASE_URL = (process.env.EPOCH_OPENAI_BASE_URL?.trim() || "https://api.openai.com").replace(/\/+$/, "");
 
 type OpenAIChatCompletionResponse = {
   choices?: Array<{ message?: { content?: string | null } }>;

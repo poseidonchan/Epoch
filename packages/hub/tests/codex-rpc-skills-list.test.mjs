@@ -104,7 +104,7 @@ async function initializeRouter(router) {
     id: "req_init",
     method: "initialize",
     params: {
-      clientInfo: { name: "LabOS", version: "0.1.0" },
+      clientInfo: { name: "Epoch", version: "0.1.0" },
       capabilities: {},
     },
   });

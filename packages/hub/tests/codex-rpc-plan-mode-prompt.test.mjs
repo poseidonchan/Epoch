@@ -116,10 +116,10 @@ test("buildPlanImplementationPromptParams emits deterministic implementation que
 
   assert.equal(params.threadId, "thr_plan_prompt");
   assert.equal(params.turnId, "turn_plan_prompt");
-  assert.equal(params.itemId, "labos_plan_implementation_turn_plan_prompt");
+  assert.equal(params.itemId, "epoch_plan_implementation_turn_plan_prompt");
   assert.equal(params.prompt, "Implement this plan?");
   assert.equal(Array.isArray(params.questions), true);
-  assert.equal(params.questions[0].id, "labos_plan_implementation_decision");
+  assert.equal(params.questions[0].id, "epoch_plan_implementation_decision");
   assert.equal(params.questions[0].isOther, true);
   assert.equal(params.questions[0].options.length, 2);
   assert.equal(params.questions[0].options[0].label, "Yes, implement this plan");
@@ -129,7 +129,7 @@ test("buildPlanImplementationPromptParams emits deterministic implementation que
 test("decidePlanImplementationFollowup only maps implement answers", () => {
   const implement = decidePlanImplementationFollowup({
     answers: {
-      labos_plan_implementation_decision: {
+      epoch_plan_implementation_decision: {
         answers: ["Yes, implement this plan"],
       },
     },
@@ -141,7 +141,7 @@ test("decidePlanImplementationFollowup only maps implement answers", () => {
 
   const implementFreeform = decidePlanImplementationFollowup({
     answers: {
-      labos_plan_implementation_decision: {
+      epoch_plan_implementation_decision: {
         answers: ["Implement it."],
       },
     },
@@ -153,7 +153,7 @@ test("decidePlanImplementationFollowup only maps implement answers", () => {
 
   const implementInSecondaryAnswer = decidePlanImplementationFollowup({
     answers: {
-      labos_plan_implementation_decision: {
+      epoch_plan_implementation_decision: {
         answers: ["No, and tell Codex what to do differently", "Implement it"],
       },
     },
@@ -165,7 +165,7 @@ test("decidePlanImplementationFollowup only maps implement answers", () => {
 
   const noImplement = decidePlanImplementationFollowup({
     answers: {
-      labos_plan_implementation_decision: {
+      epoch_plan_implementation_decision: {
         answers: ["No, and tell Codex what to do differently"],
       },
     },
@@ -174,7 +174,7 @@ test("decidePlanImplementationFollowup only maps implement answers", () => {
 
   const custom = decidePlanImplementationFollowup({
     answers: {
-      labos_plan_implementation_decision: {
+      epoch_plan_implementation_decision: {
         answers: ["Add stronger constraints"],
       },
     },

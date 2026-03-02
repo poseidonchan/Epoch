@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { buildWorkspaceWriteEnv } from "../dist/index.js";
 
 test("workspace-write sandbox env includes expected keys and excludes rust/go overrides", () => {
-  const projectRoot = "/tmp/labos-project";
+  const projectRoot = "/tmp/epoch-project";
   const env = buildWorkspaceWriteEnv(projectRoot);
 
   assert.equal(env.HOME, projectRoot);

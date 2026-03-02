@@ -97,9 +97,9 @@ test("extractFileTextForIndexing uses configured OCR model over env model", asyn
   await writeFile(pdfPath, Buffer.from("not-a-valid-pdf"));
 
   const originalFetch = globalThis.fetch;
-  const originalEnvModel = process.env.LABOS_PDF_OCR_MODEL;
+  const originalEnvModel = process.env.EPOCH_PDF_OCR_MODEL;
   const models = [];
-  process.env.LABOS_PDF_OCR_MODEL = "env-model-ocr";
+  process.env.EPOCH_PDF_OCR_MODEL = "env-model-ocr";
 
   globalThis.fetch = async (_url, init) => {
     const body = parseFetchJsonBody(init);
@@ -113,9 +113,9 @@ test("extractFileTextForIndexing uses configured OCR model over env model", asyn
   t.after(() => {
     globalThis.fetch = originalFetch;
     if (originalEnvModel == null) {
-      delete process.env.LABOS_PDF_OCR_MODEL;
+      delete process.env.EPOCH_PDF_OCR_MODEL;
     } else {
-      process.env.LABOS_PDF_OCR_MODEL = originalEnvModel;
+      process.env.EPOCH_PDF_OCR_MODEL = originalEnvModel;
     }
   });
 
@@ -140,7 +140,7 @@ test("extractFileTextForIndexing falls back to env/default OCR model when config
   await writeFile(pdfPath, Buffer.from("not-a-valid-pdf"));
 
   const originalFetch = globalThis.fetch;
-  const originalEnvModel = process.env.LABOS_PDF_OCR_MODEL;
+  const originalEnvModel = process.env.EPOCH_PDF_OCR_MODEL;
   const models = [];
   let invocation = 0;
 
@@ -153,13 +153,13 @@ test("extractFileTextForIndexing falls back to env/default OCR model when config
     });
   };
 
-  process.env.LABOS_PDF_OCR_MODEL = "env-model-ocr";
+  process.env.EPOCH_PDF_OCR_MODEL = "env-model-ocr";
   await extractFileTextForIndexing(pdfPath, "application/pdf", {
     openAIApiKey: "sk-test",
     enablePdfOcrFallback: true,
   });
 
-  delete process.env.LABOS_PDF_OCR_MODEL;
+  delete process.env.EPOCH_PDF_OCR_MODEL;
   await extractFileTextForIndexing(pdfPath, "application/pdf", {
     openAIApiKey: "sk-test",
     enablePdfOcrFallback: true,
@@ -168,9 +168,9 @@ test("extractFileTextForIndexing falls back to env/default OCR model when config
   t.after(() => {
     globalThis.fetch = originalFetch;
     if (originalEnvModel == null) {
-      delete process.env.LABOS_PDF_OCR_MODEL;
+      delete process.env.EPOCH_PDF_OCR_MODEL;
     } else {
-      process.env.LABOS_PDF_OCR_MODEL = originalEnvModel;
+      process.env.EPOCH_PDF_OCR_MODEL = originalEnvModel;
     }
   });
 

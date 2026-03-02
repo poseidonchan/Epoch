@@ -3,15 +3,15 @@ import assert from "node:assert/strict";
 
 import { handleTurnStart } from "../dist/index.js";
 
-const originalWorkspaceRoot = process.env.LABOS_HPC_WORKSPACE_ROOT;
+const originalWorkspaceRoot = process.env.EPOCH_HPC_WORKSPACE_ROOT;
 test.before(() => {
-  process.env.LABOS_HPC_WORKSPACE_ROOT = "/tmp/labos";
+  process.env.EPOCH_HPC_WORKSPACE_ROOT = "/tmp/epoch";
 });
 test.after(() => {
   if (originalWorkspaceRoot == null) {
-    delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+    delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
   } else {
-    process.env.LABOS_HPC_WORKSPACE_ROOT = originalWorkspaceRoot;
+    process.env.EPOCH_HPC_WORKSPACE_ROOT = originalWorkspaceRoot;
   }
 });
 
@@ -25,7 +25,7 @@ test("handleTurnStart forwards plan mode as collaborationMode=plan", async () =>
     updatedAt: 1,
     path: null,
     cwd: "/tmp/project",
-    cliVersion: "@labos/hub/0.1.0",
+    cliVersion: "@epoch/hub/0.1.0",
     source: "appServer",
     gitInfo: null,
     turns: [],
@@ -119,8 +119,8 @@ test("handleTurnStart forwards plan mode as collaborationMode=plan", async () =>
 });
 
 test("handleTurnStart fails fast when workspace root is unavailable for project threads", async () => {
-  const originalRoot = process.env.LABOS_HPC_WORKSPACE_ROOT;
-  delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+  const originalRoot = process.env.EPOCH_HPC_WORKSPACE_ROOT;
+  delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
 
   const threadId = "123e4567-e89b-12d3-a456-426614174120";
   const thread = {
@@ -131,7 +131,7 @@ test("handleTurnStart fails fast when workspace root is unavailable for project 
     updatedAt: 1,
     path: null,
     cwd: "projects/proj_missing_root",
-    cliVersion: "@labos/hub/0.1.0",
+    cliVersion: "@epoch/hub/0.1.0",
     source: "appServer",
     gitInfo: null,
     turns: [],
@@ -199,20 +199,20 @@ test("handleTurnStart fails fast when workspace root is unavailable for project 
     );
   } finally {
     if (originalRoot == null) {
-      delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+      delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
     } else {
-      process.env.LABOS_HPC_WORKSPACE_ROOT = originalRoot;
+      process.env.EPOCH_HPC_WORKSPACE_ROOT = originalRoot;
     }
   }
 });
 
 test("handleTurnStart resolves workspace root from nodes table when env is unavailable", async () => {
-  const originalRoot = process.env.LABOS_HPC_WORKSPACE_ROOT;
-  delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+  const originalRoot = process.env.EPOCH_HPC_WORKSPACE_ROOT;
+  delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
 
   const threadId = "123e4567-e89b-12d3-a456-426614174122";
   const projectId = "proj_from_nodes";
-  const workspaceRoot = "/tmp/labos-from-node";
+  const workspaceRoot = "/tmp/epoch-from-node";
   const legacyCwd = `projects/${projectId}`;
   const expectedCwd = `${workspaceRoot}/projects/${projectId}`;
   const thread = {
@@ -223,7 +223,7 @@ test("handleTurnStart resolves workspace root from nodes table when env is unava
     updatedAt: 1,
     path: null,
     cwd: legacyCwd,
-    cliVersion: "@labos/hub/0.1.0",
+    cliVersion: "@epoch/hub/0.1.0",
     source: "appServer",
     gitInfo: null,
     turns: [],
@@ -316,21 +316,21 @@ test("handleTurnStart resolves workspace root from nodes table when env is unava
     assert.equal(capturedStartArgs.cwd, expectedCwd);
   } finally {
     if (originalRoot == null) {
-      delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+      delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
     } else {
-      process.env.LABOS_HPC_WORKSPACE_ROOT = originalRoot;
+      process.env.EPOCH_HPC_WORKSPACE_ROOT = originalRoot;
     }
   }
 });
 
 test("handleTurnStart normalizes stale project cwd before engine start", async () => {
-  const originalRoot = process.env.LABOS_HPC_WORKSPACE_ROOT;
-  process.env.LABOS_HPC_WORKSPACE_ROOT = "/tmp/labos";
+  const originalRoot = process.env.EPOCH_HPC_WORKSPACE_ROOT;
+  process.env.EPOCH_HPC_WORKSPACE_ROOT = "/tmp/epoch";
 
   const threadId = "123e4567-e89b-12d3-a456-426614174121";
   const projectId = "proj_normalize";
   const staleCwd = `/Users/example/projects/${projectId}/runs/run_42`;
-  const expectedCwd = `/tmp/labos/projects/${projectId}/runs/run_42`;
+  const expectedCwd = `/tmp/epoch/projects/${projectId}/runs/run_42`;
   const thread = {
     id: threadId,
     preview: "",
@@ -339,7 +339,7 @@ test("handleTurnStart normalizes stale project cwd before engine start", async (
     updatedAt: 1,
     path: null,
     cwd: staleCwd,
-    cliVersion: "@labos/hub/0.1.0",
+    cliVersion: "@epoch/hub/0.1.0",
     source: "appServer",
     gitInfo: null,
     turns: [],
@@ -424,9 +424,9 @@ test("handleTurnStart normalizes stale project cwd before engine start", async (
     assert.equal(capturedStartArgs.cwd, expectedCwd);
   } finally {
     if (originalRoot == null) {
-      delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+      delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
     } else {
-      process.env.LABOS_HPC_WORKSPACE_ROOT = originalRoot;
+      process.env.EPOCH_HPC_WORKSPACE_ROOT = originalRoot;
     }
   }
 });
@@ -445,7 +445,7 @@ test("handleTurnStart injects indexed project snippets into turn input", async (
       updatedAt: 1,
       path: null,
       cwd: "/tmp/project",
-      cliVersion: "@labos/hub/0.1.0",
+      cliVersion: "@epoch/hub/0.1.0",
       source: "appServer",
       gitInfo: null,
       turns: [],
@@ -561,7 +561,7 @@ test("handleTurnStart injects indexed project snippets into turn input", async (
     const firstText = capturedStartArgs.input.find((part) => part.type === "text")?.text ?? "";
     assert.equal(firstText, "What is the launch code in the uploaded experiment notes?");
     const developerInstructions = capturedStartArgs.collaborationMode?.settings?.developer_instructions ?? "";
-    assert.ok(developerInstructions.includes("[LABOS_PROJECT_CONTEXT]"));
+    assert.ok(developerInstructions.includes("[EPOCH_PROJECT_CONTEXT]"));
     assert.ok(developerInstructions.includes("uploads/experiment-notes.txt#0"));
     assert.ok(developerInstructions.includes("RED-PLANT-8842"));
     assert.equal(developerInstructions.includes("User request:"), false);
@@ -584,7 +584,7 @@ test("handleTurnStart sends history fallback context via developer instructions 
     updatedAt: 1,
     path: null,
     cwd: "/tmp/project",
-    cliVersion: "@labos/hub/0.1.0",
+    cliVersion: "@epoch/hub/0.1.0",
     source: "appServer",
     gitInfo: null,
     turns: [
@@ -690,17 +690,17 @@ test("handleTurnStart sends history fallback context via developer instructions 
   const firstText = capturedStartArgs.input.find((part) => part.type === "text")?.text ?? "";
   assert.equal(firstText, "continue");
   const developerInstructions = capturedStartArgs.collaborationMode?.settings?.developer_instructions ?? "";
-  assert.ok(developerInstructions.includes("[LABOS_SESSION_HISTORY_FALLBACK]"));
+  assert.ok(developerInstructions.includes("[EPOCH_SESSION_HISTORY_FALLBACK]"));
   assert.ok(developerInstructions.includes("User: prior request"));
   assert.ok(developerInstructions.includes("Assistant: prior answer"));
   assert.equal(developerInstructions.includes("User request:"), false);
 });
 
 test("handleTurnStart still forwards collaborationMode when stored model is missing", async () => {
-  const originalModel = process.env.LABOS_MODEL;
-  const originalPrimary = process.env.LABOS_MODEL_PRIMARY;
-  process.env.LABOS_MODEL = "openai-codex/gpt-5.3-codex";
-  process.env.LABOS_MODEL_PRIMARY = "openai-codex/gpt-5.3-codex";
+  const originalModel = process.env.EPOCH_MODEL;
+  const originalPrimary = process.env.EPOCH_MODEL_PRIMARY;
+  process.env.EPOCH_MODEL = "openai-codex/gpt-5.3-codex";
+  process.env.EPOCH_MODEL_PRIMARY = "openai-codex/gpt-5.3-codex";
 
   try {
     const threadId = "123e4567-e89b-12d3-a456-426614174112";
@@ -712,7 +712,7 @@ test("handleTurnStart still forwards collaborationMode when stored model is miss
       updatedAt: 1,
       path: null,
       cwd: "/tmp/project",
-      cliVersion: "@labos/hub/0.1.0",
+      cliVersion: "@epoch/hub/0.1.0",
       source: "appServer",
       gitInfo: null,
       turns: [],
@@ -798,14 +798,14 @@ test("handleTurnStart still forwards collaborationMode when stored model is miss
     );
   } finally {
     if (originalModel == null) {
-      delete process.env.LABOS_MODEL;
+      delete process.env.EPOCH_MODEL;
     } else {
-      process.env.LABOS_MODEL = originalModel;
+      process.env.EPOCH_MODEL = originalModel;
     }
     if (originalPrimary == null) {
-      delete process.env.LABOS_MODEL_PRIMARY;
+      delete process.env.EPOCH_MODEL_PRIMARY;
     } else {
-      process.env.LABOS_MODEL_PRIMARY = originalPrimary;
+      process.env.EPOCH_MODEL_PRIMARY = originalPrimary;
     }
   }
 });
@@ -838,7 +838,7 @@ test("handleTurnStart normalizes legacy pi threads and starts with codex engine"
     updatedAt: 2,
     path: null,
     cwd: "/tmp/project",
-    cliVersion: "@labos/hub/0.1.0",
+    cliVersion: "@epoch/hub/0.1.0",
     source: "appServer",
     gitInfo: null,
     turns: [priorTurn],
@@ -935,7 +935,7 @@ test("handleTurnStart seeds history via thread/resume when repairing codex threa
     updatedAt: 11,
     path: null,
     cwd: "/tmp/project",
-    cliVersion: "@labos/hub/0.1.0",
+    cliVersion: "@epoch/hub/0.1.0",
     source: "appServer",
     gitInfo: null,
     turns: [
@@ -1037,7 +1037,7 @@ test("handleTurnStart seeds history via thread/resume when repairing codex threa
         updatedAt: args.createdAt ?? 0,
         path: null,
         cwd: args.cwd,
-        cliVersion: "@labos/hub/0.1.0",
+        cliVersion: "@epoch/hub/0.1.0",
         source: "appServer",
         gitInfo: null,
         turns: [],
@@ -1137,7 +1137,7 @@ test("handleTurnStart repairs codex thread when turn/start reports missing threa
     updatedAt: 11,
     path: null,
     cwd: "/tmp/project",
-    cliVersion: "@labos/hub/0.1.0",
+    cliVersion: "@epoch/hub/0.1.0",
     source: "appServer",
     gitInfo: null,
     turns: [
@@ -1224,7 +1224,7 @@ test("handleTurnStart repairs codex thread when turn/start reports missing threa
         updatedAt: args.createdAt ?? 0,
         path: null,
         cwd: args.cwd,
-        cliVersion: "@labos/hub/0.1.0",
+        cliVersion: "@epoch/hub/0.1.0",
         source: "appServer",
         gitInfo: null,
         turns: [],
@@ -1344,7 +1344,7 @@ test("handleTurnStart forwards workspaceWrite sandbox policy and forces network 
     updatedAt: 1,
     path: null,
     cwd: "/tmp/project",
-    cliVersion: "@labos/hub/0.1.0",
+    cliVersion: "@epoch/hub/0.1.0",
     source: "appServer",
     gitInfo: null,
     turns: [],
@@ -1434,7 +1434,7 @@ test("handleTurnStart forwards dangerFullAccess sandbox policy as danger-full-ac
     updatedAt: 1,
     path: null,
     cwd: "/tmp/project",
-    cliVersion: "@labos/hub/0.1.0",
+    cliVersion: "@epoch/hub/0.1.0",
     source: "appServer",
     gitInfo: null,
     turns: [],
@@ -1518,7 +1518,7 @@ test("handleTurnStart applies updated sandbox immediately across turns in the sa
     updatedAt: 1,
     path: null,
     cwd: "/tmp/project",
-    cliVersion: "@labos/hub/0.1.0",
+    cliVersion: "@epoch/hub/0.1.0",
     source: "appServer",
     gitInfo: null,
     turns: [],

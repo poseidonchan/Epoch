@@ -2,43 +2,43 @@
 import PackageDescription
 
 let package = Package(
-    name: "LabOS",
+    name: "Epoch",
     platforms: [
         .iOS(.v17),
         .macOS(.v14)
     ],
     products: [
-        .library(name: "LabOSCore", targets: ["LabOSCore"]),
-        .executable(name: "LabOSApp", targets: ["LabOSApp"])
+        .library(name: "EpochCore", targets: ["EpochCore"]),
+        .executable(name: "EpochApp", targets: ["EpochApp"])
     ],
     dependencies: [
         .package(url: "https://github.com/gonzalezreal/MarkdownUI.git", from: "2.4.1")
     ],
     targets: [
         .target(
-            name: "LabOSCore",
-            path: "Sources/LabOSCore"
+            name: "EpochCore",
+            path: "Sources/EpochCore"
         ),
         .executableTarget(
-            name: "LabOSApp",
+            name: "EpochApp",
             dependencies: [
-                "LabOSCore",
+                "EpochCore",
                 .product(name: "MarkdownUI", package: "MarkdownUI")
             ],
-            path: "Sources/LabOSApp",
+            path: "Sources/EpochApp",
             resources: [
                 .copy("Resources")
             ]
         ),
         .testTarget(
-            name: "LabOSCoreTests",
-            dependencies: ["LabOSCore"],
-            path: "Tests/LabOSCoreTests"
+            name: "EpochCoreTests",
+            dependencies: ["EpochCore"],
+            path: "Tests/EpochCoreTests"
         ),
         .testTarget(
-            name: "LabOSAppTests",
-            dependencies: ["LabOSApp"],
-            path: "Tests/LabOSAppTests"
+            name: "EpochAppTests",
+            dependencies: ["EpochApp"],
+            path: "Tests/EpochAppTests"
         )
     ]
 )

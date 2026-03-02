@@ -1,9 +1,9 @@
 {
-  "name": "@labos/hub",
+  "name": "@epoch/hub",
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "labos-hub": "dist/cli.js"
+    "epoch-hub": "dist/cli.js"
   },
   "main": "dist/index.js",
   "files": [
@@ -13,13 +13,13 @@
   "scripts": {
     "build": "tsup src/cli.ts src/index.ts --format esm --clean",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "pnpm -w --filter @labos/hub... build && node --test tests/*.test.mjs",
+    "test": "pnpm -w --filter @epoch/hub... build && node --test tests/*.test.mjs",
     "codex:schema:check": "pnpm -C ../codex-spec check"
   },
   "dependencies": {
     "@fastify/multipart": "^9.2.1",
-    "@labos/cli-utils": "workspace:*",
-    "@labos/protocol": "workspace:*",
+    "@epoch/cli-utils": "workspace:*",
+    "@epoch/protocol": "workspace:*",
     "better-sqlite3": "^12.4.1",
     "fastify": "^5.5.0",
     "pdf-parse": "^2.4.5",

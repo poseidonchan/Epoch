@@ -1,24 +1,24 @@
 import { updateThreadPreviewFromItems } from "./handlers/thread.js";
 import { handleInitialize } from "./handlers/initialize.js";
 import {
-  handleLabosArtifactDelete,
-  handleLabosArtifactGet,
-  handleLabosArtifactList,
-  handleLabosHpcPrefsSet,
-  handleLabosProjectCreate,
-  handleLabosProjectDelete,
-  handleLabosProjectList,
-  handleLabosProjectRename,
-  handleLabosProjectUpdate,
-  handleLabosRunGet,
-  handleLabosRunList,
-  handleLabosSessionCreate,
-  handleLabosSessionDelete,
-  handleLabosSessionGenerateTitle,
-  handleLabosSessionList,
-  handleLabosSessionRead,
-  handleLabosSessionUpdate,
-} from "./handlers/labos.js";
+  handleEpochArtifactDelete,
+  handleEpochArtifactGet,
+  handleEpochArtifactList,
+  handleEpochHpcPrefsSet,
+  handleEpochProjectCreate,
+  handleEpochProjectDelete,
+  handleEpochProjectList,
+  handleEpochProjectRename,
+  handleEpochProjectUpdate,
+  handleEpochRunGet,
+  handleEpochRunList,
+  handleEpochSessionCreate,
+  handleEpochSessionDelete,
+  handleEpochSessionGenerateTitle,
+  handleEpochSessionList,
+  handleEpochSessionRead,
+  handleEpochSessionUpdate,
+} from "./handlers/epoch.js";
 import { handleModelList } from "./handlers/model.js";
 import { handleSkillsList } from "./handlers/skills.js";
 import { handleThreadList, handleThreadRead, handleThreadResume, handleThreadRollback, handleThreadStart } from "./handlers/thread.js";
@@ -170,33 +170,33 @@ export class CodexRpcRouter {
           this.connection.sendResult(request.id, result);
           return;
         }
-        case "labos/project/list": {
-          const result = await handleLabosProjectList({ repository: this.repository, engines: this.engines }, params);
+        case "epoch/project/list": {
+          const result = await handleEpochProjectList({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
         }
-        case "labos/project/create": {
-          const result = await handleLabosProjectCreate({ repository: this.repository, engines: this.engines }, params);
+        case "epoch/project/create": {
+          const result = await handleEpochProjectCreate({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
         }
-        case "labos/project/rename": {
-          const result = await handleLabosProjectRename({ repository: this.repository, engines: this.engines }, params);
+        case "epoch/project/rename": {
+          const result = await handleEpochProjectRename({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
         }
-        case "labos/project/update": {
-          const result = await handleLabosProjectUpdate({ repository: this.repository, engines: this.engines }, params);
+        case "epoch/project/update": {
+          const result = await handleEpochProjectUpdate({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
         }
-        case "labos/project/delete": {
-          const result = await handleLabosProjectDelete({ repository: this.repository, engines: this.engines }, params);
+        case "epoch/project/delete": {
+          const result = await handleEpochProjectDelete({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
         }
-        case "labos/session/list": {
-          const result = await handleLabosSessionList(
+        case "epoch/session/list": {
+          const result = await handleEpochSessionList(
             {
               repository: this.repository,
               engines: this.engines,
@@ -208,28 +208,28 @@ export class CodexRpcRouter {
           this.connection.sendResult(request.id, result);
           return;
         }
-        case "labos/session/create": {
-          const result = await handleLabosSessionCreate({ repository: this.repository, engines: this.engines }, params);
+        case "epoch/session/create": {
+          const result = await handleEpochSessionCreate({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
         }
-        case "labos/session/update": {
-          const result = await handleLabosSessionUpdate({ repository: this.repository, engines: this.engines }, params);
+        case "epoch/session/update": {
+          const result = await handleEpochSessionUpdate({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
         }
-        case "labos/session/delete": {
-          const result = await handleLabosSessionDelete({ repository: this.repository, engines: this.engines }, params);
+        case "epoch/session/delete": {
+          const result = await handleEpochSessionDelete({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
         }
-        case "labos/session/generateTitle": {
-          const result = await handleLabosSessionGenerateTitle({ repository: this.repository, engines: this.engines }, params);
+        case "epoch/session/generateTitle": {
+          const result = await handleEpochSessionGenerateTitle({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
         }
-        case "labos/session/read": {
-          const result = await handleLabosSessionRead(
+        case "epoch/session/read": {
+          const result = await handleEpochSessionRead(
             {
               repository: this.repository,
               engines: this.engines,
@@ -241,33 +241,33 @@ export class CodexRpcRouter {
           this.connection.sendResult(request.id, result);
           return;
         }
-        case "labos/artifact/list": {
-          const result = await handleLabosArtifactList({ repository: this.repository, engines: this.engines }, params);
+        case "epoch/artifact/list": {
+          const result = await handleEpochArtifactList({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
         }
-        case "labos/artifact/get": {
-          const result = await handleLabosArtifactGet({ repository: this.repository, engines: this.engines }, params);
+        case "epoch/artifact/get": {
+          const result = await handleEpochArtifactGet({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
         }
-        case "labos/artifact/delete": {
-          const result = await handleLabosArtifactDelete({ repository: this.repository, engines: this.engines }, params);
+        case "epoch/artifact/delete": {
+          const result = await handleEpochArtifactDelete({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
         }
-        case "labos/run/list": {
-          const result = await handleLabosRunList({ repository: this.repository, engines: this.engines }, params);
+        case "epoch/run/list": {
+          const result = await handleEpochRunList({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
         }
-        case "labos/run/get": {
-          const result = await handleLabosRunGet({ repository: this.repository, engines: this.engines }, params);
+        case "epoch/run/get": {
+          const result = await handleEpochRunGet({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
         }
-        case "labos/hpc/prefs/set": {
-          const result = await handleLabosHpcPrefsSet({ repository: this.repository, engines: this.engines }, params);
+        case "epoch/hpc/prefs/set": {
+          const result = await handleEpochHpcPrefsSet({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
           return;
         }
@@ -693,7 +693,7 @@ export class CodexRpcRouter {
             const sessionMapping = await this.repository.findSessionByThread(args.threadId);
             const pendingKind = pendingInputKindForMethod(event.method, event.params);
             const preferredRequestId =
-              event.id ?? `labos_srvreq_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+              event.id ?? `epoch_srvreq_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
             if (pendingKind && sessionMapping) {
               const requestId = requestIdKey(preferredRequestId);
               persistedPendingRequestId = requestId;
@@ -1023,7 +1023,7 @@ export class CodexRpcRouter {
     if (!turnContainsImplementablePlan(completedTurn)) return;
     if (threadHasNewerUserTurnAfter(thread, threadId, args.turnId)) return;
 
-    const requestId = `labos_impl_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+    const requestId = `epoch_impl_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
     const params = buildPlanImplementationPromptParams({
       threadId,
       turnId: args.turnId,
@@ -1197,7 +1197,7 @@ export class CodexRpcRouter {
 function pendingInputKindForMethod(method: string, params?: Record<string, unknown>): string | null {
   if (method === "item/tool/requestUserInput") {
     const firstQuestionId = firstPromptQuestionId(params);
-    if (firstQuestionId === "labos_plan_implementation_decision") {
+    if (firstQuestionId === "epoch_plan_implementation_decision") {
       return "implement_confirmation";
     }
     return "prompt";
@@ -1284,11 +1284,11 @@ export function buildPlanImplementationPromptParams(args: { threadId: string; tu
   return {
     threadId: args.threadId,
     turnId: args.turnId,
-    itemId: `labos_plan_implementation_${args.turnId}`,
+    itemId: `epoch_plan_implementation_${args.turnId}`,
     prompt: "Implement this plan?",
     questions: [
       {
-        id: "labos_plan_implementation_decision",
+        id: "epoch_plan_implementation_decision",
         question: "",
         isOther: true,
         isSecret: false,
@@ -1322,7 +1322,7 @@ export function decidePlanImplementationFollowup(
   const result = response as Record<string, unknown>;
   const answers = result.answers;
   if (!answers || typeof answers !== "object" || Array.isArray(answers)) return null;
-  const entry = (answers as Record<string, unknown>).labos_plan_implementation_decision;
+  const entry = (answers as Record<string, unknown>).epoch_plan_implementation_decision;
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
   const answerList = (entry as Record<string, unknown>).answers;
   if (!Array.isArray(answerList) || answerList.length === 0) return null;

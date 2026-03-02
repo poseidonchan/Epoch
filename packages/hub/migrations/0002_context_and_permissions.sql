@@ -1,4 +1,4 @@
--- LabOS Hub v0.1: session context stats + permissions
+-- Epoch Hub v0.1: session context stats + permissions
 
 ALTER TABLE sessions ADD COLUMN permission_level TEXT NOT NULL DEFAULT 'default';
 ALTER TABLE sessions ADD COLUMN context_model_id TEXT;

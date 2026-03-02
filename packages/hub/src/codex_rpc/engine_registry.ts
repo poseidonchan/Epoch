@@ -16,7 +16,7 @@ export class CodexEngineRegistry {
   }
 
   defaultEngineName(): CodexEngineName {
-    return normalizeEngineName(process.env.LABOS_CODEX_DEFAULT_ENGINE) ?? DEFAULT_ENGINE;
+    return normalizeEngineName(process.env.EPOCH_CODEX_DEFAULT_ENGINE) ?? DEFAULT_ENGINE;
   }
 
   async getEngine(name: string | null | undefined): Promise<CodexEngineSession> {
@@ -26,9 +26,9 @@ export class CodexEngineRegistry {
     }
 
     if (!this.codexAppServerEngine) {
-      const command = process.env.LABOS_CODEX_APP_SERVER_BIN?.trim() || "codex";
-      const args = process.env.LABOS_CODEX_APP_SERVER_ARGS
-        ? process.env.LABOS_CODEX_APP_SERVER_ARGS.split(" ").map((part) => part.trim()).filter(Boolean)
+      const command = process.env.EPOCH_CODEX_APP_SERVER_BIN?.trim() || "codex";
+      const args = process.env.EPOCH_CODEX_APP_SERVER_ARGS
+        ? process.env.EPOCH_CODEX_APP_SERVER_ARGS.split(" ").map((part) => part.trim()).filter(Boolean)
         : ["app-server"];
       this.codexAppServerEngine = new CodexAppServerEngine({
         command,

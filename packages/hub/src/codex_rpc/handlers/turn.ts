@@ -466,10 +466,10 @@ function normalizeSandboxModeValue(raw: unknown): "read-only" | "workspace-write
   return null;
 }
 
-const AGENTS_CONTEXT_MARKER = "[LABOS_AGENTS_CONTEXT]";
-const PROJECT_CONTEXT_MARKER = "[LABOS_PROJECT_CONTEXT]";
+const AGENTS_CONTEXT_MARKER = "[EPOCH_AGENTS_CONTEXT]";
+const PROJECT_CONTEXT_MARKER = "[EPOCH_PROJECT_CONTEXT]";
 const MAX_SNIPPET_CHARS = 2_200;
-const HISTORY_FALLBACK_MARKER = "[LABOS_SESSION_HISTORY_FALLBACK]";
+const HISTORY_FALLBACK_MARKER = "[EPOCH_SESSION_HISTORY_FALLBACK]";
 const MAX_HISTORY_FALLBACK_CHARS = 9_000;
 const MAX_CONTEXT_DEVELOPER_INSTRUCTIONS_CHARS = 16_000;
 
@@ -930,7 +930,7 @@ async function resolveProjectWorkspacePath(repository: CodexRepository, projectI
 }
 
 async function resolveWorkspaceRoot(repository: CodexRepository): Promise<string | null> {
-  const envRoot = normalizeNonEmptyString(process.env.LABOS_HPC_WORKSPACE_ROOT);
+  const envRoot = normalizeNonEmptyString(process.env.EPOCH_HPC_WORKSPACE_ROOT);
   if (envRoot) return envRoot;
 
   let rows: any[] = [];

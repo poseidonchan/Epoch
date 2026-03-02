@@ -11,7 +11,7 @@ test("buildHubPairingPayloadURL encodes required pairing fields", () => {
   });
   const parsed = new URL(raw);
 
-  assert.equal(parsed.protocol, "labos-hub:");
+  assert.equal(parsed.protocol, "epoch-hub:");
   assert.equal(parsed.hostname, "pair");
   assert.equal(parsed.searchParams.get("v"), "1");
   assert.equal(parsed.searchParams.get("ws"), "ws://10.0.0.8:8787/ws");
@@ -19,11 +19,11 @@ test("buildHubPairingPayloadURL encodes required pairing fields", () => {
   assert.equal(parsed.searchParams.get("serverId"), "server_1");
 });
 
-test("resolvePairingWSURL prefers LABOS_PAIR_WS_URL when set", () => {
+test("resolvePairingWSURL prefers EPOCH_PAIR_WS_URL when set", () => {
   const result = resolvePairingWSURL({
     env: {
-      LABOS_PAIR_WS_URL: "wss://hub.example/ws",
-      LABOS_PORT: "9999",
+      EPOCH_PAIR_WS_URL: "wss://hub.example/ws",
+      EPOCH_PORT: "9999",
     },
     networkInterfaces: () => ({
       en0: [{ address: "192.168.0.20", family: "IPv4", internal: false }],
@@ -37,7 +37,7 @@ test("resolvePairingWSURL prefers LABOS_PAIR_WS_URL when set", () => {
 test("resolvePairingWSURL uses first non-internal IPv4 when env override is absent", () => {
   const result = resolvePairingWSURL({
     env: {
-      LABOS_PORT: "8787",
+      EPOCH_PORT: "8787",
     },
     networkInterfaces: () => ({
       lo0: [{ address: "127.0.0.1", family: "IPv4", internal: true }],

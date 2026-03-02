@@ -43,7 +43,7 @@ async function main() {
       case "-h":
       case "--help":
       case undefined:
-        console.log("Usage: labos-hpc-bridge <init|config|pair|start|restart|stop|status|doctor>");
+        console.log("Usage: epoch-bridge <init|config|pair|start|restart|stop|status|doctor>");
         return;
       default:
         console.error(`Unknown command: ${cmd}`);

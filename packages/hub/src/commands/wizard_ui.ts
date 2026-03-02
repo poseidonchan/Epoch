@@ -4,4 +4,4 @@ export {
   type StepStatus,
   type WizardPrompter,
   type WizardUI,
-} from "@labos/cli-utils";
+} from "@epoch/cli-utils";

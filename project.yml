@@ -1,4 +1,4 @@
-name: LabOS
+name: Epoch
 options:
   deploymentTarget:
     iOS: "17.0"
@@ -15,84 +15,84 @@ packages:
     from: 2.4.1
 
 targets:
-  LabOSCore:
+  EpochCore:
     type: framework
     platform: iOS
     sources:
-      - Sources/LabOSCore
+      - Sources/EpochCore
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: labos.LabOSCore
+        PRODUCT_BUNDLE_IDENTIFIER: dev.epoch.core
         GENERATE_INFOPLIST_FILE: YES
 
-  LabOSApp:
+  EpochApp:
     type: application
     platform: iOS
     sources:
-      - Sources/LabOSApp
+      - Sources/EpochApp
     resources:
-      - path: Sources/LabOSApp/Resources
+      - path: Sources/EpochApp/Resources
     dependencies:
-      - target: LabOSCore
+      - target: EpochCore
       - package: MarkdownUI
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: labos.LabOSApp
+        PRODUCT_BUNDLE_IDENTIFIER: dev.epoch.app
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_NSCameraUsageDescription: LabOS uses the camera to capture photos you attach to chat messages.
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: LabOS uses the microphone for press-and-hold voice input in chat.
-        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: LabOS uses your photo library so you can attach recent photos to chat messages.
+        INFOPLIST_KEY_NSCameraUsageDescription: Epoch uses the camera to capture photos you attach to chat messages.
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: Epoch uses the microphone for press-and-hold voice input in chat.
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: Epoch uses your photo library so you can attach recent photos to chat messages.
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIRequiresFullScreen: NO
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
         TARGETED_DEVICE_FAMILY: "1"
 
-  LabOSCoreTests:
+  EpochCoreTests:
     type: bundle.unit-test
     platform: iOS
     sources:
-      - Tests/LabOSCoreTests
+      - Tests/EpochCoreTests
     dependencies:
-      - target: LabOSCore
+      - target: EpochCore
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: labos.LabOSCoreTests
+        PRODUCT_BUNDLE_IDENTIFIER: dev.epoch.core-tests
         GENERATE_INFOPLIST_FILE: YES
 
-  LabOSAppTests:
+  EpochAppTests:
     type: bundle.unit-test
     platform: iOS
     sources:
-      - Tests/LabOSAppTests
+      - Tests/EpochAppTests
     dependencies:
-      - target: LabOSApp
+      - target: EpochApp
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: labos.LabOSAppTests
+        PRODUCT_BUNDLE_IDENTIFIER: dev.epoch.app-tests
         GENERATE_INFOPLIST_FILE: YES
-        TEST_TARGET_NAME: LabOSApp
+        TEST_TARGET_NAME: EpochApp
 
-  LabOSE2ETests:
+  EpochE2ETests:
     type: bundle.ui-testing
     platform: iOS
     sources:
-      - Tests/LabOSE2ETests
+      - Tests/EpochE2ETests
     dependencies:
-      - target: LabOSApp
+      - target: EpochApp
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: labos.LabOSE2ETests
+        PRODUCT_BUNDLE_IDENTIFIER: dev.epoch.e2e-tests
         GENERATE_INFOPLIST_FILE: YES
-        TEST_TARGET_NAME: LabOSApp
+        TEST_TARGET_NAME: EpochApp
 
 schemes:
-  LabOSApp:
+  EpochApp:
     build:
       targets:
-        LabOSApp: all
+        EpochApp: all
     test:
       targets:
-        - LabOSCoreTests
-        - LabOSAppTests
-        - LabOSE2ETests
+        - EpochCoreTests
+        - EpochAppTests
+        - EpochE2ETests

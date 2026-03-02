@@ -28,10 +28,10 @@ importers:
 
   packages/hpc-bridge:
     dependencies:
-      '@labos/cli-utils':
+      '@epoch/cli-utils':
         specifier: workspace:*
         version: link:../cli-utils
-      '@labos/protocol':
+      '@epoch/protocol':
         specifier: workspace:*
         version: link:../protocol
       uuid:
@@ -56,15 +56,15 @@ importers:
 
   packages/hub:
     dependencies:
+      '@epoch/cli-utils':
+        specifier: workspace:*
+        version: link:../cli-utils
+      '@epoch/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@fastify/multipart':
         specifier: ^9.2.1
         version: 9.4.0
-      '@labos/cli-utils':
-        specifier: workspace:*
-        version: link:../cli-utils
-      '@labos/protocol':
-        specifier: workspace:*
-        version: link:../protocol
       better-sqlite3:
         specifier: ^12.4.1
         version: 12.6.2

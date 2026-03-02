@@ -21,7 +21,7 @@ export type BridgeConfig = {
 };
 
 export function configDir(): string {
-  return path.join(os.homedir(), ".labos-hpc-bridge");
+  return path.join(os.homedir(), ".epoch-bridge");
 }
 
 export function configPath(): string {

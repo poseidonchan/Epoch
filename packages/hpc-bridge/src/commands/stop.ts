@@ -6,8 +6,8 @@ export async function stopCommand(_argv: string[]) {
   const result = await stopBridgeDaemon(stateDir).catch(() => ({ stopped: false as const }));
   if (result.stopped) {
     const pidPart = result.pid ? ` (pid ${result.pid})` : "";
-    console.log(`LabOS HPC Bridge stopped${pidPart}.`);
+    console.log(`Epoch Bridge stopped${pidPart}.`);
     return;
   }
-  console.log("No running LabOS HPC Bridge daemon found (already stopped).");
+  console.log("No running Epoch Bridge daemon found (already stopped).");
 }

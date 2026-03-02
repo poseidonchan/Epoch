@@ -1,5 +1,5 @@
-const DEFAULT_EMBEDDING_MODEL = process.env.LABOS_INDEX_EMBED_MODEL?.trim() || "text-embedding-3-small";
-const OPENAI_BASE_URL = (process.env.LABOS_OPENAI_BASE_URL?.trim() || "https://api.openai.com").replace(/\/+$/, "");
+const DEFAULT_EMBEDDING_MODEL = process.env.EPOCH_INDEX_EMBED_MODEL?.trim() || "text-embedding-3-small";
+const OPENAI_BASE_URL = (process.env.EPOCH_OPENAI_BASE_URL?.trim() || "https://api.openai.com").replace(/\/+$/, "");
 const EMBEDDING_BATCH_SIZE = 32;
 const EMBEDDING_MAX_RETRIES = 3;
 

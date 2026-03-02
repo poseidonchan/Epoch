@@ -9,13 +9,13 @@ export async function doctorCommand(_argv: string[]) {
   const stateDir = getStateDir();
   const config = await loadOrCreateHubConfig({ stateDir, allowCreate: false });
 
-  const dbPath = process.env.LABOS_DB_PATH ?? path.join(stateDir, "labos.sqlite");
+  const dbPath = process.env.EPOCH_DB_PATH ?? path.join(stateDir, "epoch.sqlite");
   const modelResolved = resolveHubModel(config);
   console.log(`State dir: ${stateDir}`);
-  console.log(`Config: ${config ? "present" : "missing (run labos-hub init)"}`);
+  console.log(`Config: ${config ? "present" : "missing (run epoch-hub init)"}`);
   console.log(`DB: ${dbPath}`);
   if (modelResolved.ok) {
-    console.log(`Model: ${modelResolved.ref}${modelResolved.hasApiKey ? "" : " (no credentials detected; run labos-hub config)"}`);
+    console.log(`Model: ${modelResolved.ref}${modelResolved.hasApiKey ? "" : " (no credentials detected; run epoch-hub config)"}`);
   } else {
     console.log(`Model: ${modelResolved.ref ?? "missing"} (${modelResolved.message})`);
   }
@@ -30,15 +30,15 @@ export async function doctorCommand(_argv: string[]) {
     await runMigrations(pool, { migrationsDir: new URL("../migrations/", import.meta.url) });
     console.log("DB migrations: ok");
 
-    const envWorkspaceRoot = normalizeNonEmptyString(process.env.LABOS_HPC_WORKSPACE_ROOT);
+    const envWorkspaceRoot = normalizeNonEmptyString(process.env.EPOCH_HPC_WORKSPACE_ROOT);
     const nodeWorkspaceRoot = await resolveLatestNodeWorkspaceRoot(pool);
     if (envWorkspaceRoot) {
-      console.log(`Workspace root: ${envWorkspaceRoot} (LABOS_HPC_WORKSPACE_ROOT)`);
+      console.log(`Workspace root: ${envWorkspaceRoot} (EPOCH_HPC_WORKSPACE_ROOT)`);
     } else if (nodeWorkspaceRoot) {
       console.log(`Workspace root: ${nodeWorkspaceRoot} (latest node permissions)`);
     } else {
       console.warn(
-        "WARN: Workspace root is unavailable. Set LABOS_HPC_WORKSPACE_ROOT or connect an HPC node that reports permissions.workspaceRoot."
+        "WARN: Workspace root is unavailable. Set EPOCH_HPC_WORKSPACE_ROOT or connect an HPC node that reports permissions.workspaceRoot."
       );
     }
   } finally {
