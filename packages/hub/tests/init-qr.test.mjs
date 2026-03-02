@@ -11,7 +11,7 @@ test("buildHubPairingPayloadURL encodes required pairing fields", () => {
   });
   const parsed = new URL(raw);
 
-  assert.equal(parsed.protocol, "epoch-hub:");
+  assert.equal(parsed.protocol, "epoch:");
   assert.equal(parsed.hostname, "pair");
   assert.equal(parsed.searchParams.get("v"), "1");
   assert.equal(parsed.searchParams.get("ws"), "ws://10.0.0.8:8787/ws");
