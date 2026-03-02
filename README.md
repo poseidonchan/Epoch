@@ -71,7 +71,7 @@ iPhone App (SwiftUI)              Hub (Node.js)                HPC Bridge (optio
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/TODO/Epoch.git
+git clone https://github.com/poseidonchan/Epoch.git
 cd Epoch
 corepack enable
 pnpm install
