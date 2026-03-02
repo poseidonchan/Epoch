@@ -86,7 +86,7 @@ export function buildHubPairingPayloadURL(opts: { wsURL: string; token: string; 
   const wsURL = String(opts.wsURL ?? "").trim();
   const token = String(opts.token ?? "").trim();
   const serverId = String(opts.serverId ?? "").trim();
-  const payload = new URL("epoch-hub://pair");
+  const payload = new URL("epoch://pair");
   payload.searchParams.set("v", "1");
   payload.searchParams.set("ws", wsURL);
   payload.searchParams.set("token", token);
