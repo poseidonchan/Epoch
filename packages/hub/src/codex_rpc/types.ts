@@ -58,7 +58,7 @@ export type UserInput =
   | { type: "text"; text: string; text_elements: Array<Record<string, unknown>> }
   | { type: "image"; url: string }
   | { type: "localImage"; path: string }
-  // Inbound-only: LabOS app can send inline attachment payloads over JSON-RPC.
+  // Inbound-only: Epoch app can send inline attachment payloads over JSON-RPC.
   // These are normalized by handlers into `localImage` (images) or `mention` (other files)
   // by staging the payload on disk and referencing the staged path.
   | { type: "attachment"; name: string; mimeType: string | null; inlineDataBase64: string }

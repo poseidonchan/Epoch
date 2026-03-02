@@ -62,7 +62,7 @@ export function extractCodexAuthToken(request: IncomingMessage): string | null {
 
 export function attachCodexTransport(options: CodexTransportOptions) {
   const { ws, request, config, stateDir, pool, runtimeBridge } = options;
-  const token = extractCodexAuthToken(request) ?? "__labos_default_token__";
+  const token = extractCodexAuthToken(request) ?? "__epoch_default_token__";
   const runtime = getOrCreateRuntime({ token, ws, config, stateDir, pool, runtimeBridge });
 
   if (runtime.activeSocket && runtime.activeSocket !== ws) {
@@ -153,7 +153,7 @@ function getOrCreateRuntime(args: {
   }
 
   const connection = new CodexConnectionState(args.ws, {
-    maxIngressQueueDepth: Number(process.env.LABOS_CODEX_MAX_INGRESS_QUEUE ?? "128"),
+    maxIngressQueueDepth: Number(process.env.EPOCH_CODEX_MAX_INGRESS_QUEUE ?? "128"),
   });
   const repository = new CodexRepository({ pool: args.pool, stateDir: args.stateDir });
   const engines = new CodexEngineRegistry({ config: args.config, stateDir: args.stateDir });

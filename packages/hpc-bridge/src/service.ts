@@ -8,7 +8,7 @@ import os from "node:os";
 
 import WebSocket from "ws";
 import { v4 as uuidv4 } from "uuid";
-import { isNodeMethod, nodeMethods } from "@labos/protocol";
+import { isNodeMethod, nodeMethods } from "@epoch/protocol";
 
 import type { BridgeConfig } from "./config.js";
 import { collectStorageUsage } from "./storage-usage.js";
@@ -127,7 +127,7 @@ export class BridgeService {
   private pending = new Map<string, PendingRequest>();
 
   private hpcPrefs: HpcPrefs = {};
-  private readonly heartbeatIntervalMs = normalizePositiveInt(process.env.LABOS_HPC_HEARTBEAT_MS, 1_000);
+  private readonly heartbeatIntervalMs = normalizePositiveInt(process.env.EPOCH_HPC_HEARTBEAT_MS, 1_000);
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private heartbeatInFlight = false;
   private slurmUser: string | null = null;
@@ -222,11 +222,11 @@ export class BridgeService {
         auth: { token: this.cfg.token, signature },
         device: {
           id: this.cfg.nodeId,
-          name: "LabOS HPC Bridge",
+          name: "Epoch Bridge",
           platform: process.platform,
           osVersion: process.version,
         },
-        client: { name: "@labos/hpc-bridge", version: "0.1.0" },
+        client: { name: "@epoch/hpc-bridge", version: "0.1.0" },
         caps: ["slurm", "fs", "artifacts", "logs", "shell"],
         commands: [...nodeMethods],
         permissions: {
@@ -1222,7 +1222,7 @@ export class BridgeService {
       this.assertRuntimePathPolicy(opts.projectId, abs, opts.permissionLevel);
     }
 
-    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "labos-patch-"));
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "epoch-patch-"));
     const patchPath = path.join(tmpDir, `${opts.patchId}.patch`);
     await writeFile(patchPath, patchText, "utf8");
 
@@ -1353,7 +1353,7 @@ export class BridgeService {
 
     const lines: string[] = [];
     lines.push("#!/bin/bash");
-    lines.push(`#SBATCH --job-name=${shellEscape(String(opts.job?.name ?? "labos-run"))}`);
+    lines.push(`#SBATCH --job-name=${shellEscape(String(opts.job?.name ?? "epoch-run"))}`);
     const partition = normalizeOptionalString(opts.job?.resources?.partition) ?? this.hpcPrefs.partition;
     const account = normalizeOptionalString(opts.job?.resources?.account) ?? this.hpcPrefs.account;
     const qos = normalizeOptionalString(opts.job?.resources?.qos) ?? this.hpcPrefs.qos;

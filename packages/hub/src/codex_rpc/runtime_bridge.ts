@@ -1,4 +1,4 @@
-import type { NodeMethod } from "@labos/protocol";
+import type { NodeMethod } from "@epoch/protocol";
 
 export type SessionPermissionLevel = "default" | "full";
 

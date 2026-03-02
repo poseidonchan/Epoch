@@ -73,9 +73,9 @@ test("approval requests conform to ServerRequest schema and decisions conform to
     itemId: "item_cmd_1",
     reason: "Needs network access",
     command: "pnpm test",
-    cwd: "/Users/chan/Documents/GitHub/LabOS",
+    cwd: "/Users/chan/Documents/GitHub/Epoch",
     commandActions: [{ type: "unknown", command: "pnpm test" }],
-    proposedExecpolicyAmendment: ["allow command pnpm test in /Users/chan/Documents/GitHub/LabOS"],
+    proposedExecpolicyAmendment: ["allow command pnpm test in /Users/chan/Documents/GitHub/Epoch"],
   });
   assertValid(serverRequest, cmdRequest, "item/commandExecution/requestApproval");
 
@@ -88,7 +88,7 @@ test("approval requests conform to ServerRequest schema and decisions conform to
     turnId: "turn_456",
     itemId: "item_patch_1",
     reason: "Apply patch to tracked files",
-    grantRoot: "/Users/chan/Documents/GitHub/LabOS",
+    grantRoot: "/Users/chan/Documents/GitHub/Epoch",
   });
   assertValid(serverRequest, fileRequest, "item/fileChange/requestApproval");
 

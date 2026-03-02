@@ -1,4 +1,4 @@
--- LabOS Hub v0.3: Codex session mapping + workspace provisioning queue
+-- Epoch Hub v0.3: Codex session mapping + workspace provisioning queue
 
 ALTER TABLE projects ADD COLUMN backend_engine TEXT NOT NULL DEFAULT 'pi';
 ALTER TABLE projects ADD COLUMN codex_model_provider TEXT;

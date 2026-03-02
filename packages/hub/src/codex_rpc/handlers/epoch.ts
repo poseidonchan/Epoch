@@ -11,7 +11,7 @@ import { generateSessionTitle } from "../../indexing/summarize.js";
 import { getEnvApiKey } from "../../model.js";
 import { loadOpenAIApiKeyFromStateDir } from "../../openai_settings.js";
 
-type LabosHandlerContext = {
+type EpochHandlerContext = {
   repository: CodexRepository;
   engines: CodexEngineRegistry;
   pendingUserInputSummaryBySession?: Map<string, { count: number; kind: string | null }>;
@@ -41,8 +41,8 @@ const DEFAULT_APPROVAL_POLICY = "on-request";
 const STALE_IN_PROGRESS_SECONDS = 10 * 60;
 const CODEX_APP_SERVER_THREAD_ID_RE = /^(?:urn:uuid:)?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
-export async function handleLabosProjectList(
-  ctx: LabosHandlerContext,
+export async function handleEpochProjectList(
+  ctx: EpochHandlerContext,
   _rawParams: Record<string, unknown> | undefined
 ): Promise<Record<string, unknown>> {
   const rows = await ctx.repository.query<any>(
@@ -57,8 +57,8 @@ export async function handleLabosProjectList(
   };
 }
 
-export async function handleLabosProjectCreate(
-  ctx: LabosHandlerContext,
+export async function handleEpochProjectCreate(
+  ctx: EpochHandlerContext,
   rawParams: Record<string, unknown> | undefined
 ): Promise<Record<string, unknown>> {
   const params = rawParams ?? {};
@@ -99,7 +99,7 @@ export async function handleLabosProjectCreate(
   await enqueueWorkspaceProvisioning(ctx.repository, {
     projectId,
     workspacePath,
-    requestedBy: "labos/project/create",
+    requestedBy: "epoch/project/create",
   });
 
   const rows = await ctx.repository.query<any>(
@@ -116,8 +116,8 @@ export async function handleLabosProjectCreate(
   return { project };
 }
 
-export async function handleLabosProjectRename(
-  ctx: LabosHandlerContext,
+export async function handleEpochProjectRename(
+  ctx: EpochHandlerContext,
   rawParams: Record<string, unknown> | undefined
 ): Promise<Record<string, unknown>> {
   const params = rawParams ?? {};
@@ -143,8 +143,8 @@ export async function handleLabosProjectRename(
   return { project: mapProjectRow(rows[0]) };
 }
 
-export async function handleLabosProjectUpdate(
-  ctx: LabosHandlerContext,
+export async function handleEpochProjectUpdate(
+  ctx: EpochHandlerContext,
   rawParams: Record<string, unknown> | undefined
 ): Promise<Record<string, unknown>> {
   const params = rawParams ?? {};
@@ -193,8 +193,8 @@ export async function handleLabosProjectUpdate(
   return { project: mapProjectRow(rows[0]) };
 }
 
-export async function handleLabosProjectDelete(
-  ctx: LabosHandlerContext,
+export async function handleEpochProjectDelete(
+  ctx: EpochHandlerContext,
   rawParams: Record<string, unknown> | undefined
 ): Promise<Record<string, unknown>> {
   const params = rawParams ?? {};
@@ -230,8 +230,8 @@ export async function handleLabosProjectDelete(
   };
 }
 
-export async function handleLabosSessionList(
-  ctx: LabosHandlerContext,
+export async function handleEpochSessionList(
+  ctx: EpochHandlerContext,
   rawParams: Record<string, unknown> | undefined
 ): Promise<Record<string, unknown>> {
   const params = rawParams ?? {};
@@ -259,8 +259,8 @@ export async function handleLabosSessionList(
   };
 }
 
-export async function handleLabosSessionCreate(
-  ctx: LabosHandlerContext,
+export async function handleEpochSessionCreate(
+  ctx: EpochHandlerContext,
   rawParams: Record<string, unknown> | undefined
 ): Promise<Record<string, unknown>> {
   const params = rawParams ?? {};
@@ -355,8 +355,8 @@ export async function handleLabosSessionCreate(
   };
 }
 
-export async function handleLabosSessionUpdate(
-  ctx: LabosHandlerContext,
+export async function handleEpochSessionUpdate(
+  ctx: EpochHandlerContext,
   rawParams: Record<string, unknown> | undefined
 ): Promise<Record<string, unknown>> {
   const params = rawParams ?? {};
@@ -488,8 +488,8 @@ export async function handleLabosSessionUpdate(
   };
 }
 
-export async function handleLabosSessionDelete(
-  ctx: LabosHandlerContext,
+export async function handleEpochSessionDelete(
+  ctx: EpochHandlerContext,
   rawParams: Record<string, unknown> | undefined
 ): Promise<Record<string, unknown>> {
   const params = rawParams ?? {};
@@ -519,8 +519,8 @@ export async function handleLabosSessionDelete(
   };
 }
 
-export async function handleLabosSessionGenerateTitle(
-  ctx: LabosHandlerContext,
+export async function handleEpochSessionGenerateTitle(
+  ctx: EpochHandlerContext,
   rawParams: Record<string, unknown> | undefined
 ): Promise<Record<string, unknown>> {
   const params = rawParams ?? {};
@@ -572,8 +572,8 @@ export async function handleLabosSessionGenerateTitle(
   return { session: mapSessionRow(sessionRows[0]) };
 }
 
-export async function handleLabosSessionRead(
-  ctx: LabosHandlerContext,
+export async function handleEpochSessionRead(
+  ctx: EpochHandlerContext,
   rawParams: Record<string, unknown> | undefined
 ): Promise<Record<string, unknown>> {
   const params = rawParams ?? {};
@@ -743,8 +743,8 @@ export async function handleLabosSessionRead(
   return response;
 }
 
-export async function handleLabosSessionRegenerate(
-  ctx: LabosHandlerContext,
+export async function handleEpochSessionRegenerate(
+  ctx: EpochHandlerContext,
   rawParams: Record<string, unknown> | undefined
 ): Promise<{
   threadId: string;
@@ -872,8 +872,8 @@ export async function handleLabosSessionRegenerate(
   };
 }
 
-export async function handleLabosArtifactList(
-  ctx: LabosHandlerContext,
+export async function handleEpochArtifactList(
+  ctx: EpochHandlerContext,
   rawParams: Record<string, unknown> | undefined
 ): Promise<Record<string, unknown>> {
   const params = rawParams ?? {};
@@ -898,8 +898,8 @@ export async function handleLabosArtifactList(
   };
 }
 
-export async function handleLabosArtifactGet(
-  ctx: LabosHandlerContext,
+export async function handleEpochArtifactGet(
+  ctx: EpochHandlerContext,
   rawParams: Record<string, unknown> | undefined
 ): Promise<Record<string, unknown>> {
   const params = rawParams ?? {};
@@ -927,8 +927,8 @@ export async function handleLabosArtifactGet(
   };
 }
 
-export async function handleLabosArtifactDelete(
-  ctx: LabosHandlerContext,
+export async function handleEpochArtifactDelete(
+  ctx: EpochHandlerContext,
   rawParams: Record<string, unknown> | undefined
 ): Promise<Record<string, unknown>> {
   const params = rawParams ?? {};
@@ -963,8 +963,8 @@ export async function handleLabosArtifactDelete(
   };
 }
 
-export async function handleLabosRunList(
-  ctx: LabosHandlerContext,
+export async function handleEpochRunList(
+  ctx: EpochHandlerContext,
   rawParams: Record<string, unknown> | undefined
 ): Promise<Record<string, unknown>> {
   const params = rawParams ?? {};
@@ -994,8 +994,8 @@ export async function handleLabosRunList(
   };
 }
 
-export async function handleLabosRunGet(
-  ctx: LabosHandlerContext,
+export async function handleEpochRunGet(
+  ctx: EpochHandlerContext,
   rawParams: Record<string, unknown> | undefined
 ): Promise<Record<string, unknown>> {
   const params = rawParams ?? {};
@@ -1021,8 +1021,8 @@ export async function handleLabosRunGet(
   };
 }
 
-export async function handleLabosHpcPrefsSet(
-  _ctx: LabosHandlerContext,
+export async function handleEpochHpcPrefsSet(
+  _ctx: EpochHandlerContext,
   _rawParams: Record<string, unknown> | undefined
 ): Promise<Record<string, unknown>> {
   // Preferences are still owned by the legacy node connection in v0.1.
@@ -1236,7 +1236,7 @@ async function createMappedThreadForSession(
     updatedAt: createdAt,
     path: null,
     cwd: resolvedCwd,
-    cliVersion: "@labos/hub/0.1.0",
+    cliVersion: "@epoch/hub/0.1.0",
     source: "appServer",
     gitInfo: null,
     turns: [],
@@ -1244,7 +1244,7 @@ async function createMappedThreadForSession(
 }
 
 async function ensureMappedThreadForSession(
-  ctx: LabosHandlerContext,
+  ctx: EpochHandlerContext,
   args: {
     projectId: string;
     sessionId: string;
@@ -1669,7 +1669,7 @@ async function ensureBootstrapDefaults(stateDir: string, projectId: string) {
   const defaultAgents = [
     "# AGENTS.md",
     "",
-    "- This workspace is managed by LabOS Hub.",
+    "- This workspace is managed by Epoch Hub.",
     "- Session memory is recorded in per-session transcript JSONL files.",
     "- Use project uploads and indexed snippets as retrieval context before broad web/tool calls.",
     "",
@@ -1725,7 +1725,7 @@ async function resolveProjectWorkspacePath(repository: CodexRepository, projectI
 }
 
 async function resolveWorkspaceRoot(repository: CodexRepository): Promise<string | null> {
-  const envRoot = normalizeNonEmptyString(process.env.LABOS_HPC_WORKSPACE_ROOT);
+  const envRoot = normalizeNonEmptyString(process.env.EPOCH_HPC_WORKSPACE_ROOT);
   if (envRoot) return envRoot;
 
   let rows: any[] = [];

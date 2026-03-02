@@ -35,7 +35,7 @@ export type HubConfig = {
 };
 
 export function getStateDir(): string {
-  return process.env.LABOS_STATE_DIR ?? path.join(os.homedir(), ".labos");
+  return process.env.EPOCH_STATE_DIR ?? path.join(os.homedir(), ".epoch");
 }
 
 export async function ensureStateDir(stateDir: string) {

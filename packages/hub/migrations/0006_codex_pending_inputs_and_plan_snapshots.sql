@@ -1,4 +1,4 @@
--- LabOS Hub v0.4: pending user-input durability + active plan snapshots
+-- Epoch Hub v0.4: pending user-input durability + active plan snapshots
 
 CREATE TABLE IF NOT EXISTS codex_pending_inputs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

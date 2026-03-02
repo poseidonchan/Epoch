@@ -1,4 +1,4 @@
--- LabOS Hub v0.5: session permission audit events
+-- Epoch Hub v0.5: session permission audit events
 
 CREATE TABLE IF NOT EXISTS session_permission_events (
   id TEXT PRIMARY KEY,

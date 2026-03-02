@@ -15,14 +15,14 @@ test("handleInitialize stores capabilities and supports optOutNotificationMethod
   );
 
   const response = handleInitialize(conn, {
-    clientInfo: { name: "LabOS", version: "0.1.0" },
+    clientInfo: { name: "Epoch", version: "0.1.0" },
     capabilities: {
       experimentalApi: true,
       optOutNotificationMethods: ["item/agentMessage/delta", "turn/diff/updated"],
     },
   });
 
-  assert.equal(response.userAgent, "@labos/hub/0.1.0");
+  assert.equal(response.userAgent, "@epoch/hub/0.1.0");
   assert.equal(conn.initializedRequestReceived, true);
   assert.equal(conn.capabilities.experimentalApi, true);
   assert.equal(conn.capabilities.optOutNotificationMethods.has("item/agentMessage/delta"), true);

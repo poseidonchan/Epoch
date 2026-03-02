@@ -37,7 +37,7 @@ export async function fetchUrlContent(url: string, opts?: { signal?: AbortSignal
     const res = await fetch(url, {
       signal: ac.signal,
       redirect: "follow",
-      headers: { "User-Agent": "LabOS-Hub/1.0" },
+      headers: { "User-Agent": "Epoch-Hub/1.0" },
     });
 
     if (!res.ok) {
@@ -105,7 +105,7 @@ async function fetchArxivPdf(arxivId: string, originalUrl: string, opts?: { sign
     const res = await fetch(pdfUrl, {
       signal: ac.signal,
       redirect: "follow",
-      headers: { "User-Agent": "LabOS-Hub/1.0" },
+      headers: { "User-Agent": "Epoch-Hub/1.0" },
     });
 
     if (!res.ok) {

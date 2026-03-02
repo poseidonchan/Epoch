@@ -14,8 +14,8 @@ export async function pairCommand(argv: string[]) {
       await configCommand(argv, { mode: "config" });
       return;
     }
-    console.error("Usage: labos-hpc-bridge pair --hub <wss://...> --token <token> --workspace-root <absolute-path>");
-    console.error("Hint: run `labos-hpc-bridge config` for interactive setup.");
+    console.error("Usage: epoch-bridge pair --hub <wss://...> --token <token> --workspace-root <absolute-path>");
+    console.error("Hint: run `epoch-bridge config` for interactive setup.");
     process.exitCode = 1;
     return;
   }
@@ -39,7 +39,7 @@ export async function pairCommand(argv: string[]) {
   console.log(`- hubUrl: ${cfg.hubUrl}`);
   console.log(`- nodeId: ${cfg.nodeId}`);
   console.log(`- workspaceRoot: ${cfg.workspaceRoot}`);
-  console.log("Hint: run `labos-hpc-bridge start` to connect this bridge.");
+  console.log("Hint: run `epoch-bridge start` to connect this bridge.");
 }
 
 function flag(argv: string[], name: string) {

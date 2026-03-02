@@ -12,7 +12,7 @@ export async function initCommand(_argv: string[]) {
   const ui = createWizardUI();
   const prompter = createWizardPrompter(ui);
   try {
-    ui.banner("LabOS Hub Initialization", "Create state/config, run migrations, and print pairing QR");
+    ui.banner("Epoch Hub Initialization", "Create state/config, run migrations, and print pairing QR");
 
     const stateDir = getStateDir();
     await ensureStateDir(stateDir);
@@ -23,7 +23,7 @@ export async function initCommand(_argv: string[]) {
       throw new Error("Failed to create hub config");
     }
 
-    const dbPath = process.env.LABOS_DB_PATH ?? path.join(stateDir, "labos.sqlite");
+    const dbPath = process.env.EPOCH_DB_PATH ?? path.join(stateDir, "epoch.sqlite");
 
     const pool = await connectDb(dbPath);
     try {
@@ -46,7 +46,7 @@ export async function initCommand(_argv: string[]) {
     });
     ui.line();
     ui.step(4, 4, "Pairing QR generated", "ok");
-    ui.line("Scan this in LabOS iPhone app Settings > Gateway > Scan Hub QR");
+    ui.line("Scan this in Epoch iPhone app Settings > Gateway > Scan Hub QR");
     ui.keyValue("Pairing WS URL", pairingWS.wsURL);
     if (pairingWS.warning) {
       ui.warn(pairingWS.warning);
@@ -56,12 +56,12 @@ export async function initCommand(_argv: string[]) {
     ui.line(pairingPayloadURL);
 
     if (!prompter.interactive) {
-      ui.note("Next: run `labos-hub config` to set codex defaults and optional OPENAI_API_KEY for file embeddings.");
+      ui.note("Next: run `epoch-hub config` to set codex defaults and optional OPENAI_API_KEY for file embeddings.");
       return;
     }
 
     const runConfig = await prompter.confirm({
-      message: "Run `labos-hub config` now?",
+      message: "Run `epoch-hub config` now?",
       defaultYes: true,
     });
     if (runConfig) {
@@ -70,13 +70,13 @@ export async function initCommand(_argv: string[]) {
     }
 
     const startNow = await prompter.confirm({
-      message: "Start LabOS Hub now?",
+      message: "Start Epoch Hub now?",
       defaultYes: true,
     });
     if (startNow) {
       await startCommand([]);
     } else {
-      ui.note("Next: run `labos-hub start` when ready.");
+      ui.note("Next: run `epoch-hub start` when ready.");
     }
   } finally {
     prompter.close();

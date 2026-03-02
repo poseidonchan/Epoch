@@ -22,9 +22,9 @@ test("hub --help includes stop and status", async () => {
 
 test("hub status shows daemon-aware status output", async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "hub-status-"));
-  const { stdout } = await runHub(["status"], { LABOS_STATE_DIR: stateDir });
-  assert.match(stdout, /LabOS Hub Status/);
-  assert.match(stdout, /Config:\s+missing \(run labos-hub init\)/i);
+  const { stdout } = await runHub(["status"], { EPOCH_STATE_DIR: stateDir });
+  assert.match(stdout, /Epoch Hub Status/);
+  assert.match(stdout, /Config:\s+missing \(run epoch-hub init\)/i);
   assert.match(stdout, /Daemon:\s+stopped/i);
 });
 
@@ -33,7 +33,7 @@ test("hub status normalizes daemon metadata defaults", async () => {
   const pidPath = path.join(stateDir, "hub.pid");
   await writeFile(pidPath, JSON.stringify({ pid: process.pid }) + "\n", "utf8");
 
-  const { stdout } = await runHub(["status"], { LABOS_STATE_DIR: stateDir });
+  const { stdout } = await runHub(["status"], { EPOCH_STATE_DIR: stateDir });
   assert.match(stdout, /Daemon:\s+running \(pid/i);
   assert.match(stdout, /Host:\s+0\.0\.0\.0/);
   assert.match(stdout, /Port:\s+8787/);

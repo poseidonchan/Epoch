@@ -142,7 +142,7 @@ export async function handleThreadStart(
     updatedAt: createdAt,
     path: null,
     cwd,
-    cliVersion: "@labos/hub/0.1.0",
+    cliVersion: "@epoch/hub/0.1.0",
     source: "appServer",
     gitInfo: null,
     turns: [],
@@ -354,7 +354,7 @@ export async function handleThreadList(
     updatedAt: record.updatedAt,
     path: null,
     cwd: record.cwd,
-    cliVersion: "@labos/hub/0.1.0",
+    cliVersion: "@epoch/hub/0.1.0",
     source: "appServer",
     gitInfo: null,
     turns: [],
@@ -449,7 +449,7 @@ async function resolveProjectWorkspacePath(repository: CodexRepository, projectI
 }
 
 async function resolveWorkspaceRoot(repository: CodexRepository): Promise<string | null> {
-  const envRoot = normalizeNonEmptyString(process.env.LABOS_HPC_WORKSPACE_ROOT);
+  const envRoot = normalizeNonEmptyString(process.env.EPOCH_HPC_WORKSPACE_ROOT);
   if (envRoot) return envRoot;
 
   let rows: any[] = [];
@@ -599,7 +599,7 @@ export async function maybePersistThreadFromResponse(repository: CodexRepository
 
   // Some app-server variants reuse simple turn/item IDs (e.g. "1", "2")
   // across different threads. Scope persisted IDs by thread to avoid global
-  // PK collisions in LabOS storage while keeping wire payloads unchanged.
+  // PK collisions in Epoch storage while keeping wire payloads unchanged.
   const scopedTurns = normalizedTurns.map((turn) => ({
     ...turn,
     id: scopedTurnId(threadId, turn.id, scopedIds),

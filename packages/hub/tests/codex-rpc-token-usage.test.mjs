@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { CodexConnectionState, CodexRpcRouter, handleLabosSessionRead } from "../dist/index.js";
+import { CodexConnectionState, CodexRpcRouter, handleEpochSessionRead } from "../dist/index.js";
 
 test("thread/tokenUsage/updated parses nested tokenUsage payload and preserves modelId when missing", async () => {
   const sent = [];
@@ -112,9 +112,9 @@ test("thread/tokenUsage/updated remains backward compatible with legacy flat pay
   assert.equal(queries[0].args[6], "session_usage_legacy");
 });
 
-test("handleLabosSessionRead includes context payload with remaining tokens", async () => {
-  const originalRoot = process.env.LABOS_HPC_WORKSPACE_ROOT;
-  process.env.LABOS_HPC_WORKSPACE_ROOT = "/tmp/labos";
+test("handleEpochSessionRead includes context payload with remaining tokens", async () => {
+  const originalRoot = process.env.EPOCH_HPC_WORKSPACE_ROOT;
+  process.env.EPOCH_HPC_WORKSPACE_ROOT = "/tmp/epoch";
 
   const projectId = "123e4567-e89b-12d3-a456-426614174200";
   const sessionId = "123e4567-e89b-12d3-a456-426614174201";
@@ -180,7 +180,7 @@ test("handleLabosSessionRead includes context payload with remaining tokens", as
           updatedAt: 2,
           path: null,
           cwd: "projects/123e4567-e89b-12d3-a456-426614174200",
-          cliVersion: "@labos/hub/0.1.0",
+          cliVersion: "@epoch/hub/0.1.0",
           source: "appServer",
           gitInfo: null,
           turns: [],
@@ -198,7 +198,7 @@ test("handleLabosSessionRead includes context payload with remaining tokens", as
       },
     };
 
-    const result = await handleLabosSessionRead(
+    const result = await handleEpochSessionRead(
       {
         repository,
         engines: {},
@@ -223,21 +223,21 @@ test("handleLabosSessionRead includes context payload with remaining tokens", as
     assert.equal(result.context.updatedAt, "2026-02-26T10:00:00.000Z");
   } finally {
     if (originalRoot == null) {
-      delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+      delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
     } else {
-      process.env.LABOS_HPC_WORKSPACE_ROOT = originalRoot;
+      process.env.EPOCH_HPC_WORKSPACE_ROOT = originalRoot;
     }
   }
 });
 
-test("handleLabosSessionRead marks mapped threads for remote rehydration when cwd changes", async () => {
-  const originalRoot = process.env.LABOS_HPC_WORKSPACE_ROOT;
-  process.env.LABOS_HPC_WORKSPACE_ROOT = "/tmp/labos";
+test("handleEpochSessionRead marks mapped threads for remote rehydration when cwd changes", async () => {
+  const originalRoot = process.env.EPOCH_HPC_WORKSPACE_ROOT;
+  process.env.EPOCH_HPC_WORKSPACE_ROOT = "/tmp/epoch";
 
   const projectId = "123e4567-e89b-12d3-a456-426614174210";
   const sessionId = "123e4567-e89b-12d3-a456-426614174211";
   const threadId = "123e4567-e89b-12d3-a456-426614174212";
-  const expectedWorkspace = `/tmp/labos/projects/${projectId}`;
+  const expectedWorkspace = `/tmp/epoch/projects/${projectId}`;
   let updatedThread = null;
 
   try {
@@ -273,7 +273,7 @@ test("handleLabosSessionRead marks mapped threads for remote rehydration when cw
         return {
           id: threadId,
           projectId,
-          cwd: `/Users/chan/Documents/GitHub/LabOS/projects/${projectId}`,
+          cwd: `/Users/chan/Documents/GitHub/Epoch/projects/${projectId}`,
           modelProvider: "openai",
           modelId: "gpt-5.1",
           preview: "",
@@ -298,7 +298,7 @@ test("handleLabosSessionRead marks mapped threads for remote rehydration when cw
           updatedAt: 2,
           path: null,
           cwd: expectedWorkspace,
-          cliVersion: "@labos/hub/0.1.0",
+          cliVersion: "@epoch/hub/0.1.0",
           source: "appServer",
           gitInfo: null,
           turns: [],
@@ -316,7 +316,7 @@ test("handleLabosSessionRead marks mapped threads for remote rehydration when cw
       },
     };
 
-    const result = await handleLabosSessionRead(
+    const result = await handleEpochSessionRead(
       {
         repository,
         engines: {},
@@ -338,16 +338,16 @@ test("handleLabosSessionRead marks mapped threads for remote rehydration when cw
     assert.equal(result.syncState, "needsRemoteHydration");
   } finally {
     if (originalRoot == null) {
-      delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+      delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
     } else {
-      process.env.LABOS_HPC_WORKSPACE_ROOT = originalRoot;
+      process.env.EPOCH_HPC_WORKSPACE_ROOT = originalRoot;
     }
   }
 });
 
-test("handleLabosSessionRead fails fast when workspace root is unavailable", async () => {
-  const originalRoot = process.env.LABOS_HPC_WORKSPACE_ROOT;
-  delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+test("handleEpochSessionRead fails fast when workspace root is unavailable", async () => {
+  const originalRoot = process.env.EPOCH_HPC_WORKSPACE_ROOT;
+  delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
 
   const projectId = "123e4567-e89b-12d3-a456-426614174220";
   const sessionId = "123e4567-e89b-12d3-a456-426614174221";
@@ -387,7 +387,7 @@ test("handleLabosSessionRead fails fast when workspace root is unavailable", asy
 
     await assert.rejects(
       () =>
-        handleLabosSessionRead(
+        handleEpochSessionRead(
           {
             repository,
             engines: {},
@@ -404,21 +404,21 @@ test("handleLabosSessionRead fails fast when workspace root is unavailable", asy
     );
   } finally {
     if (originalRoot == null) {
-      delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+      delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
     } else {
-      process.env.LABOS_HPC_WORKSPACE_ROOT = originalRoot;
+      process.env.EPOCH_HPC_WORKSPACE_ROOT = originalRoot;
     }
   }
 });
 
-test("handleLabosSessionRead resolves workspace root from nodes table when env is unavailable", async () => {
-  const originalRoot = process.env.LABOS_HPC_WORKSPACE_ROOT;
-  delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+test("handleEpochSessionRead resolves workspace root from nodes table when env is unavailable", async () => {
+  const originalRoot = process.env.EPOCH_HPC_WORKSPACE_ROOT;
+  delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
 
   const projectId = "123e4567-e89b-12d3-a456-426614174222";
   const sessionId = "123e4567-e89b-12d3-a456-426614174223";
   const threadId = "123e4567-e89b-12d3-a456-426614174224";
-  const workspaceRoot = "/tmp/labos-from-node";
+  const workspaceRoot = "/tmp/epoch-from-node";
   const expectedCwd = `${workspaceRoot}/projects/${projectId}`;
   let updatedThread = null;
 
@@ -487,7 +487,7 @@ test("handleLabosSessionRead resolves workspace root from nodes table when env i
           updatedAt: 2,
           path: null,
           cwd: expectedCwd,
-          cliVersion: "@labos/hub/0.1.0",
+          cliVersion: "@epoch/hub/0.1.0",
           source: "appServer",
           gitInfo: null,
           turns: [],
@@ -505,7 +505,7 @@ test("handleLabosSessionRead resolves workspace root from nodes table when env i
       },
     };
 
-    const result = await handleLabosSessionRead(
+    const result = await handleEpochSessionRead(
       {
         repository,
         engines: {},
@@ -524,9 +524,9 @@ test("handleLabosSessionRead resolves workspace root from nodes table when env i
     assert.equal(result.thread.cwd, expectedCwd);
   } finally {
     if (originalRoot == null) {
-      delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+      delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
     } else {
-      process.env.LABOS_HPC_WORKSPACE_ROOT = originalRoot;
+      process.env.EPOCH_HPC_WORKSPACE_ROOT = originalRoot;
     }
   }
 });

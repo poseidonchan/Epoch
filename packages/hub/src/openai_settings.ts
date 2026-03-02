@@ -35,7 +35,7 @@ export function resolveOpenAIOcrModelFromConfig(config: HubConfig | null | undef
 export function resolveEffectiveOpenAIOcrModel(config: HubConfig | null | undefined): string {
   const configuredModel = resolveOpenAIOcrModelFromConfig(config);
   if (configuredModel) return configuredModel;
-  const envModel = normalizeOptionalString(process.env.LABOS_PDF_OCR_MODEL);
+  const envModel = normalizeOptionalString(process.env.EPOCH_PDF_OCR_MODEL);
   if (envModel) return envModel;
   return DEFAULT_OPENAI_PDF_OCR_MODEL;
 }

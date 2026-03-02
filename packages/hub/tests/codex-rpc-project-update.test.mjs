@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { handleLabosProjectUpdate } from "../dist/index.js";
+import { handleEpochProjectUpdate } from "../dist/index.js";
 
-test("handleLabosProjectUpdate patches codex policy+sandbox and returns mapped project", async () => {
+test("handleEpochProjectUpdate patches codex policy+sandbox and returns mapped project", async () => {
   const projectId = "123e4567-e89b-12d3-a456-426614174222";
   const expectedSandbox = { mode: "danger-full-access" };
 
@@ -39,7 +39,7 @@ test("handleLabosProjectUpdate patches codex policy+sandbox and returns mapped p
     },
   };
 
-  const result = await handleLabosProjectUpdate(
+  const result = await handleEpochProjectUpdate(
     {
       repository,
       engines: {},

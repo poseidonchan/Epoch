@@ -1,4 +1,4 @@
--- LabOS Hub v0.1 initial schema
+-- Epoch Hub v0.1 initial schema
 
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,

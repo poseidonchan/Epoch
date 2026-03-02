@@ -1,5 +1,5 @@
 {
-  "name": "@labos/cli-utils",
+  "name": "@epoch/cli-utils",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",

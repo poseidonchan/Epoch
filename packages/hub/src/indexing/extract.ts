@@ -35,11 +35,11 @@ const TEXT_EXTENSIONS = new Set([
   ".sql",
   ".log",
 ]);
-const OPENAI_BASE_URL = (process.env.LABOS_OPENAI_BASE_URL?.trim() || "https://api.openai.com").replace(/\/+$/, "");
+const OPENAI_BASE_URL = (process.env.EPOCH_OPENAI_BASE_URL?.trim() || "https://api.openai.com").replace(/\/+$/, "");
 const DEFAULT_PDF_OCR_MODEL = "gpt-5.2";
-const PDF_OCR_MAX_BYTES = parsePositiveInt(process.env.LABOS_PDF_OCR_MAX_BYTES, 15 * 1024 * 1024);
-const PDF_OCR_MIN_TEXT_LENGTH = parsePositiveInt(process.env.LABOS_PDF_OCR_MIN_TEXT_LENGTH, 240);
-const PDF_OCR_MAX_RETRIES = parsePositiveInt(process.env.LABOS_PDF_OCR_MAX_RETRIES, 2);
+const PDF_OCR_MAX_BYTES = parsePositiveInt(process.env.EPOCH_PDF_OCR_MAX_BYTES, 15 * 1024 * 1024);
+const PDF_OCR_MIN_TEXT_LENGTH = parsePositiveInt(process.env.EPOCH_PDF_OCR_MIN_TEXT_LENGTH, 240);
+const PDF_OCR_MAX_RETRIES = parsePositiveInt(process.env.EPOCH_PDF_OCR_MAX_RETRIES, 2);
 
 type OpenAIResponsesOutputContent = {
   type?: string | null;
@@ -278,7 +278,7 @@ async function extractPdfTextWithOpenAIOcr(
 function resolvePdfOcrModel(configModel?: string | null): string {
   const configured = normalizeOptionalString(configModel);
   if (configured) return configured;
-  const envModel = normalizeOptionalString(process.env.LABOS_PDF_OCR_MODEL);
+  const envModel = normalizeOptionalString(process.env.EPOCH_PDF_OCR_MODEL);
   if (envModel) return envModel;
   return DEFAULT_PDF_OCR_MODEL;
 }

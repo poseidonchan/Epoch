@@ -9,7 +9,7 @@ import { pipeline } from "node:stream/promises";
 import { v4 as uuidv4 } from "uuid";
 import { WebSocketServer, type WebSocket } from "ws";
 
-import { isNodeMethod, isOperatorMethod, type NodeMethod } from "@labos/protocol";
+import { isNodeMethod, isOperatorMethod, type NodeMethod } from "@epoch/protocol";
 
 import { saveHubConfig, type HubConfig } from "./config.js";
 import type { DbPool } from "./db/db.js";
@@ -180,13 +180,13 @@ export async function startHub(opts: HubStartOptions): Promise<HubHandle> {
   const state = createHubState(opts);
   await ensureHubDirs(opts.stateDir);
 
-  if ((process.env.LABOS_REPAIR_ON_START ?? "1") !== "0") {
+  if ((process.env.EPOCH_REPAIR_ON_START ?? "1") !== "0") {
     await repairMessagesFromJsonl(state).catch((err) => {
       fastify.log.error({ err }, "startup repair failed");
     });
   }
 
-  if ((process.env.LABOS_CODEX_BACKFILL_ON_START ?? "1") !== "0") {
+  if ((process.env.EPOCH_CODEX_BACKFILL_ON_START ?? "1") !== "0") {
     const codexRepository = new CodexRepository({
       pool: opts.pool,
       stateDir: opts.stateDir,
@@ -275,7 +275,7 @@ export async function startHub(opts: HubStartOptions): Promise<HubHandle> {
   });
 
   await fastify.listen({ port: opts.port, host: opts.host });
-  fastify.log.info(`LabOS Hub listening on http://${opts.host}:${opts.port} (ws: /ws, codex: /codex)`);
+  fastify.log.info(`Epoch Hub listening on http://${opts.host}:${opts.port} (ws: /ws, codex: /codex)`);
 
   const close = async () => {
     try {
@@ -900,7 +900,7 @@ async function handleWsConnection(ws: WebSocket, state: HubState) {
           roleAccepted: role,
           scopesAccepted: role === "operator" ? (ctx as any).scopes : undefined,
           commandsAccepted: role === "node" ? (ctx as any).commands : undefined,
-          server: { name: "@labos/hub", version: "0.1.0" },
+          server: { name: "@epoch/hub", version: "0.1.0" },
         });
         return;
       }
@@ -1540,7 +1540,7 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
         const hasApiKey = Object.prototype.hasOwnProperty.call(params, "apiKey");
         const hasOcrModel = Object.prototype.hasOwnProperty.call(params, "ocrModel");
         const clear = Boolean(params.clear ?? false);
-        const source = normalizeOptionalString(params.source) ?? "labos-app";
+        const source = normalizeOptionalString(params.source) ?? "epoch-app";
         if (!hasApiKey && !hasOcrModel && !clear) {
           sendResError(ws, id, "BAD_REQUEST", "settings.openai.set requires apiKey, ocrModel, or clear=true");
           return;
@@ -1600,7 +1600,7 @@ async function listProjects(state: HubState) {
 async function createProject(state: HubState, name: string) {
   const id = uuidv4();
   const now = new Date().toISOString();
-  const backendEngine = normalizeCodexEngine(process.env.LABOS_CODEX_DEFAULT_ENGINE) ?? "codex-app-server";
+  const backendEngine = normalizeCodexEngine(process.env.EPOCH_CODEX_DEFAULT_ENGINE) ?? "codex-app-server";
   const workspacePath = resolveProjectWorkspacePath(state, id);
   await state.pool.query(
     `INSERT INTO projects (
@@ -3181,13 +3181,13 @@ async function ensureBootstrapDefaults(state: HubState, projectId: string) {
   const files: Array<[string, string]> = [
     [
       "AGENTS.md",
-      `# AGENTS.md\n\n- This workspace is managed by LabOS Hub.\n- Uploaded project files are available in the \`context/uploads/\` directory.\n  - Original files are synced as-is (e.g. \`context/uploads/paper.pdf\`).\n  - Each file also has a \`.txt\` version with full extracted text (e.g. \`context/uploads/paper.txt\`).\n  - Each file also has a \`.txt.summary\` sidecar with a brief summary.\n  - To read an uploaded file, use: cat context/uploads/<filename>.txt\n- Session memory is the canonical chat transcript JSONL.\n- Bootstrap memory files are injected into the agent context on every run.\n`,
+      `# AGENTS.md\n\n- This workspace is managed by Epoch Hub.\n- Uploaded project files are available in the \`context/uploads/\` directory.\n  - Original files are synced as-is (e.g. \`context/uploads/paper.pdf\`).\n  - Each file also has a \`.txt\` version with full extracted text (e.g. \`context/uploads/paper.txt\`).\n  - Each file also has a \`.txt.summary\` sidecar with a brief summary.\n  - To read an uploaded file, use: cat context/uploads/<filename>.txt\n- Session memory is the canonical chat transcript JSONL.\n- Bootstrap memory files are injected into the agent context on every run.\n`,
     ],
     [
       "USERS.md",
       `# USERS.md\n\n- Preferences: iPhone-first UI, streaming chat, approvals.\n- Default: ask for confirmation before any side effects.\n`,
     ],
-    ["SOUL.md", `# SOUL.md\n\n- Identity: LabOS research assistant.\n- Tone: concise, direct, friendly.\n`],
+    ["SOUL.md", `# SOUL.md\n\n- Identity: Epoch research assistant.\n- Tone: concise, direct, friendly.\n`],
     ["TOOLS.md", `# TOOLS.md\n\n- Approvals gate any side effects.\n`],
   ];
 
@@ -3557,7 +3557,7 @@ function safeJsonString(raw: unknown): string | null {
 
 function resolveProjectWorkspacePath(state: HubState, projectId: string): string {
   const nodeWorkspaceRoot = state.node?.ctx.permissions?.workspaceRoot;
-  const root = normalizeOptionalString(typeof nodeWorkspaceRoot === "string" ? nodeWorkspaceRoot : process.env.LABOS_HPC_WORKSPACE_ROOT);
+  const root = normalizeOptionalString(typeof nodeWorkspaceRoot === "string" ? nodeWorkspaceRoot : process.env.EPOCH_HPC_WORKSPACE_ROOT);
   if (root) {
     return path.join(root, "projects", projectId);
   }

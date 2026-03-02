@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createWizardPrompter } from "@labos/cli-utils";
+import { createWizardPrompter } from "@epoch/cli-utils";
 
 test("non-interactive prompter rejects required values", async () => {
   const prompter = createWizardPrompter({ interactive: false });
@@ -15,7 +15,7 @@ test("non-interactive prompter rejects required values", async () => {
 test("non-interactive prompter keeps optional/default behavior", async () => {
   const prompter = createWizardPrompter({ interactive: false });
 
-  assert.equal(await prompter.input({ message: "Workspace root", defaultValue: "/tmp/labos" }), "/tmp/labos");
+  assert.equal(await prompter.input({ message: "Workspace root", defaultValue: "/tmp/epoch" }), "/tmp/epoch");
   assert.equal(await prompter.input({ message: "Optional partition", allowEmpty: true }), "");
   assert.equal(await prompter.secret({ message: "Optional secret", allowEmpty: true }), "");
   assert.equal(await prompter.confirm({ message: "Confirm", defaultYes: true }), true);

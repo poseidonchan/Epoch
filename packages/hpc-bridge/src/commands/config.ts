@@ -12,7 +12,7 @@ type ConfigMode = "init" | "config";
 type LifecycleAction = "start" | "restart" | "skip";
 
 const CONFIG_USAGE =
-  "Usage: labos-hpc-bridge config --hub <ws://.../ws> --token <token> --workspace-root <absolute-path> [--partition <name>] [--account <name>] [--qos <name>] [--time-mins <minutes>] [--cpus <n>] [--mem-mb <n>] [--gpus <n>]";
+  "Usage: epoch-bridge config --hub <ws://.../ws> --token <token> --workspace-root <absolute-path> [--partition <name>] [--account <name>] [--qos <name>] [--time-mins <minutes>] [--cpus <n>] [--mem-mb <n>] [--gpus <n>]";
 
 export type ConfigCommandOptions = {
   mode?: ConfigMode;
@@ -31,7 +31,7 @@ export async function configCommand(argv: string[], opts: ConfigCommandOptions =
     const stateDir = configDir();
     const defaultsFromFlags = parseBridgeConfigFlags(argv);
 
-    const heading = mode === "init" ? "LabOS HPC Bridge Initialization Wizard" : "LabOS HPC Bridge Configuration Wizard";
+    const heading = mode === "init" ? "Epoch Bridge Initialization Wizard" : "Epoch Bridge Configuration Wizard";
     ui.banner(heading, "Set Hub URL/token, workspace root, and scheduling defaults");
     ui.step(1, 5, "Load existing bridge configuration", "ok");
     ui.keyValue("Config path", path.join(stateDir, "config.json"));
@@ -101,7 +101,7 @@ export async function configCommand(argv: string[], opts: ConfigCommandOptions =
       const daemonInfo = await readBridgeDaemonInfo(stateDir);
       running = Boolean(daemonInfo && daemonInfo.pid > 1 && isProcessRunning(daemonInfo.pid));
       const shouldLaunch = await prompter.confirm({
-        message: running ? "Restart LabOS HPC bridge now?" : "Start LabOS HPC bridge now?",
+        message: running ? "Restart Epoch Bridge now?" : "Start Epoch Bridge now?",
         defaultYes: true,
       });
 
@@ -116,7 +116,7 @@ export async function configCommand(argv: string[], opts: ConfigCommandOptions =
     }
 
     if (lifecycleAction === "skip") {
-      ui.note("Next: run `labos-hpc-bridge start` when ready.");
+      ui.note("Next: run `epoch-bridge start` when ready.");
       return;
     }
 
@@ -204,7 +204,7 @@ async function collectConfigInputs(args: {
     token = nextToken.trim() || token;
     workspaceRoot = await prompter.input({
       message: "Workspace root",
-      defaultValue: workspaceRoot || "/tmp/labos",
+      defaultValue: workspaceRoot || "/tmp/epoch",
     });
   }
 

@@ -4,8 +4,8 @@ import assert from "node:assert/strict";
 import { handleThreadStart } from "../dist/index.js";
 
 test("handleThreadStart fails fast when workspace root is unavailable for project sessions", async () => {
-  const originalRoot = process.env.LABOS_HPC_WORKSPACE_ROOT;
-  delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+  const originalRoot = process.env.EPOCH_HPC_WORKSPACE_ROOT;
+  delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
 
   const sessionId = "123e4567-e89b-12d3-a456-426614174230";
   const projectId = "123e4567-e89b-12d3-a456-426614174231";
@@ -57,19 +57,19 @@ test("handleThreadStart fails fast when workspace root is unavailable for projec
     );
   } finally {
     if (originalRoot == null) {
-      delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+      delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
     } else {
-      process.env.LABOS_HPC_WORKSPACE_ROOT = originalRoot;
+      process.env.EPOCH_HPC_WORKSPACE_ROOT = originalRoot;
     }
   }
 });
 
 test("handleThreadStart resolves workspace root from nodes table when env is unavailable", async () => {
-  const originalRoot = process.env.LABOS_HPC_WORKSPACE_ROOT;
-  delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+  const originalRoot = process.env.EPOCH_HPC_WORKSPACE_ROOT;
+  delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
 
   const projectId = "123e4567-e89b-12d3-a456-426614174232";
-  const workspaceRoot = "/tmp/labos-from-node";
+  const workspaceRoot = "/tmp/epoch-from-node";
   let createdThread = null;
 
   try {
@@ -113,9 +113,9 @@ test("handleThreadStart resolves workspace root from nodes table when env is una
     assert.equal(createdThread.cwd, expectedCwd);
   } finally {
     if (originalRoot == null) {
-      delete process.env.LABOS_HPC_WORKSPACE_ROOT;
+      delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
     } else {
-      process.env.LABOS_HPC_WORKSPACE_ROOT = originalRoot;
+      process.env.EPOCH_HPC_WORKSPACE_ROOT = originalRoot;
     }
   }
 });

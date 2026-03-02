@@ -87,13 +87,13 @@ export async function runMigrations(pool: DbPool, opts: { migrationsDir: URL }) 
   const { fileURLToPath } = await import("node:url");
 
   await pool.exec(`
-    CREATE TABLE IF NOT EXISTS labos_schema_migrations (
+    CREATE TABLE IF NOT EXISTS epoch_schema_migrations (
       id TEXT PRIMARY KEY,
       applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     );
   `);
 
-  const applied = await pool.query<{ id: string }>("SELECT id FROM labos_schema_migrations");
+  const applied = await pool.query<{ id: string }>("SELECT id FROM epoch_schema_migrations");
   const appliedSet = new Set(applied.rows.map((r: { id: string }) => r.id));
 
   const dirPath = fileURLToPath(opts.migrationsDir);
@@ -106,7 +106,7 @@ export async function runMigrations(pool: DbPool, opts: { migrationsDir: URL }) 
     await pool.exec("BEGIN");
     try {
       await pool.exec(sql);
-      await pool.query("INSERT INTO labos_schema_migrations (id) VALUES ($1)", [file]);
+      await pool.query("INSERT INTO epoch_schema_migrations (id) VALUES ($1)", [file]);
       await pool.exec("COMMIT");
     } catch (err) {
       await pool.exec("ROLLBACK");

@@ -39,7 +39,7 @@ async function main() {
       case "-h":
       case "--help":
       case undefined:
-        console.log("Usage: labos-hub <init|config|start|restart|stop|status|doctor>");
+        console.log("Usage: epoch-hub <init|config|start|restart|stop|status|doctor>");
         return;
       default:
         console.error(`Unknown command: ${cmd}`);

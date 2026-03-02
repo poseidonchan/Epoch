@@ -6,7 +6,7 @@ import { startBridgeDaemon, stopBridgeDaemon } from "../daemon.js";
 export async function restartCommand(_argv: string[]) {
   const cfg = await loadConfig();
   if (!cfg) {
-    throw new Error("Config missing. Run: labos-hpc-bridge config");
+    throw new Error("Config missing. Run: epoch-bridge config");
   }
 
   const stateDir = configDir();
@@ -18,5 +18,5 @@ export async function restartCommand(_argv: string[]) {
     env: process.env,
     cwd: process.cwd(),
   });
-  console.log(`LabOS HPC Bridge restarted (pid ${info.pid}). Logs: ${info.logPath}`);
+  console.log(`Epoch Bridge restarted (pid ${info.pid}). Logs: ${info.logPath}`);
 }

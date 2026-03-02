@@ -12,7 +12,7 @@ test("handleThreadRollback drops tail turns for pi threads and updates preview",
     updatedAt: 3,
     path: null,
     cwd: "/tmp",
-    cliVersion: "@labos/hub/0.1.0",
+    cliVersion: "@epoch/hub/0.1.0",
     source: "appServer",
     gitInfo: null,
     turns: [
@@ -130,7 +130,7 @@ test("handleThreadRollback falls back to local rollback when codex engine rollba
     updatedAt: 3,
     path: null,
     cwd: "/tmp",
-    cliVersion: "@labos/hub/0.1.0",
+    cliVersion: "@epoch/hub/0.1.0",
     source: "appServer",
     gitInfo: null,
     turns: [

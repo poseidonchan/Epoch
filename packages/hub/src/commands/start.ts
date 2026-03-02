@@ -14,20 +14,20 @@ export async function startCommand(argv: string[]) {
   const stateDir = getStateDir();
   const config = await loadOrCreateHubConfig({ stateDir, allowCreate: false });
   if (!config) {
-    throw new Error("Hub config missing. Run: labos-hub init");
+    throw new Error("Hub config missing. Run: epoch-hub init");
   }
 
   const foreground = hasFlag(argv, "--foreground") || hasFlag(argv, "-f");
   if (!foreground) {
     const existing = await readHubDaemonInfo(stateDir);
     if (existing && Number.isFinite(existing.pid) && existing.pid > 1 && isProcessRunning(existing.pid)) {
-      console.log(`LabOS Hub already running (pid ${existing.pid}).`);
+      console.log(`Epoch Hub already running (pid ${existing.pid}).`);
       return;
     }
     await stopHubDaemon(stateDir).catch(() => {});
 
-    const port = Number(process.env.LABOS_PORT ?? "8787");
-    const host = process.env.LABOS_HOST ?? "0.0.0.0";
+    const port = Number(process.env.EPOCH_PORT ?? "8787");
+    const host = process.env.EPOCH_HOST ?? "0.0.0.0";
 
     const info = await startHubDaemon({
       stateDir,
@@ -39,17 +39,17 @@ export async function startCommand(argv: string[]) {
       cwd: process.cwd(),
     });
 
-    console.log(`LabOS Hub started (pid ${info.pid}). Logs: ${info.logPath}`);
+    console.log(`Epoch Hub started (pid ${info.pid}). Logs: ${info.logPath}`);
     return;
   }
 
-  const dbPath = process.env.LABOS_DB_PATH ?? path.join(stateDir, "labos.sqlite");
+  const dbPath = process.env.EPOCH_DB_PATH ?? path.join(stateDir, "epoch.sqlite");
 
   const pool = await connectDb(dbPath);
   await runMigrations(pool, { migrationsDir: new URL("../migrations/", import.meta.url) });
 
-  const port = Number(process.env.LABOS_PORT ?? "8787");
-  const host = process.env.LABOS_HOST ?? "0.0.0.0";
+  const port = Number(process.env.EPOCH_PORT ?? "8787");
+  const host = process.env.EPOCH_HOST ?? "0.0.0.0";
 
   const hub = await startHub({
     port,

@@ -17,8 +17,8 @@ function runHub(args, env = {}) {
 
 test("hub stop is safe when daemon not running", async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "hub-stop-none-"));
-  const { stdout } = await runHub(["stop"], { LABOS_STATE_DIR: stateDir });
-  assert.match(stdout, /already stopped|No running LabOS Hub daemon found/i);
+  const { stdout } = await runHub(["stop"], { EPOCH_STATE_DIR: stateDir });
+  assert.match(stdout, /already stopped|No running Epoch Hub daemon found/i);
 });
 
 test("hub stop cleans stale pid metadata", async () => {
@@ -30,8 +30,8 @@ test("hub stop cleans stale pid metadata", async () => {
     "utf8"
   );
 
-  const { stdout } = await runHub(["stop"], { LABOS_STATE_DIR: stateDir });
-  assert.match(stdout, /already stopped|stopped|No running LabOS Hub daemon found/i);
+  const { stdout } = await runHub(["stop"], { EPOCH_STATE_DIR: stateDir });
+  assert.match(stdout, /already stopped|stopped|No running Epoch Hub daemon found/i);
 
   let removed = false;
   try {
@@ -47,6 +47,6 @@ test("hub stop treats invalid daemon json as not running", async () => {
   const pidPath = path.join(stateDir, "hub.pid");
   await writeFile(pidPath, JSON.stringify({ pid: "invalid" }) + "\n", "utf8");
 
-  const { stdout } = await runHub(["stop"], { LABOS_STATE_DIR: stateDir });
-  assert.match(stdout, /already stopped|No running LabOS Hub daemon found/i);
+  const { stdout } = await runHub(["stop"], { EPOCH_STATE_DIR: stateDir });
+  assert.match(stdout, /already stopped|No running Epoch Hub daemon found/i);
 });
