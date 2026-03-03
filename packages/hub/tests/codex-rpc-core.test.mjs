@@ -97,7 +97,9 @@ test("updateThreadPreviewFromItems prefers latest user text and falls back to as
   assert.equal(preview, "Most recent user question");
 });
 
-test("engine normalization and defaults are codex-only", async () => {
+test("engine normalization and defaults include epoch-hpc", async () => {
+  assert.equal(normalizeEngineName("hpc"), "epoch-hpc");
+  assert.equal(normalizeEngineName("epoch-hpc"), "epoch-hpc");
   assert.equal(normalizeEngineName("codex"), "codex-app-server");
   assert.equal(normalizeEngineName("codex-app-server"), "codex-app-server");
   assert.equal(normalizeEngineName("pi"), "codex-app-server");
@@ -107,7 +109,7 @@ test("engine normalization and defaults are codex-only", async () => {
     config: null,
     stateDir: "/tmp",
   });
-  assert.equal(registry.defaultEngineName(), "codex-app-server");
+  assert.equal(registry.defaultEngineName(), "epoch-hpc");
   await registry.close();
 });
 

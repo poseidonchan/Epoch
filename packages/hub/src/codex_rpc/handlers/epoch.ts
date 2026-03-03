@@ -29,7 +29,7 @@ type EnsureMappedThreadResult = {
 type SessionPatch = {
   title?: string;
   lifecycle?: "active" | "archived";
-  backendEngine?: "codex-app-server";
+  backendEngine?: "codex-app-server" | "epoch-hpc";
   codexModel?: string | null;
   codexModelProvider?: string | null;
   codexApprovalPolicy?: string | null;
@@ -63,7 +63,7 @@ export async function handleEpochProjectCreate(
 ): Promise<Record<string, unknown>> {
   const params = rawParams ?? {};
   const name = normalizeNonEmptyString(params.name) ?? "Untitled Project";
-  const backendEngine = normalizeBackendEngine(params.backendEngine) ?? "codex-app-server";
+  const backendEngine = normalizeBackendEngine(params.backendEngine) ?? "epoch-hpc";
   const codexModelProvider = normalizeNonEmptyString(params.codexModelProvider);
   const codexModel = normalizeNonEmptyString(params.codexModel);
   const codexApprovalPolicy = normalizeNonEmptyString(params.codexApprovalPolicy);
@@ -155,6 +155,14 @@ export async function handleEpochProjectUpdate(
 
   const updates: string[] = [];
   const values: unknown[] = [];
+  if (Object.prototype.hasOwnProperty.call(params, "backendEngine")) {
+    const backendEngine = normalizeBackendEngine((params as Record<string, unknown>).backendEngine);
+    if (!backendEngine) {
+      throw new Error("Invalid backendEngine");
+    }
+    updates.push(`backend_engine=$${values.length + 1}`);
+    values.push(backendEngine);
+  }
   if (Object.prototype.hasOwnProperty.call(params, "codexApprovalPolicy")) {
     updates.push(`codex_approval_policy=$${values.length + 1}`);
     values.push(normalizeNonEmptyString(params.codexApprovalPolicy));
@@ -288,7 +296,8 @@ export async function handleEpochSessionCreate(
   const nextIndex = Number(countRows[0]?.count ?? 0) + 1;
 
   const title = normalizeNonEmptyString(params.title) ?? `Session ${nextIndex}`;
-  const backendEngine = normalizeBackendEngine(params.backendEngine) ?? normalizeBackendEngine(project.backend_engine) ?? "codex-app-server";
+  const backendEngine =
+    normalizeBackendEngine(params.backendEngine) ?? normalizeBackendEngine(project.backend_engine) ?? "epoch-hpc";
   const codexModelProvider = normalizeNonEmptyString(params.codexModelProvider) ?? normalizeNonEmptyString(project.codex_model_provider);
   const codexModel = normalizeNonEmptyString(params.codexModel) ?? normalizeNonEmptyString(project.codex_model_id);
   const codexApprovalPolicy =
@@ -443,7 +452,7 @@ export async function handleEpochSessionUpdate(
   }
 
   let sessionRow = sessionRows[0];
-  const effectiveBackend = normalizeBackendEngine(sessionRow.backend_engine) ?? "codex-app-server";
+  const effectiveBackend = normalizeBackendEngine(sessionRow.backend_engine) ?? "epoch-hpc";
   const currentThreadId = normalizeNonEmptyString(sessionRow.codex_thread_id);
   const modelProvider = normalizeNonEmptyString(sessionRow.codex_model_provider) ?? DEFAULT_MODEL_PROVIDER;
   const modelId = normalizeNonEmptyString(sessionRow.codex_model);
@@ -617,7 +626,7 @@ export async function handleEpochSessionRead(
 
   let sessionRow = rows[0];
   let threadId = normalizeNonEmptyString(sessionRow.codex_thread_id);
-  const backendEngine = normalizeBackendEngine(sessionRow.backend_engine) ?? "codex-app-server";
+  const backendEngine = normalizeBackendEngine(sessionRow.backend_engine) ?? "epoch-hpc";
   const modelProvider = normalizeNonEmptyString(sessionRow.codex_model_provider) ?? DEFAULT_MODEL_PROVIDER;
   const modelId = normalizeNonEmptyString(sessionRow.codex_model);
   const approvalPolicy = normalizeNonEmptyString(sessionRow.codex_approval_policy) ?? DEFAULT_APPROVAL_POLICY;
@@ -794,7 +803,7 @@ export async function handleEpochSessionRegenerate(
   const sessionRow = rows[0];
 
   let threadId = normalizeNonEmptyString(sessionRow.codex_thread_id);
-  const backendEngine = normalizeBackendEngine(sessionRow.backend_engine) ?? "codex-app-server";
+  const backendEngine = normalizeBackendEngine(sessionRow.backend_engine) ?? "epoch-hpc";
   const modelProvider = normalizeNonEmptyString(sessionRow.codex_model_provider) ?? DEFAULT_MODEL_PROVIDER;
   const modelId = normalizeNonEmptyString(sessionRow.codex_model);
   const approvalPolicy = normalizeNonEmptyString(sessionRow.codex_approval_policy) ?? DEFAULT_APPROVAL_POLICY;
@@ -1057,7 +1066,7 @@ function mapProjectRow(row: any) {
     name: String(row.name ?? "Untitled Project"),
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
-    backendEngine: normalizeBackendEngine(row.backend_engine) ?? "codex-app-server",
+    backendEngine: normalizeBackendEngine(row.backend_engine) ?? "epoch-hpc",
     codexModelProvider: normalizeNonEmptyString(row.codex_model_provider),
     codexModel: normalizeNonEmptyString(row.codex_model_id),
     codexApprovalPolicy: normalizeNonEmptyString(row.codex_approval_policy),
@@ -1076,7 +1085,7 @@ function mapSessionRow(row: any, pendingSummary?: { count: number; kind: string 
     lifecycle: String(row.lifecycle ?? "active"),
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
-    backendEngine: normalizeBackendEngine(row.backend_engine) ?? "codex-app-server",
+    backendEngine: normalizeBackendEngine(row.backend_engine) ?? "epoch-hpc",
     codexThreadId: normalizeNonEmptyString(row.codex_thread_id),
     codexModel: normalizeNonEmptyString(row.codex_model),
     codexModelProvider: normalizeNonEmptyString(row.codex_model_provider),
@@ -1175,7 +1184,7 @@ async function createMappedThreadForSession(
   args: {
     sessionId: string;
     projectId: string;
-    backendEngine: "codex-app-server";
+    backendEngine: "codex-app-server" | "epoch-hpc";
     modelProvider: string;
     modelId: string | null;
     approvalPolicy: string;
@@ -1192,6 +1201,36 @@ async function createMappedThreadForSession(
     reasoningEffort: null,
     syncState: "ready",
   };
+
+  if (args.backendEngine === "epoch-hpc") {
+    const threadId = `thr_${uuidv4()}`;
+    const createdAt = nowUnixSeconds();
+    await repository.createThread({
+      id: threadId,
+      projectId: args.projectId,
+      cwd,
+      modelProvider: args.modelProvider,
+      modelId: args.modelId,
+      preview: "",
+      statusJson: JSON.stringify(status),
+      engine: "epoch-hpc",
+      createdAt,
+    });
+    await repository.assignThreadToSession({ threadId, sessionId: args.sessionId });
+    return {
+      id: threadId,
+      preview: "",
+      modelProvider: args.modelProvider,
+      createdAt,
+      updatedAt: createdAt,
+      path: null,
+      cwd,
+      cliVersion: "@epoch/hub/0.1.0",
+      source: "appServer",
+      gitInfo: null,
+      turns: [],
+    };
+  }
 
   const engine = await engines.getEngine("codex-app-server");
   if (!engine.threadStart) {
@@ -1270,7 +1309,7 @@ async function ensureMappedThreadForSession(
   args: {
     projectId: string;
     sessionId: string;
-    backendEngine: "codex-app-server";
+    backendEngine: "codex-app-server" | "epoch-hpc";
     currentThreadId: string | null;
     modelProvider: string;
     modelId: string | null;
@@ -1288,6 +1327,46 @@ async function ensureMappedThreadForSession(
     reasoningEffort: null,
     syncState: "ready",
   };
+
+  if (args.backendEngine === "epoch-hpc") {
+    if (args.currentThreadId) {
+      const existing = await ctx.repository.getThreadRecord(args.currentThreadId);
+      if (existing?.engine === "epoch-hpc") {
+        await ctx.repository.updateThread({
+          id: existing.id,
+          modelProvider: args.modelProvider,
+          modelId: args.modelId,
+          cwd: settings.cwd,
+          statusJson: applyThreadSyncState(JSON.stringify(settings), "ready"),
+          engine: "epoch-hpc",
+          updatedAt: nowUnixSeconds(),
+        });
+        const thread = await ctx.repository.readThread(existing.id, true);
+        if (thread) {
+          return {
+            thread,
+            syncState: "ready",
+            rehydratedFromLegacy: false,
+          };
+        }
+      }
+    }
+
+    const created = await createMappedThreadForSession(ctx.repository, ctx.engines, {
+      sessionId: args.sessionId,
+      projectId: args.projectId,
+      backendEngine: "epoch-hpc",
+      modelProvider: args.modelProvider,
+      modelId: args.modelId,
+      approvalPolicy: args.approvalPolicy,
+      sandbox: args.sandbox,
+    });
+    return {
+      thread: created,
+      syncState: "ready",
+      rehydratedFromLegacy: false,
+    };
+  }
 
   if (args.currentThreadId) {
     const existing = await ctx.repository.getThreadRecord(args.currentThreadId);
@@ -1318,7 +1397,7 @@ async function ensureMappedThreadForSession(
   const created = await createMappedThreadForSession(ctx.repository, ctx.engines, {
     sessionId: args.sessionId,
     projectId: args.projectId,
-    backendEngine: "codex-app-server",
+    backendEngine: args.backendEngine,
     modelProvider: args.modelProvider,
     modelId: args.modelId,
     approvalPolicy: args.approvalPolicy,
@@ -1822,9 +1901,10 @@ function parseJsonObject(raw: unknown): Record<string, unknown> | null {
   }
 }
 
-function normalizeBackendEngine(raw: unknown): "codex-app-server" | null {
+function normalizeBackendEngine(raw: unknown): "codex-app-server" | "epoch-hpc" | null {
   if (typeof raw !== "string") return null;
   const value = raw.trim().toLowerCase();
+  if (value === "hpc" || value === "epoch-hpc") return "epoch-hpc";
   if (value === "pi" || value === "pi-adapter") return "codex-app-server";
   if (value === "codex" || value === "codex-app-server") return "codex-app-server";
   return null;

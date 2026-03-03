@@ -6,7 +6,7 @@ import process from "node:process";
 import { buildProjectFileContextStream } from "../../indexing/projectIndexing.js";
 import { resolveHubProvider } from "../../model.js";
 import { loadOpenAIApiKeyFromStateDir } from "../../openai_settings.js";
-import type { CodexEngineRegistry } from "../engine_registry.js";
+import { normalizeEngineName, type CodexEngineRegistry } from "../engine_registry.js";
 import type { EngineStartTurnResult, EngineStreamEvent } from "../engines/types.js";
 import type { CodexRepository } from "../repository.js";
 import { nowUnixSeconds, type ThreadItem, type Turn, type UserInput } from "../types.js";
@@ -97,7 +97,11 @@ export async function handleTurnStart(
   let projectContext = await buildTurnInputWithProjectContext(ctx.repository, threadRecord.projectId, input);
   let engineInput = projectContext.input;
   let projectContextDeveloperInstructions = projectContext.developerInstructions;
-  if (threadRecord.engine !== "codex-app-server") {
+  const requestedEngineNameRaw = normalizeNonEmptyString(threadRecord.engine) ?? ctx.engines.defaultEngineName();
+  const requestedEngineName = normalizeEngineName(requestedEngineNameRaw) ?? requestedEngineNameRaw;
+  let engine = await ctx.engines.getEngine(requestedEngineName);
+  const engineName = normalizeEngineName(requestedEngineName) ?? requestedEngineName;
+  if (engineName === "codex-app-server" && threadRecord.engine !== "codex-app-server") {
     await ctx.repository.updateThread({
       id: threadId,
       engine: "codex-app-server",
@@ -108,10 +112,13 @@ export async function handleTurnStart(
       engine: "codex-app-server",
     };
   }
-  let engine = await ctx.engines.getEngine("codex-app-server");
-  let shouldInjectHistoryFallbackContext = readThreadSyncState(threadRecord.statusJson) === "needsRemoteHydration";
+  let shouldInjectHistoryFallbackContext =
+    engineName === "codex-app-server" && readThreadSyncState(threadRecord.statusJson) === "needsRemoteHydration";
 
   const repairCodexThreadMapping = async () => {
+    if (engineName !== "codex-app-server") {
+      return;
+    }
     if (!engine.threadStart) {
       throw new Error("Codex app-server engine does not support thread/start.");
     }
@@ -250,12 +257,14 @@ export async function handleTurnStart(
     engine = await ctx.engines.getEngine("codex-app-server");
   };
 
-  if (!isValidCodexAppServerThreadId(threadId)) {
-    await repairCodexThreadMapping();
-  }
+  if (engineName === "codex-app-server") {
+    if (!isValidCodexAppServerThreadId(threadId)) {
+      await repairCodexThreadMapping();
+    }
 
-  if (readThreadSyncState(threadRecord?.statusJson) === "needsRemoteHydration") {
-    await repairCodexThreadMapping();
+    if (readThreadSyncState(threadRecord?.statusJson) === "needsRemoteHydration") {
+      await repairCodexThreadMapping();
+    }
   }
 
   const historyFallbackDeveloperInstructions = shouldInjectHistoryFallbackContext
@@ -284,7 +293,7 @@ export async function handleTurnStart(
       sandboxPolicy: toCodexSandboxParam(injectWorkspaceRoots(settings.sandbox, settings.cwd)),
     });
   } catch (err) {
-    if (!isLikelyCodexMissingThreadError(err)) {
+    if (engineName !== "codex-app-server" || !isLikelyCodexMissingThreadError(err)) {
       throw err;
     }
 
@@ -715,7 +724,13 @@ export async function handleTurnSteer(
 
   const engine = await ctx.engines.getEngine(threadRecord.engine);
   if (!engine.steerTurn) {
-    throw new Error(`Engine ${threadRecord.engine} does not support turn/steer`);
+    const engineName = normalizeEngineName(threadRecord.engine) ?? threadRecord.engine;
+    if (engineName === "epoch-hpc") {
+      throw new Error(
+        "Engine epoch-hpc does not support turn/steer yet. Use turn/interrupt, then start a new turn with your guidance."
+      );
+    }
+    throw new Error(`Engine ${engineName} does not support turn/steer`);
   }
   return await engine.steerTurn({
     threadId,

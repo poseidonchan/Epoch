@@ -1,19 +1,24 @@
 import process from "node:process";
 import path from "node:path";
+import { stat } from "node:fs/promises";
 
 import { getStateDir, loadOrCreateHubConfig } from "../config.js";
 import { connectDb, runMigrations, type DbPool } from "../db/db.js";
 import { resolveHubModel } from "../model.js";
+import { CodexEngineRegistry } from "../codex_rpc/engine_registry.js";
 
 export async function doctorCommand(_argv: string[]) {
   const stateDir = getStateDir();
   const config = await loadOrCreateHubConfig({ stateDir, allowCreate: false });
+  const engines = new CodexEngineRegistry({ config, stateDir });
+  const defaultEngine = engines.defaultEngineName();
 
   const dbPath = process.env.EPOCH_DB_PATH ?? path.join(stateDir, "epoch.sqlite");
   const modelResolved = resolveHubModel(config);
   console.log(`State dir: ${stateDir}`);
   console.log(`Config: ${config ? "present" : "missing (run epoch-hub init)"}`);
   console.log(`DB: ${dbPath}`);
+  console.log(`Default engine: ${defaultEngine}`);
   if (modelResolved.ok) {
     console.log(`Model: ${modelResolved.ref}${modelResolved.hasApiKey ? "" : " (no credentials detected; run epoch-hub config)"}`);
   } else {
@@ -32,6 +37,7 @@ export async function doctorCommand(_argv: string[]) {
 
     const envWorkspaceRoot = normalizeNonEmptyString(process.env.EPOCH_HPC_WORKSPACE_ROOT);
     const nodeWorkspaceRoot = await resolveLatestNodeWorkspaceRoot(pool);
+    const resolvedWorkspaceRoot = envWorkspaceRoot ?? nodeWorkspaceRoot;
     if (envWorkspaceRoot) {
       console.log(`Workspace root: ${envWorkspaceRoot} (EPOCH_HPC_WORKSPACE_ROOT)`);
     } else if (nodeWorkspaceRoot) {
@@ -41,7 +47,19 @@ export async function doctorCommand(_argv: string[]) {
         "WARN: Workspace root is unavailable. Set EPOCH_HPC_WORKSPACE_ROOT or connect an HPC node that reports permissions.workspaceRoot."
       );
     }
+
+    if (defaultEngine === "codex-app-server" && resolvedWorkspaceRoot) {
+      const existsOnHub = await stat(resolvedWorkspaceRoot).then(() => true).catch(() => false);
+      if (!existsOnHub) {
+        console.warn(
+          "WARN: Default engine is codex-app-server but the workspace root is not present on this machine. " +
+            "If Hub and HPC do not share a filesystem, local execution will fail with ENOENT. " +
+            "Use the epoch-hpc engine so exec/applyPatch run via the HPC bridge."
+        );
+      }
+    }
   } finally {
+    await engines.close();
     await pool.end();
   }
 }
