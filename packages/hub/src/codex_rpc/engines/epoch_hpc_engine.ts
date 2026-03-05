@@ -243,8 +243,8 @@ export class EpochHpcEngine implements CodexEngineSession {
     });
 
     const turnStartedAt = Date.now();
-    const maxToolSteps = 256;
-    const maxTurnMs = 20 * 60_000;
+    const maxToolSteps = resolveNonNegativeIntegerEnv("EPOCH_HPC_ENGINE_MAX_TOOL_STEPS") ?? 4096;
+    const maxTurnMs = resolveNonNegativeIntegerEnv("EPOCH_HPC_ENGINE_MAX_TURN_MS") ?? 0;
 
     const normalizedApprovalPolicy = String(args.approvalPolicy ?? "").trim().toLowerCase();
 
@@ -270,15 +270,21 @@ export class EpochHpcEngine implements CodexEngineSession {
       onDelta,
     });
 
+    const toolStepLimit = maxToolSteps > 0 ? maxToolSteps : null;
     let exhaustedToolSteps = true;
-    for (let step = 0; step < maxToolSteps; step += 1) {
+    let step = 0;
+    for (;;) {
       if (signal.aborted) throw new AbortTurnError();
-      if (Date.now() - turnStartedAt > maxTurnMs) {
+      if (maxTurnMs > 0 && Date.now() - turnStartedAt > maxTurnMs) {
         throw new TurnLimitError("maxTurnMs", {
           maxTurnMs,
           elapsedMs: Date.now() - turnStartedAt,
         });
       }
+      if (toolStepLimit != null && step >= toolStepLimit) {
+        break;
+      }
+      step += 1;
 
       const toolCalls = extractToolCalls(response);
       if (toolCalls.length === 0) {
@@ -323,7 +329,7 @@ export class EpochHpcEngine implements CodexEngineSession {
       });
     }
 
-    if (exhaustedToolSteps) {
+    if (exhaustedToolSteps && toolStepLimit != null) {
       throw new TurnLimitError("maxToolSteps", { maxToolSteps });
     }
 
@@ -1003,13 +1009,18 @@ export class EpochHpcEngine implements CodexEngineSession {
       .toLowerCase();
     if (!message) return null;
     if (err instanceof TurnLimitError) {
+      const limitHint =
+        err.limit === "maxTurnMs"
+          ? "To allow longer runs: set EPOCH_HPC_ENGINE_MAX_TURN_MS (milliseconds). Use 0 to disable."
+          : "To allow longer runs: set EPOCH_HPC_ENGINE_MAX_TOOL_STEPS. Use 0 to disable.";
       const lines = [
         `engineName=${this.name}`,
         `limit=${err.limit}`,
         err.maxTurnMs != null ? `maxTurnMs=${err.maxTurnMs}` : null,
         err.elapsedMs != null ? `elapsedMs=${err.elapsedMs}` : null,
         err.maxToolSteps != null ? `maxToolSteps=${err.maxToolSteps}` : null,
-        "Hint: The model may be stuck in a tool loop. Use turn/interrupt, then retry with a narrower request if needed.",
+        limitHint,
+        "If the model is stuck in a tool loop: use turn/interrupt, then retry with a narrower request if needed.",
       ].filter((line): line is string => Boolean(line && line.trim()));
       return lines.join("\n");
     }
@@ -1249,6 +1260,15 @@ function normalizeNullableStringTrimmed(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function resolveNonNegativeIntegerEnv(envVar: string): number | null {
+  const raw = normalizeNonEmptyString(process.env[envVar]);
+  if (!raw) return null;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return null;
+  const value = Math.floor(parsed);
+  return value >= 0 ? value : null;
 }
 
 function findSseSeparator(buffer: string): { index: number; length: number } | null {
