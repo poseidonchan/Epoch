@@ -15,7 +15,7 @@ export async function pairCommand(argv: string[]) {
       return;
     }
     console.error("Usage: epoch-bridge pair --hub <wss://...> --token <token> --workspace-root <absolute-path>");
-    console.error("Hint: run `epoch-bridge config` for interactive setup.");
+    console.error("Hint: run `epoch init` for direct-connect mode, or `epoch-bridge config` for legacy bridge setup.");
     process.exitCode = 1;
     return;
   }
@@ -39,7 +39,7 @@ export async function pairCommand(argv: string[]) {
   console.log(`- hubUrl: ${cfg.hubUrl}`);
   console.log(`- nodeId: ${cfg.nodeId}`);
   console.log(`- workspaceRoot: ${cfg.workspaceRoot}`);
-  console.log("Hint: run `epoch-bridge start` to connect this bridge.");
+  console.log("Hint: run `epoch-bridge start` to connect this legacy bridge, or use `epoch start` for the direct-connect service.");
 }
 
 function flag(argv: string[], name: string) {

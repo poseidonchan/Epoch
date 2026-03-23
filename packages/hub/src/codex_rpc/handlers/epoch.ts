@@ -7,6 +7,7 @@ import type { CodexEngineRegistry } from "../engine_registry.js";
 import type { CodexRepository } from "../repository.js";
 import { nowUnixSeconds, type Thread, type ThreadItem, type Turn, type UserInput } from "../types.js";
 import { handleThreadRollback, maybePersistThreadFromResponse } from "./thread.js";
+import { loadOrCreateHubConfig, resolveConfiguredWorkspaceRoot } from "../../config.js";
 import { generateSessionTitle } from "../../indexing/summarize.js";
 import { getEnvApiKey } from "../../model.js";
 import { loadOpenAIApiKeyFromStateDir } from "../../openai_settings.js";
@@ -68,10 +69,11 @@ export async function handleEpochProjectCreate(
   const codexModel = normalizeNonEmptyString(params.codexModel);
   const codexApprovalPolicy = normalizeNonEmptyString(params.codexApprovalPolicy);
   const codexSandbox = normalizeSandboxPolicy(params.codexSandbox);
+  const requestedWorkspacePath = normalizeNonEmptyString(params.workspacePath);
 
   const projectId = uuidv4();
   const nowIso = new Date().toISOString();
-  const workspacePath = await resolveProjectWorkspacePath(ctx.repository, projectId);
+  const workspacePath = await resolveProjectWorkspacePath(ctx.repository, projectId, requestedWorkspacePath);
 
   await ctx.repository.query(
     `INSERT INTO projects (
@@ -90,17 +92,13 @@ export async function handleEpochProjectCreate(
       codexApprovalPolicy,
       codexSandbox ? JSON.stringify(codexSandbox) : null,
       workspacePath,
-      "queued",
+      "ready",
     ]
   );
 
   await ctx.repository.ensureProjectStorage(projectId);
   await ensureBootstrapDefaults(ctx.repository.stateDirectory(), projectId);
-  await enqueueWorkspaceProvisioning(ctx.repository, {
-    projectId,
-    workspacePath,
-    requestedBy: "epoch/project/create",
-  });
+  await ensureProjectWorkspaceReady(workspacePath);
 
   const rows = await ctx.repository.query<any>(
     `SELECT id, name, created_at, updated_at, backend_engine, codex_model_provider, codex_model_id,
@@ -305,7 +303,7 @@ export async function handleEpochSessionCreate(
   const codexSandbox = Object.prototype.hasOwnProperty.call(params, "codexSandbox")
     ? normalizeSandboxPolicy(params.codexSandbox)
     : safeJsonParseObject(project.codex_sandbox_json) ?? normalizeSandboxPolicy(null);
-  const hpcWorkspaceState = normalizeNonEmptyString(project.hpc_workspace_state) ?? "queued";
+  const hpcWorkspaceState = normalizeNonEmptyString(project.hpc_workspace_state) ?? "ready";
 
   const sessionId = uuidv4();
   const nowIso = new Date().toISOString();
@@ -1072,7 +1070,7 @@ function mapProjectRow(row: any) {
     codexApprovalPolicy: normalizeNonEmptyString(row.codex_approval_policy),
     codexSandbox: safeJsonParseObject(row.codex_sandbox_json),
     hpcWorkspacePath: normalizeNonEmptyString(row.hpc_workspace_path),
-    hpcWorkspaceState: normalizeNonEmptyString(row.hpc_workspace_state) ?? "queued",
+    hpcWorkspaceState: normalizeNonEmptyString(row.hpc_workspace_state) ?? "ready",
   };
 }
 
@@ -1843,62 +1841,45 @@ async function ensureSessionTranscript(stateDir: string, projectId: string, sess
   await appendFile(transcriptPath, "", "utf8");
 }
 
-async function enqueueWorkspaceProvisioning(
+async function resolveProjectWorkspacePath(
   repository: CodexRepository,
-  args: { projectId: string; workspacePath: string; requestedBy: string }
-) {
-  const nowIso = new Date().toISOString();
-  await repository.query(
-    `INSERT INTO workspace_provisioning_queue (
-       project_id, workspace_path, status, attempts, last_error, requested_by, created_at, updated_at
-     ) VALUES ($1,$2,'queued',0,NULL,$3,$4,$4)`,
-    [args.projectId, args.workspacePath, args.requestedBy, nowIso]
-  );
-}
-
-async function resolveProjectWorkspacePath(repository: CodexRepository, projectId: string): Promise<string> {
-  const root = await resolveWorkspaceRoot(repository);
-  if (!root) {
-    throw new Error("CAPABILITY_MISSING: node workspaceRoot is unavailable");
+  projectId: string,
+  requestedWorkspacePath?: string | null
+): Promise<string> {
+  const requested = normalizeNonEmptyString(requestedWorkspacePath);
+  if (requested) {
+    return path.resolve(requested);
   }
+
+  try {
+    const rows = await repository.query<{ hpc_workspace_path: string | null }>(
+      `SELECT hpc_workspace_path FROM projects WHERE id=$1 LIMIT 1`,
+      [projectId]
+    );
+    const persisted = normalizeNonEmptyString(rows[0]?.hpc_workspace_path);
+    if (persisted) return persisted;
+  } catch {
+    // ignore lookup failures and fall back to configured root
+  }
+
+  const root = await resolveWorkspaceRoot(repository);
   return path.join(root, "projects", projectId);
 }
 
-async function resolveWorkspaceRoot(repository: CodexRepository): Promise<string | null> {
-  const envRoot = normalizeNonEmptyString(process.env.EPOCH_HPC_WORKSPACE_ROOT);
-  if (envRoot) return envRoot;
-
-  let rows: any[] = [];
-  try {
-    rows = await repository.query<any>(
-      `SELECT permissions
-       FROM nodes
-       ORDER BY last_seen_at DESC, created_at DESC
-       LIMIT 20`
-    );
-  } catch {
-    return null;
-  }
-
-  for (const row of rows) {
-    const parsed = parseJsonObject(row?.permissions);
-    const workspaceRoot = normalizeNonEmptyString(parsed?.workspaceRoot);
-    if (workspaceRoot) return workspaceRoot;
-  }
-  return null;
+async function resolveWorkspaceRoot(repository: CodexRepository): Promise<string> {
+  const config = await loadOrCreateHubConfig({ stateDir: repository.stateDirectory(), allowCreate: false }).catch(() => null);
+  return resolveConfiguredWorkspaceRoot({
+    stateDir: repository.stateDirectory(),
+    config,
+    env: process.env,
+  });
 }
 
-function parseJsonObject(raw: unknown): Record<string, unknown> | null {
-  if (!raw) return null;
-  if (typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
-  if (typeof raw !== "string") return null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    return parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
+async function ensureProjectWorkspaceReady(workspacePath: string) {
+  await mkdir(workspacePath, { recursive: true });
+  await mkdir(path.join(workspacePath, "artifacts"), { recursive: true });
+  await mkdir(path.join(workspacePath, "runs"), { recursive: true });
+  await mkdir(path.join(workspacePath, "logs"), { recursive: true });
 }
 
 function normalizeBackendEngine(raw: unknown): "codex-app-server" | "epoch-hpc" | null {

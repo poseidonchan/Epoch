@@ -342,13 +342,13 @@ export class CodexRpcRouter {
   private async assertRemoteRuntimeAvailableForTurn() {
     if (!this.runtimeBridge) return;
     if (!this.runtimeBridge.isNodeConnected()) {
-      throw new Error("NODE_OFFLINE: HPC bridge is not connected");
+      throw new Error("NODE_OFFLINE: Epoch runtime is unavailable");
     }
     const commands = new Set(this.runtimeBridge.listNodeCommands());
     const required = ["runtime.exec.start", "runtime.exec.cancel", "runtime.fs.applyPatch", "runtime.fs.diff"];
     const missing = required.filter((cmd) => !commands.has(cmd));
     if (missing.length > 0) {
-      throw new Error(`CAPABILITY_MISSING: HPC bridge missing runtime methods (${missing.join(", ")})`);
+      throw new Error(`CAPABILITY_MISSING: Epoch runtime missing methods (${missing.join(", ")})`);
     }
   }
 
@@ -379,7 +379,7 @@ export class CodexRpcRouter {
     params: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     if (!this.runtimeBridge) {
-      throw new Error("CAPABILITY_MISSING: remote runtime bridge is not configured");
+      throw new Error("CAPABILITY_MISSING: runtime bridge is not configured");
     }
     await this.assertRemoteRuntimeAvailableForTurn();
 
@@ -486,7 +486,7 @@ export class CodexRpcRouter {
     params: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     if (!this.runtimeBridge) {
-      throw new Error("CAPABILITY_MISSING: remote runtime bridge is not configured");
+      throw new Error("CAPABILITY_MISSING: runtime bridge is not configured");
     }
     await this.assertRemoteRuntimeAvailableForTurn();
 

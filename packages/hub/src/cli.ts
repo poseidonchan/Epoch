@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import path from "node:path";
 import process from "node:process";
 
 import { initCommand } from "./commands/init.js";
@@ -14,6 +15,10 @@ const cmd = args[0];
 
 async function main() {
   try {
+    const invokedAs = path.basename(process.argv[1] ?? "");
+    if (invokedAs === "epoch-hub") {
+      console.warn("epoch-hub is deprecated. Use `epoch <init|config|start|restart|stop|status|doctor>`.");
+    }
     switch (cmd) {
       case "init":
         await initCommand(args.slice(1));
@@ -39,7 +44,7 @@ async function main() {
       case "-h":
       case "--help":
       case undefined:
-        console.log("Usage: epoch-hub <init|config|start|restart|stop|status|doctor>");
+        console.log("Usage: epoch <init|config|start|restart|stop|status|doctor>");
         return;
       default:
         console.error(`Unknown command: ${cmd}`);

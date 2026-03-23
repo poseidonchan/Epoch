@@ -4,6 +4,7 @@ import path from "node:path";
 import process from "node:process";
 
 import { buildProjectFileContextStream } from "../../indexing/projectIndexing.js";
+import { loadOrCreateHubConfig, resolveConfiguredWorkspaceRoot } from "../../config.js";
 import { resolveHubProvider } from "../../model.js";
 import { loadOpenAIApiKeyFromStateDir } from "../../openai_settings.js";
 import { normalizeEngineName, type CodexEngineRegistry } from "../engine_registry.js";
@@ -937,36 +938,34 @@ function extractProjectRelativeCwd(rawCwd: string, projectId: string): string | 
 }
 
 async function resolveProjectWorkspacePath(repository: CodexRepository, projectId: string): Promise<string> {
-  const workspaceRoot = await resolveWorkspaceRoot(repository);
-  if (!workspaceRoot) {
-    throw new Error("CAPABILITY_MISSING: node workspaceRoot is unavailable");
+  try {
+    const rows = await repository.query<{ hpc_workspace_path: string | null }>(
+      `SELECT hpc_workspace_path
+       FROM projects
+       WHERE id=$1
+       LIMIT 1`,
+      [projectId]
+    );
+    const persisted = normalizeNonEmptyString(rows[0]?.hpc_workspace_path);
+    if (persisted) {
+      return path.resolve(persisted);
+    }
+  } catch {
+    // ignore lookup failures and fall back to the configured default root
   }
+
+  const workspaceRoot = await resolveWorkspaceRoot(repository);
   return path.join(workspaceRoot, "projects", projectId);
 }
 
-async function resolveWorkspaceRoot(repository: CodexRepository): Promise<string | null> {
-  const envRoot = normalizeNonEmptyString(process.env.EPOCH_HPC_WORKSPACE_ROOT);
-  if (envRoot) return envRoot;
-
-  let rows: any[] = [];
-  try {
-    rows = await repository.query<any>(
-      `SELECT permissions
-       FROM nodes
-       ORDER BY last_seen_at DESC, created_at DESC
-       LIMIT 20`
-    );
-  } catch {
-    return null;
-  }
-
-  for (const row of rows) {
-    const parsed = parseJsonObject(row?.permissions);
-    const workspaceRoot = normalizeNonEmptyString(parsed?.workspaceRoot);
-    if (workspaceRoot) return workspaceRoot;
-  }
-
-  return null;
+async function resolveWorkspaceRoot(repository: CodexRepository): Promise<string> {
+  const stateDir = repository.stateDirectory();
+  const config = await loadOrCreateHubConfig({ stateDir, allowCreate: false }).catch(() => null);
+  return resolveConfiguredWorkspaceRoot({
+    stateDir,
+    config,
+    env: process.env,
+  });
 }
 
 function parseJsonObject(raw: unknown): Record<string, unknown> | null {

@@ -14,14 +14,14 @@ export async function startCommand(argv: string[]) {
   const stateDir = getStateDir();
   const config = await loadOrCreateHubConfig({ stateDir, allowCreate: false });
   if (!config) {
-    throw new Error("Hub config missing. Run: epoch-hub init");
+    throw new Error("Epoch config missing. Run: epoch init");
   }
 
   const foreground = hasFlag(argv, "--foreground") || hasFlag(argv, "-f");
   if (!foreground) {
     const existing = await readHubDaemonInfo(stateDir);
     if (existing && Number.isFinite(existing.pid) && existing.pid > 1 && isProcessRunning(existing.pid)) {
-      console.log(`Epoch Hub already running (pid ${existing.pid}).`);
+      console.log(`Epoch already running (pid ${existing.pid}).`);
       return;
     }
     await stopHubDaemon(stateDir).catch(() => {});
@@ -39,7 +39,7 @@ export async function startCommand(argv: string[]) {
       cwd: process.cwd(),
     });
 
-    console.log(`Epoch Hub started (pid ${info.pid}). Logs: ${info.logPath}`);
+    console.log(`Epoch started (pid ${info.pid}). Logs: ${info.logPath}`);
     return;
   }
 

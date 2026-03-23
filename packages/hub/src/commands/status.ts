@@ -12,9 +12,11 @@ export async function statusCommand(_argv: string[]) {
   ui.banner("Epoch Hub Status");
   ui.step(1, 1, "Read configuration and daemon status", "ok");
   ui.keyValue("State dir", stateDir);
-  ui.keyValue("Config", config ? "present" : "missing (run epoch-hub init)");
+  ui.keyValue("Config", config ? "present" : "missing (run epoch init)");
   ui.keyValue("Server ID", config?.serverId ?? "not configured");
   ui.keyValue("Shared token", config?.token ? "configured" : "not configured");
+  ui.keyValue("Workspace root", config?.workspaceRoot ?? "not configured");
+  ui.keyValue("Public WS URL", config?.publicWsUrl ?? "not configured");
   ui.keyValue("Daemon", running ? `running (pid ${daemonInfo?.pid})` : "stopped");
 
   if (daemonInfo?.host) {

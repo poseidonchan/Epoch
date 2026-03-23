@@ -18,13 +18,14 @@ function runHub(args, env = {}) {
 test("hub --help includes stop and status", async () => {
   const { stdout } = await runHub(["--help"]);
   assert.match(stdout, /init\|config\|start\|restart\|stop\|status\|doctor/);
+  assert.match(stdout, /Usage:\s+epoch\s+</i);
 });
 
 test("hub status shows daemon-aware status output", async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "hub-status-"));
   const { stdout } = await runHub(["status"], { EPOCH_STATE_DIR: stateDir });
   assert.match(stdout, /Epoch Hub Status/);
-  assert.match(stdout, /Config:\s+missing \(run epoch-hub init\)/i);
+  assert.match(stdout, /Config:\s+missing \(run epoch init\)/i);
   assert.match(stdout, /Daemon:\s+stopped/i);
 });
 

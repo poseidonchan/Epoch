@@ -18,6 +18,7 @@ function runBridge(args, env = {}) {
 test("hpc bridge --help includes init/config/restart/stop", async () => {
   const { stdout } = await runBridge(["--help"]);
   assert.match(stdout, /init\|config\|pair\|start\|restart\|stop\|status\|doctor/);
+  assert.match(stdout, /Deprecated: use `epoch/);
 });
 
 test("hpc bridge start missing config points users to config command", async () => {
@@ -28,7 +29,8 @@ test("hpc bridge start missing config points users to config command", async () 
   } catch (err) {
     failed = true;
     const stderr = String(err.stderr ?? "");
-    assert.match(stderr, /Config missing\. Run: epoch-bridge config/);
+    assert.match(stderr, /epoch init/);
+    assert.match(stderr, /epoch-bridge config/);
   }
   assert.equal(failed, true);
 });

@@ -7,7 +7,7 @@ export async function restartCommand(_argv: string[]) {
   const stateDir = getStateDir();
   const config = await loadOrCreateHubConfig({ stateDir, allowCreate: false });
   if (!config) {
-    throw new Error("Hub config missing. Run: epoch-hub init");
+    throw new Error("Epoch config missing. Run: epoch init");
   }
 
   await stopHubDaemon(stateDir).catch(() => {});
@@ -25,5 +25,5 @@ export async function restartCommand(_argv: string[]) {
     cwd: process.cwd(),
   });
 
-  console.log(`Epoch Hub restarted (pid ${info.pid}). Logs: ${info.logPath}`);
+  console.log(`Epoch restarted (pid ${info.pid}). Logs: ${info.logPath}`);
 }

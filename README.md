@@ -2,25 +2,37 @@
 
 Epoch is an AI programming workbench for computational science.
 
-This repository is the open-source backend/tooling part of Epoch:
-- `packages/hub` (Hub server)
-- `packages/hpc-bridge` (HPC Bridge)
-- `packages/protocol` (shared protocol schema)
+This repository contains the open-source backend/tooling:
+- `packages/hub`: the direct-connect Epoch service that runs on each HPC host
+- `packages/protocol`: shared protocol schema
+- `packages/hpc-bridge`: legacy compatibility package for older Hub+Bridge deployments
 
-The iOS app source code is private and maintained in a separate repository.
+The iOS app source code is private and maintained separately.
 
-## What You Get Here
+## Direct-Connect Model
 
-- Hub service with WebSocket + HTTP APIs
-- Pairing token + QR generation for the iPhone app
-- Optional HPC Bridge that connects outbound to Hub and integrates with Slurm
+Epoch now runs as a single service on each HPC machine:
+- the phone connects directly to that HPC host over `ws://` or `wss://`
+- pairing, SQLite state, projects, sessions, and runtime tools all live in one service
+- no outbound `hpc-bridge` connection is required for new deployments
+
+The default workspace root is configured once in `epoch config`, but each project can also choose any writable folder on the HPC host. When a project provides its own folder, that folder becomes the workspace for that project instead of the default root.
+
+`/status/resources` is intentionally slim in this model. It reports single-machine status only:
+- `computeConnected`
+- `storageTotalBytes`
+- `storageUsedBytes`
+- `storageAvailableBytes`
+- `storageUsedPercent`
+- `cpuPercent`
+- `ramPercent`
+- `gpuPercent` when available
 
 ## Prerequisites
 
 - Node.js `>=22`
-- `pnpm@10.30.1` (recommended via `corepack`)
-- Linux/macOS
-- Optional: Slurm environment (for real HPC job execution)
+- `pnpm@10.30.1` via `corepack`
+- Linux or macOS
 
 ## Quick Start
 
@@ -36,28 +48,22 @@ pnpm install
 pnpm -w build
 ```
 
-If `pnpm` is not found:
-
-```bash
-# Option A (recommended)
-corepack enable
-corepack prepare pnpm@10.30.1 --activate
-
-# Option B (fallback)
-npx -y pnpm@10.30.1 install
-```
-
-### 2. Initialize Hub
+### 2. Initialize Epoch on the HPC host
 
 ```bash
 node packages/hub/dist/cli.js init
 ```
 
 This creates:
-- `~/.epoch/config.json` (contains shared token)
+- `~/.epoch/config.json`
 - `~/.epoch/epoch.sqlite`
 
-### 3. Start Hub
+The init/config flow now asks for:
+- a default workspace root on the HPC host
+- an explicit public pairing WebSocket URL for the phone to use
+- optional OpenAI credentials
+
+### 3. Start the direct-connect service
 
 ```bash
 EPOCH_HOST=0.0.0.0 EPOCH_PORT=8787 node packages/hub/dist/cli.js start
@@ -70,179 +76,115 @@ node packages/hub/dist/cli.js status
 ss -lntp | rg ':8787'
 ```
 
-## Connect the iPhone App
+## Pair With EpochApp
 
-In iPhone app: `Settings -> Gateway`
+In the app, connect to the HPC host directly.
 
-- `WS URL`: one of the valid forms below
-- `Shared token`: from `~/.epoch/config.json`
-
-Common URL examples:
-- Same machine/simulator: `ws://127.0.0.1:8787/ws`
+Examples:
+- local testing: `ws://127.0.0.1:8787/ws`
 - Tailscale: `ws://100.x.y.z:8787/ws`
-- Public test: `ws://<public-ip>:8787/ws`
-- Production (recommended): `wss://hub.yourdomain.com/ws`
+- public test: `ws://<public-ip>:8787/ws`
+- production: `wss://hpc.yourdomain.com/ws`
 
-## Network Modes (Recommended Order)
+The pairing token is stored in `~/.epoch/config.json`.
 
-1. Tailscale (best for private setups)
-2. Public `wss://` via reverse proxy (best for production)
-3. Public plain `ws://` on `8787` (temporary/testing only)
+Important:
+- pairing URL generation no longer guesses a LAN IP
+- set the public/reachable URL explicitly in `epoch config`
+- `EPOCH_PAIR_WS_URL` can still override pairing output for one-off runs
 
-## AWS Security Group Setup
+## Project Folders
 
-### If using plain `ws://<public-ip>:8787/ws`
+There are two supported workspace modes:
 
-Inbound:
-- Type: `Custom TCP`
-- Port: `8787`
-- Source: start with your HPC egress IP `/32` (or temporary `0.0.0.0/0` for testing)
+1. Default root
+   Projects are created under the configured workspace root, typically:
+   `~/.epoch/workspace/projects/<project-id>`
 
-### If using `wss://hub.yourdomain.com/ws` (recommended)
+2. Explicit project folder
+   The app can send a `workspacePath` for a project, and Epoch will use that exact folder on the HPC host.
 
-Inbound:
-- `HTTP` port `80` from `0.0.0.0/0` (for certificate issuance)
-- `HTTPS` port `443` from `0.0.0.0/0`
+Requirements for explicit project folders:
+- the path must be writable by the Epoch process
+- Epoch will create `artifacts/`, `runs/`, and `logs/` inside that folder if needed
+- runtime tools are scoped to that chosen folder
 
-Do not keep accidental invalid rules (for example port `0`).
+This is the preferred model when users want to work inside an existing project checkout instead of a fixed Epoch-managed root.
 
-## Reverse Proxy (Caddy, recommended)
+## Reverse Proxy
 
-1. Point DNS `hub.yourdomain.com` to your EC2 public IP.
-2. Keep Hub running on localhost only:
+For public access, put the service behind HTTPS and point the phone at the public `wss://.../ws` URL.
 
-```bash
-EPOCH_HOST=127.0.0.1 EPOCH_PORT=8787 node packages/hub/dist/cli.js start
-```
-
-3. Install and configure Caddy:
+Example with Caddy:
 
 ```bash
-sudo apt update
-sudo apt install -y caddy
-
 sudo tee /etc/caddy/Caddyfile >/dev/null <<'CFG'
-hub.yourdomain.com {
+hpc.yourdomain.com {
     reverse_proxy 127.0.0.1:8787
 }
 CFG
 
 sudo systemctl restart caddy
-sudo systemctl status caddy --no-pager
 ```
 
-4. Verify:
+## Connectivity Checks
+
+Without token:
 
 ```bash
-curl -i https://hub.yourdomain.com/status/resources
+curl -i http://<host>:8787/status/resources
 ```
-
-`401 unauthorized` here is expected and means network path is working.
-
-## HPC Bridge Setup
-
-Run on HPC/head node:
-
-```bash
-node packages/hpc-bridge/dist/cli.js init
-```
-
-When prompted:
-- `Hub WS URL`: use your reachable hub URL (for example `ws://18.x.x.x:8787/ws` or `wss://hub.yourdomain.com/ws`)
-- `Shared token`: paste token from Hub `config.json`
-- `Workspace root`: absolute writable path on HPC
-
-Then start:
-
-```bash
-node packages/hpc-bridge/dist/cli.js start
-```
-
-## Connectivity Verification Commands
-
-### From any remote machine (or HPC)
-
-```bash
-nc -vz <hub-host> 8787
-curl -i http://<hub-host>:8787/status/resources
-```
-
-Interpretation:
-- TCP success + `401 unauthorized`: network OK, auth missing (expected without token)
-- `Connection refused`: Hub not listening
-- Timeout: SG/firewall/routing issue
 
 With token:
 
 ```bash
 TOKEN=$(jq -r .token ~/.epoch/config.json)
-curl -i -H "Authorization: Bearer $TOKEN" http://<hub-host>:8787/status/resources
+curl -i -H "Authorization: Bearer $TOKEN" http://<host>:8787/status/resources
 ```
 
-Expected: `200` with JSON payload.
+Expected result with token: `200` and a JSON payload.
 
-## Troubleshooting (Real-World)
+## CLI
 
-### `pnpm: command not found`
-
-Use:
+Primary CLI:
 
 ```bash
-corepack enable
-corepack prepare pnpm@10.30.1 --activate
+epoch <init|config|start|restart|stop|status|doctor>
 ```
 
-### Hub QR scans but app still cannot connect
-
-- Confirm QR/manual URL is actually reachable from phone
-- For Docker/bridge environments, auto-detected `172.x.x.x` may be wrong for iPhone
-- Override QR URL generation:
-
-```bash
-EPOCH_PAIR_WS_URL=ws://<reachable-host>:8787/ws node packages/hub/dist/cli.js init
-```
-
-### iPhone shows `401 unauthorized`
-
-- This usually means network path is good
-- Re-check and re-paste shared token
-
-### iPhone shows ATS error (`NSURLErrorDomain -1022`)
-
-- Use `wss://...` URL
-- Or use an app build that explicitly allows non-TLS dev WS
-
-### iOS install error `CoreDeviceError 3002` (for source-built private app)
-
-Usually signing/provisioning mismatch:
-- Bundle identifier in app must match provisioning profile
-- Development Team must be configured
-- Rebuild and reinstall after fixing signing
-
-## CLI Commands
-
-Hub:
+Repo-local equivalent:
 
 ```bash
 node packages/hub/dist/cli.js <init|config|start|restart|stop|status|doctor>
 ```
 
-HPC Bridge:
-
-```bash
-node packages/hpc-bridge/dist/cli.js <init|config|start|restart|stop|status|doctor>
-```
+Compatibility aliases:
+- `epoch-hub` still points to the same CLI, but is deprecated
+- `epoch-bridge` remains only for legacy Hub+Bridge installs and is deprecated
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `EPOCH_STATE_DIR` | `~/.epoch` | Hub state directory |
-| `EPOCH_HOST` | `0.0.0.0` | Hub listen address |
-| `EPOCH_PORT` | `8787` | Hub listen port |
-| `EPOCH_DB_PATH` | `$EPOCH_STATE_DIR/epoch.sqlite` | DB path |
-| `EPOCH_PAIR_WS_URL` | auto-detected LAN IP | Override pairing WS URL |
-| `OPENAI_API_KEY` | none | Used for OCR/embeddings/transcription features |
+| `EPOCH_STATE_DIR` | `~/.epoch` | State directory |
+| `EPOCH_HOST` | `0.0.0.0` | Listen address |
+| `EPOCH_PORT` | `8787` | Listen port |
+| `EPOCH_DB_PATH` | `$EPOCH_STATE_DIR/epoch.sqlite` | SQLite path |
+| `EPOCH_WORKSPACE_ROOT` | unset | Overrides configured default workspace root |
+| `EPOCH_HPC_WORKSPACE_ROOT` | unset | Legacy compatibility alias for workspace root |
+| `EPOCH_PAIR_WS_URL` | unset | Overrides pairing WebSocket URL |
+| `OPENAI_API_KEY` | unset | OpenAI API key |
+
+## Legacy Bridge Mode
+
+`packages/hpc-bridge` is kept only so older deployments still boot.
+
+New installations should not use it. Prefer:
+- `epoch init`
+- `epoch config`
+- `epoch start`
+
+If you still run the legacy bridge package, expect deprecation warnings and migration prompts.
 
 ## Development
 

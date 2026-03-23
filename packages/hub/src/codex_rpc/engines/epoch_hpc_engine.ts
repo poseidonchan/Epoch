@@ -201,7 +201,7 @@ export class EpochHpcEngine implements CodexEngineSession {
 
     const apiKey = (await loadOpenAIApiKeyFromStateDir(this.stateDir)) ?? getEnvApiKey("openai");
     if (!apiKey) {
-      throw new Error("Missing OpenAI credentials. Configure an API key (epoch-hub config) or set OPENAI_API_KEY.");
+      throw new Error("Missing OpenAI credentials. Configure an API key (epoch config) or set OPENAI_API_KEY.");
     }
 
     const model = String(args.model ?? "").trim();
@@ -1033,7 +1033,7 @@ export class EpochHpcEngine implements CodexEngineSession {
       ].filter((line): line is string => Boolean(line && line.trim()));
       if (message.includes("no such file or directory") || message.includes("enoent")) {
         lines.push(
-          "Hint: If Hub and HPC do not share a filesystem, use the epoch-hpc engine so exec/applyPatch run via the HPC bridge."
+          "Hint: Check the project's workspace path. Each direct-connect project can use its own folder, or fall back to the configured workspace root."
         );
       }
       return lines.join("\n");
@@ -1041,7 +1041,7 @@ export class EpochHpcEngine implements CodexEngineSession {
     if (message.includes("no such file or directory") || message.includes("enoent")) {
       return [
         `engineName=${this.name}`,
-        "Hint: If Hub and HPC do not share a filesystem, use the epoch-hpc engine so exec/applyPatch run via the HPC bridge.",
+        "Hint: Check the project's workspace path. Each direct-connect project can use its own folder, or fall back to the configured workspace root.",
       ].join("\n");
     }
     return null;

@@ -34,10 +34,13 @@ test("resolvePairingWSURL prefers EPOCH_PAIR_WS_URL when set", () => {
   assert.equal(result.source, "env");
 });
 
-test("resolvePairingWSURL uses first non-internal IPv4 when env override is absent", () => {
+test("resolvePairingWSURL prefers saved publicWsUrl when env override is absent", () => {
   const result = resolvePairingWSURL({
     env: {
       EPOCH_PORT: "8787",
+    },
+    config: {
+      publicWsUrl: "wss://phone-reachable.example/ws",
     },
     networkInterfaces: () => ({
       lo0: [{ address: "127.0.0.1", family: "IPv4", internal: true }],
@@ -45,14 +48,17 @@ test("resolvePairingWSURL uses first non-internal IPv4 when env override is abse
     }),
   });
 
-  assert.equal(result.wsURL, "ws://10.1.2.3:8787/ws");
-  assert.equal(result.source, "lan");
+  assert.equal(result.wsURL, "wss://phone-reachable.example/ws");
+  assert.equal(result.source, "config");
 });
 
-test("resolvePairingWSURL falls back to loopback and warning when no LAN IPv4 exists", () => {
+test("resolvePairingWSURL falls back to loopback and warning when no explicit public URL exists", () => {
   const result = resolvePairingWSURL({
-    env: {},
+    env: {
+      EPOCH_PORT: "8787",
+    },
     networkInterfaces: () => ({
+      en0: [{ address: "10.1.2.3", family: "IPv4", internal: false }],
       lo0: [{ address: "::1", family: "IPv6", internal: true }],
     }),
   });

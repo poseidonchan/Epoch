@@ -38,7 +38,7 @@ export async function initCommand(_argv: string[]) {
     ui.keyValue("DB", dbPath);
     ui.keyValue("Server ID", config.serverId);
     ui.keyValue("Shared token (store this)", config.token);
-    const pairingWS = resolvePairingWSURL({ env: process.env, defaultPort: 8787 });
+    const pairingWS = resolvePairingWSURL({ env: process.env, config, defaultPort: 8787 });
     const pairingPayloadURL = buildHubPairingPayloadURL({
       wsURL: pairingWS.wsURL,
       token: config.token,
@@ -46,22 +46,23 @@ export async function initCommand(_argv: string[]) {
     });
     ui.line();
     ui.step(4, 4, "Pairing QR generated", "ok");
-    ui.line("Scan this in Epoch iPhone app Settings > Gateway > Scan Hub QR");
+    ui.line("Scan this in EpochApp Settings > Gateway > Scan Hub QR");
     ui.keyValue("Pairing WS URL", pairingWS.wsURL);
     if (pairingWS.warning) {
       ui.warn(pairingWS.warning);
     }
+    ui.keyValue("Default workspace root", config.workspaceRoot ?? "not configured");
     renderHubPairingQRCode(pairingPayloadURL, (line) => console.log(line));
     ui.line("Pairing URL (fallback):");
     ui.line(pairingPayloadURL);
 
     if (!prompter.interactive) {
-      ui.note("Next: run `epoch-hub config` to set codex defaults and optional OPENAI_API_KEY for file embeddings.");
+      ui.note("Next: run `epoch config` to set workspace root, public WS URL, and optional OPENAI_API_KEY.");
       return;
     }
 
     const runConfig = await prompter.confirm({
-      message: "Run `epoch-hub config` now?",
+      message: "Run `epoch config` now?",
       defaultYes: true,
     });
     if (runConfig) {
@@ -70,13 +71,13 @@ export async function initCommand(_argv: string[]) {
     }
 
     const startNow = await prompter.confirm({
-      message: "Start Epoch Hub now?",
+      message: "Start Epoch now?",
       defaultYes: true,
     });
     if (startNow) {
       await startCommand([]);
     } else {
-      ui.note("Next: run `epoch-hub start` when ready.");
+      ui.note("Next: run `epoch start` when ready.");
     }
   } finally {
     prompter.close();

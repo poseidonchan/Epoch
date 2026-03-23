@@ -15,6 +15,15 @@ test.after(() => {
   }
 });
 
+function withStateDirectory(repository, stateDir = "/tmp/epoch-turn-history-state") {
+  return {
+    stateDirectory() {
+      return stateDir;
+    },
+    ...repository,
+  };
+}
+
 test("handleTurnStart forwards plan mode as collaborationMode=plan", async () => {
   const threadId = "123e4567-e89b-12d3-a456-426614174111";
   const thread = {
@@ -33,7 +42,7 @@ test("handleTurnStart forwards plan mode as collaborationMode=plan", async () =>
 
   let capturedStartArgs = null;
 
-  const repository = {
+  const repository = withStateDirectory({
     async query() {
       return [];
     },
@@ -67,7 +76,7 @@ test("handleTurnStart forwards plan mode as collaborationMode=plan", async () =>
     async updateThread() {},
     async createTurn() {},
     async upsertItem() {},
-  };
+  });
 
   const engines = {
     async getEngine(name) {
@@ -118,11 +127,11 @@ test("handleTurnStart forwards plan mode as collaborationMode=plan", async () =>
   );
 });
 
-test("handleTurnStart fails fast when workspace root is unavailable for project threads", async () => {
-  const originalRoot = process.env.EPOCH_HPC_WORKSPACE_ROOT;
-  delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
-
+test("handleTurnStart falls back to the default direct-connect workspace root", async () => {
   const threadId = "123e4567-e89b-12d3-a456-426614174120";
+  const projectId = "proj_missing_root";
+  const stateDir = "/tmp/epoch-turn-default-state";
+  const expectedCwd = `${stateDir}/workspace/projects/${projectId}`;
   const thread = {
     id: threadId,
     preview: "",
@@ -130,26 +139,39 @@ test("handleTurnStart fails fast when workspace root is unavailable for project 
     createdAt: 1,
     updatedAt: 1,
     path: null,
-    cwd: "projects/proj_missing_root",
+    cwd: `projects/${projectId}`,
     cliVersion: "@epoch/hub/0.1.0",
     source: "appServer",
     gitInfo: null,
     turns: [],
   };
 
+  let capturedStartArgs = null;
+  let updatedThread = null;
+  const originalWorkspaceRoot = process.env.EPOCH_WORKSPACE_ROOT;
+  const originalLegacyRoot = process.env.EPOCH_HPC_WORKSPACE_ROOT;
+  delete process.env.EPOCH_WORKSPACE_ROOT;
+  delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
+
   try {
-    const repository = {
-      async query(sql) {
+    const repository = withStateDirectory({
+      stateDirectory() {
+        return stateDir;
+      },
+      async query(sql, args = []) {
         const normalized = String(sql);
-        if (normalized.includes("FROM nodes")) return [];
+        if (normalized.includes("FROM projects") && normalized.includes("hpc_workspace_path")) {
+          assert.equal(args[0], projectId);
+          return [];
+        }
         return [];
       },
       async getThreadRecord(id) {
         assert.equal(id, threadId);
         return {
           id: threadId,
-          projectId: "proj_missing_root",
-          cwd: "projects/proj_missing_root",
+          projectId,
+          cwd: `projects/${projectId}`,
           modelProvider: "openai",
           modelId: "gpt-5.3-codex",
           preview: "",
@@ -159,7 +181,7 @@ test("handleTurnStart fails fast when workspace root is unavailable for project 
           statusJson: JSON.stringify({
             modelProvider: "openai",
             model: "gpt-5.3-codex",
-            cwd: "projects/proj_missing_root",
+            cwd: `projects/${projectId}`,
             approvalPolicy: "on-request",
             sandbox: { mode: "workspace-write" },
             reasoningEffort: null,
@@ -171,50 +193,68 @@ test("handleTurnStart fails fast when workspace root is unavailable for project 
         assert.equal(id, threadId);
         return JSON.parse(JSON.stringify(thread));
       },
-      async updateThread() {},
+      async updateThread(args) {
+        updatedThread = args;
+      },
       async createTurn() {},
       async upsertItem() {},
-    };
+    });
 
     const engines = {
-      async getEngine() {
-        assert.fail("engine.startTurn should not be reached when workspace root is unavailable");
+      async getEngine(name) {
+        assert.equal(name, "codex-app-server");
+        return {
+          async startTurn(args) {
+            capturedStartArgs = args;
+            return {
+              turn: {
+                id: args.turnId,
+                items: [],
+                status: "inProgress",
+                error: null,
+              },
+              events: emptyEvents(),
+            };
+          },
+        };
       },
     };
 
-    await assert.rejects(
-      () =>
-        handleTurnStart(
-          {
-            repository,
-            engines,
-          },
-          {
-            threadId,
-            input: [{ type: "text", text: "plan this change" }],
-            planMode: true,
-          }
-        ),
-      /CAPABILITY_MISSING: node workspaceRoot is unavailable/
+    await handleTurnStart(
+      {
+        repository,
+        engines,
+      },
+      {
+        threadId,
+        input: [{ type: "text", text: "plan this change" }],
+        planMode: true,
+      }
     );
+
+    assert.ok(updatedThread);
+    assert.equal(updatedThread.cwd, expectedCwd);
+    assert.ok(capturedStartArgs);
+    assert.equal(capturedStartArgs.cwd, expectedCwd);
   } finally {
-    if (originalRoot == null) {
+    if (originalWorkspaceRoot == null) {
+      delete process.env.EPOCH_WORKSPACE_ROOT;
+    } else {
+      process.env.EPOCH_WORKSPACE_ROOT = originalWorkspaceRoot;
+    }
+    if (originalLegacyRoot == null) {
       delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
     } else {
-      process.env.EPOCH_HPC_WORKSPACE_ROOT = originalRoot;
+      process.env.EPOCH_HPC_WORKSPACE_ROOT = originalLegacyRoot;
     }
   }
 });
 
-test("handleTurnStart resolves workspace root from nodes table when env is unavailable", async () => {
-  const originalRoot = process.env.EPOCH_HPC_WORKSPACE_ROOT;
-  delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
-
+test("handleTurnStart prefers a persisted project workspace path when available", async () => {
   const threadId = "123e4567-e89b-12d3-a456-426614174122";
   const projectId = "proj_from_nodes";
-  const workspaceRoot = "/tmp/epoch-from-node";
+  const chosenWorkspacePath = "/srv/hpc/custom-thread-project";
   const legacyCwd = `projects/${projectId}`;
-  const expectedCwd = `${workspaceRoot}/projects/${projectId}`;
   const thread = {
     id: threadId,
     preview: "",
@@ -231,17 +271,21 @@ test("handleTurnStart resolves workspace root from nodes table when env is unava
 
   let capturedStartArgs = null;
   let updatedThread = null;
+  const originalWorkspaceRoot = process.env.EPOCH_WORKSPACE_ROOT;
+  const originalLegacyRoot = process.env.EPOCH_HPC_WORKSPACE_ROOT;
+  delete process.env.EPOCH_WORKSPACE_ROOT;
+  delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
 
   try {
-    const repository = {
-      async query(sql) {
+    const repository = withStateDirectory({
+      stateDirectory() {
+        return "/tmp/epoch-turn-state";
+      },
+      async query(sql, args = []) {
         const normalized = String(sql);
-        if (normalized.includes("FROM nodes")) {
-          return [
-            {
-              permissions: JSON.stringify({ workspaceRoot }),
-            },
-          ];
+        if (normalized.includes("FROM projects") && normalized.includes("hpc_workspace_path")) {
+          assert.equal(args[0], projectId);
+          return [{ hpc_workspace_path: chosenWorkspacePath }];
         }
         return [];
       },
@@ -277,7 +321,7 @@ test("handleTurnStart resolves workspace root from nodes table when env is unava
       },
       async createTurn() {},
       async upsertItem() {},
-    };
+    });
 
     const engines = {
       async getEngine(name) {
@@ -311,14 +355,19 @@ test("handleTurnStart resolves workspace root from nodes table when env is unava
     );
 
     assert.ok(updatedThread);
-    assert.equal(updatedThread.cwd, expectedCwd);
+    assert.equal(updatedThread.cwd, chosenWorkspacePath);
     assert.ok(capturedStartArgs);
-    assert.equal(capturedStartArgs.cwd, expectedCwd);
+    assert.equal(capturedStartArgs.cwd, chosenWorkspacePath);
   } finally {
-    if (originalRoot == null) {
+    if (originalWorkspaceRoot == null) {
+      delete process.env.EPOCH_WORKSPACE_ROOT;
+    } else {
+      process.env.EPOCH_WORKSPACE_ROOT = originalWorkspaceRoot;
+    }
+    if (originalLegacyRoot == null) {
       delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
     } else {
-      process.env.EPOCH_HPC_WORKSPACE_ROOT = originalRoot;
+      process.env.EPOCH_HPC_WORKSPACE_ROOT = originalLegacyRoot;
     }
   }
 });
@@ -349,7 +398,7 @@ test("handleTurnStart normalizes stale project cwd before engine start", async (
   let capturedUpdateThread = null;
 
   try {
-    const repository = {
+    const repository = withStateDirectory({
       async query() {
         return [];
       },
@@ -385,7 +434,7 @@ test("handleTurnStart normalizes stale project cwd before engine start", async (
       },
       async createTurn() {},
       async upsertItem() {},
-    };
+    });
 
     const engines = {
       async getEngine(name) {
@@ -486,7 +535,7 @@ test("handleTurnStart injects indexed project snippets into turn input", async (
       },
     };
 
-    const repository = {
+    const repository = withStateDirectory({
       dbPool() {
         return dbPool;
       },
@@ -523,7 +572,7 @@ test("handleTurnStart injects indexed project snippets into turn input", async (
       async updateThread() {},
       async createTurn() {},
       async upsertItem() {},
-    };
+    });
 
     const engines = {
       async getEngine(name) {
@@ -611,7 +660,7 @@ test("handleTurnStart sends history fallback context via developer instructions 
   let capturedStartArgs = null;
   const updateThreadCalls = [];
 
-  const repository = {
+  const repository = withStateDirectory({
     async query() {
       return [];
     },
@@ -650,7 +699,7 @@ test("handleTurnStart sends history fallback context via developer instructions 
       return null;
     },
     async assignThreadToSession() {},
-  };
+  });
 
   const engines = {
     async getEngine(name) {
@@ -720,7 +769,7 @@ test("handleTurnStart still forwards collaborationMode when stored model is miss
 
     let capturedStartArgs = null;
 
-    const repository = {
+    const repository = withStateDirectory({
       async query() {
         return [];
       },
@@ -754,7 +803,7 @@ test("handleTurnStart still forwards collaborationMode when stored model is miss
       async updateThread() {},
       async createTurn() {},
       async upsertItem() {},
-    };
+    });
 
     const engines = {
       async getEngine(name) {
@@ -847,7 +896,7 @@ test("handleTurnStart normalizes legacy pi threads and starts with codex engine"
   let capturedStartArgs = null;
   const updateThreadCalls = [];
 
-  const repository = {
+  const repository = withStateDirectory({
     async query() {
       return [];
     },
@@ -884,7 +933,7 @@ test("handleTurnStart normalizes legacy pi threads and starts with codex engine"
     },
     async createTurn() {},
     async upsertItem() {},
-  };
+  });
 
   const engines = {
     async getEngine(name) {
@@ -1004,7 +1053,7 @@ test("handleTurnStart seeds history via thread/resume when repairing codex threa
   let capturedResumeParams = null;
   let capturedStartArgs = null;
 
-  const repository = {
+  const repository = withStateDirectory({
     async query() {
       return [];
     },
@@ -1068,7 +1117,7 @@ test("handleTurnStart seeds history via thread/resume when repairing codex threa
       return [];
     },
     async removeTurns() {},
-  };
+  });
 
   const engines = {
     async getEngine(name) {
@@ -1191,7 +1240,7 @@ test("handleTurnStart repairs codex thread when turn/start reports missing threa
   const startTurnThreadIds = [];
   let resumeCallCount = 0;
 
-  const repository = {
+  const repository = withStateDirectory({
     async query() {
       return [];
     },
@@ -1255,7 +1304,7 @@ test("handleTurnStart repairs codex thread when turn/start reports missing threa
       return [];
     },
     async removeTurns() {},
-  };
+  });
 
   const engines = {
     async getEngine(name) {
@@ -1351,7 +1400,7 @@ test("handleTurnStart forwards workspaceWrite sandbox policy and forces network 
   };
 
   let capturedStartArgs = null;
-  const repository = {
+  const repository = withStateDirectory({
     async query() {
       return [];
     },
@@ -1385,7 +1434,7 @@ test("handleTurnStart forwards workspaceWrite sandbox policy and forces network 
     async updateThread() {},
     async createTurn() {},
     async upsertItem() {},
-  };
+  });
 
   const engines = {
     async getEngine(name) {
@@ -1441,7 +1490,7 @@ test("handleTurnStart forwards dangerFullAccess sandbox policy as danger-full-ac
   };
 
   let capturedStartArgs = null;
-  const repository = {
+  const repository = withStateDirectory({
     async query() {
       return [];
     },
@@ -1475,7 +1524,7 @@ test("handleTurnStart forwards dangerFullAccess sandbox policy as danger-full-ac
     async updateThread() {},
     async createTurn() {},
     async upsertItem() {},
-  };
+  });
 
   const engines = {
     async getEngine(name) {
@@ -1526,7 +1575,7 @@ test("handleTurnStart applies updated sandbox immediately across turns in the sa
 
   let currentSandbox = { type: "workspaceWrite", networkAccess: false };
   const capturedSandboxPolicies = [];
-  const repository = {
+  const repository = withStateDirectory({
     async query() {
       return [];
     },
@@ -1560,7 +1609,7 @@ test("handleTurnStart applies updated sandbox immediately across turns in the sa
     async updateThread() {},
     async createTurn() {},
     async upsertItem() {},
-  };
+  });
 
   const engines = {
     async getEngine(name) {

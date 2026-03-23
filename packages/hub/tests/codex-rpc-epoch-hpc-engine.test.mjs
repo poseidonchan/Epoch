@@ -353,7 +353,7 @@ test("epoch-hpc ENOENT runtime error includes additionalDetails hint", async () 
     assert.ok(details.includes("method=runtime/commandExecution/exec"));
     assert.ok(details.includes("cwd=/missing/cwd"));
     assert.ok(details.includes("command[0]=/bin/bash"));
-    assert.ok(details.toLowerCase().includes("hpc bridge"));
+    assert.ok(details.toLowerCase().includes("workspace path"));
   } finally {
     globalThis.fetch = originalFetch;
     process.env.OPENAI_API_KEY = originalKey;

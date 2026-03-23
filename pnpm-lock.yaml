@@ -59,6 +59,9 @@ importers:
       '@epoch/cli-utils':
         specifier: workspace:*
         version: link:../cli-utils
+      '@epoch/hpc-bridge':
+        specifier: workspace:*
+        version: link:../hpc-bridge
       '@epoch/protocol':
         specifier: workspace:*
         version: link:../protocol

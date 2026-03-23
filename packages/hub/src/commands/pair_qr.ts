@@ -1,8 +1,6 @@
-import os from "node:os";
-
 import qrcode from "qrcode-terminal";
 
-export type PairingWSURLSource = "env" | "lan" | "loopback";
+export type PairingWSURLSource = "env" | "config" | "loopback";
 
 export type PairingWSURLResolution = {
   wsURL: string;
@@ -12,6 +10,7 @@ export type PairingWSURLResolution = {
 
 type PairingWSResolverOptions = {
   env?: NodeJS.ProcessEnv;
+  config?: { publicWsUrl?: string | null };
   networkInterfaces?: () => Record<string, Array<{ address: string; family: string | number; internal: boolean }> | undefined>;
   defaultPort?: number;
 };
@@ -55,30 +54,22 @@ export function resolvePairingWSURL(opts: PairingWSResolverOptions = {}): Pairin
     };
   }
 
+  const configUrl = String(opts.config?.publicWsUrl ?? "").trim();
+  if (configUrl) {
+    return {
+      wsURL: normalizePairingWSURL(configUrl),
+      source: "config",
+    };
+  }
+
   const portRaw = String(env.EPOCH_PORT ?? "").trim();
   const portValue = Number(portRaw);
   const port = Number.isFinite(portValue) && portValue > 0 ? Math.floor(portValue) : (opts.defaultPort ?? 8787);
-  const interfaces = opts.networkInterfaces?.() ?? (os.networkInterfaces() as Record<string, Array<{ address: string; family: string | number; internal: boolean }> | undefined>);
-
-  const names = Object.keys(interfaces).sort();
-  for (const name of names) {
-    const infos = interfaces[name] ?? [];
-    for (const info of infos) {
-      const family = typeof info.family === "number" ? info.family : String(info.family).toUpperCase() === "IPV4" ? 4 : 6;
-      if (family !== 4 || info.internal) continue;
-      const address = String(info.address ?? "").trim();
-      if (!address) continue;
-      return {
-        wsURL: `ws://${address}:${port}/ws`,
-        source: "lan",
-      };
-    }
-  }
 
   return {
     wsURL: `ws://127.0.0.1:${port}/ws`,
     source: "loopback",
-    warning: "No LAN IPv4 address was detected. Pairing QR uses loopback (127.0.0.1).",
+    warning: "No explicit public WS URL is configured. Pairing QR uses loopback (127.0.0.1).",
   };
 }
 
