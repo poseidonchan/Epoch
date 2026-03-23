@@ -1206,6 +1206,7 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
             const engineResult = await engine.modelList({});
             const data = (engineResult as any).data as Array<{
               id: string;
+              provider?: string;
               displayName?: string;
               supportedReasoningEfforts?: Array<{ reasoningEffort: string; description?: string }>;
               defaultReasoningEffort?: string;
@@ -1220,6 +1221,7 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
                   : [];
                 return {
                   id: m.id,
+                  provider: typeof m.provider === "string" && m.provider.trim().length > 0 ? m.provider.trim() : provider,
                   name: m.displayName ?? m.id,
                   reasoning: hasReasoning,
                   thinkingLevels,
@@ -1262,7 +1264,11 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
         sendResOk(ws, id, {
           provider,
           defaultModelId,
-          models: models.map((m) => ({ ...m, thinkingLevels: m.reasoning ? ["minimal", "low", "medium", "high", "xhigh"] : [] })),
+          models: models.map((m) => ({
+            ...m,
+            provider,
+            thinkingLevels: m.reasoning ? ["minimal", "low", "medium", "high", "xhigh"] : [],
+          })),
           thinkingLevels: ["minimal", "low", "medium", "high", "xhigh"],
         });
         return;

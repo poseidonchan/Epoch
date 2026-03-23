@@ -96,16 +96,13 @@ export class EpochHpcEngine implements CodexEngineSession {
 
   async modelList(_params: Record<string, unknown>): Promise<Record<string, unknown>> {
     const provider = resolveHubProvider(null);
-    const providers = Array.from(
-      new Set([provider.provider, "openai-codex", "anthropic"].filter(Boolean))
-    );
-
-    const models = providers.flatMap((p) => listHubModelsForProvider(p).map((m) => ({ provider: p, ...m })));
+    const models = listHubModelsForProvider(provider.provider).map((m) => ({ provider: provider.provider, ...m }));
     const defaultModelId = provider.defaultModelId ?? (models[0]?.id ?? null);
 
     const data = models.map((m) => ({
       id: m.id,
       model: m.id,
+      provider: m.provider,
       upgrade: null,
       displayName: m.name,
       description: `${m.provider}${m.reasoning ? " (reasoning)" : ""}`,

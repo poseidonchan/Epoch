@@ -3,6 +3,52 @@ import assert from "node:assert/strict";
 
 import { CodexEngineRegistry } from "../dist/index.js";
 
+test("epoch-hpc modelList returns only openai-codex models by default", async () => {
+  const previousPrimary = process.env.EPOCH_MODEL_PRIMARY;
+  const previousModel = process.env.EPOCH_MODEL;
+  delete process.env.EPOCH_MODEL_PRIMARY;
+  delete process.env.EPOCH_MODEL;
+
+  const registry = new CodexEngineRegistry({ config: null, stateDir: "/tmp" });
+  try {
+    const engine = await registry.getEngine("epoch-hpc");
+    const result = await engine.modelList({});
+    assert.ok(Array.isArray(result.data));
+    assert.ok(result.data.some((entry) => entry.id === "gpt-5.3-codex"));
+    assert.ok(result.data.every((entry) => entry.provider === "openai-codex"));
+    assert.ok(!result.data.some((entry) => String(entry.id).startsWith("claude-")));
+  } finally {
+    if (previousPrimary == null) delete process.env.EPOCH_MODEL_PRIMARY;
+    else process.env.EPOCH_MODEL_PRIMARY = previousPrimary;
+    if (previousModel == null) delete process.env.EPOCH_MODEL;
+    else process.env.EPOCH_MODEL = previousModel;
+    await registry.close();
+  }
+});
+
+test("epoch-hpc modelList follows the configured primary provider", async () => {
+  const previousPrimary = process.env.EPOCH_MODEL_PRIMARY;
+  const previousModel = process.env.EPOCH_MODEL;
+  process.env.EPOCH_MODEL_PRIMARY = "anthropic/claude-sonnet-4.5";
+  delete process.env.EPOCH_MODEL;
+
+  const registry = new CodexEngineRegistry({ config: null, stateDir: "/tmp" });
+  try {
+    const engine = await registry.getEngine("epoch-hpc");
+    const result = await engine.modelList({});
+    assert.ok(Array.isArray(result.data));
+    assert.ok(result.data.some((entry) => String(entry.id).startsWith("claude-")));
+    assert.ok(result.data.every((entry) => entry.provider === "anthropic"));
+    assert.ok(!result.data.some((entry) => entry.id === "gpt-5.3-codex"));
+  } finally {
+    if (previousPrimary == null) delete process.env.EPOCH_MODEL_PRIMARY;
+    else process.env.EPOCH_MODEL_PRIMARY = previousPrimary;
+    if (previousModel == null) delete process.env.EPOCH_MODEL;
+    else process.env.EPOCH_MODEL = previousModel;
+    await registry.close();
+  }
+});
+
 test("epoch-hpc uses developer role and streams deltas via SSE", async () => {
   const originalFetch = globalThis.fetch;
   const originalKey = process.env.OPENAI_API_KEY;

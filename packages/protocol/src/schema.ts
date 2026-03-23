@@ -191,7 +191,9 @@ export type RunRecord = Static<typeof RunRecord>;
 export const ModelInfo = Type.Object({
   id: Type.String(),
   name: Type.String(),
+  provider: Type.Optional(Type.String()),
   reasoning: Type.Boolean(),
+  thinkingLevels: Type.Optional(Type.Array(ThinkingLevel)),
 });
 export type ModelInfo = Static<typeof ModelInfo>;
 
