@@ -385,7 +385,7 @@ export class CodexAppServerEngine implements CodexEngineSession {
     this.initializePromise = (async () => {
       await this.requestRaw("initialize", {
         clientInfo: {
-          name: "@epoch/hub",
+          name: "epoch",
           version: "0.1.0",
         },
         capabilities: {

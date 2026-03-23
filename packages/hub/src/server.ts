@@ -397,7 +397,7 @@ function createLocalNodeContext(localRuntime: LocalRuntimeBridge): ConnectionCon
     deviceId: "local-runtime",
     deviceName: "Epoch Local Runtime",
     platform: process.platform,
-    clientName: "@epoch/hub",
+    clientName: "epoch",
     clientVersion: "0.1.0",
     caps: ["fs", "artifacts", "logs", "shell"],
     commands: localRuntime.listNodeCommands(),
@@ -873,7 +873,7 @@ async function handleWsConnection(ws: WebSocket, state: HubState) {
           roleAccepted: role,
           scopesAccepted: role === "operator" ? (ctx as any).scopes : undefined,
           commandsAccepted: role === "node" ? (ctx as any).commands : undefined,
-          server: { name: "@epoch/hub", version: "0.1.0" },
+          server: { name: "epoch", version: "0.1.0" },
         });
         return;
       }

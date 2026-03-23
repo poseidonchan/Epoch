@@ -221,7 +221,7 @@ test("handleEpochSessionGenerateTitle prefers thread turns when messages table i
         updatedAt: 2,
         path: null,
         cwd: "/tmp",
-        cliVersion: "@epoch/hub/0.1.0",
+        cliVersion: "epoch/0.1.0",
         source: "appServer",
         gitInfo: null,
         turns: [

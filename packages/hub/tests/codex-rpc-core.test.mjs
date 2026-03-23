@@ -22,7 +22,7 @@ test("handleInitialize stores capabilities and supports optOutNotificationMethod
     },
   });
 
-  assert.equal(response.userAgent, "@epoch/hub/0.1.0");
+  assert.equal(response.userAgent, "epoch/0.1.0");
   assert.equal(conn.initializedRequestReceived, true);
   assert.equal(conn.capabilities.experimentalApi, true);
   assert.equal(conn.capabilities.optOutNotificationMethods.has("item/agentMessage/delta"), true);

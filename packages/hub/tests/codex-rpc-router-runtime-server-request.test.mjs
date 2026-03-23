@@ -73,7 +73,7 @@ test("router handles internal runtime/commandExecution/exec serverRequest via ru
         updatedAt: 1,
         path: null,
         cwd: "/hpc/projects/proj_runtime",
-        cliVersion: "@epoch/hub/0.1.0",
+        cliVersion: "epoch/0.1.0",
         source: "appServer",
         gitInfo: null,
         turns: [],

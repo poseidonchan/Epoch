@@ -5,7 +5,6 @@ Epoch is an AI programming workbench for computational science.
 This repository contains the open-source backend/tooling:
 - `packages/hub`: the direct-connect Epoch service that runs on each HPC host
 - `packages/protocol`: shared protocol schema
-- `packages/hpc-bridge`: legacy compatibility package for older Hub+Bridge deployments
 
 The iOS app source code is private and maintained separately.
 
@@ -14,7 +13,7 @@ The iOS app source code is private and maintained separately.
 Epoch now runs as a single service on each HPC machine:
 - the phone connects directly to that HPC host over `ws://` or `wss://`
 - pairing, SQLite state, projects, sessions, and runtime tools all live in one service
-- no outbound `hpc-bridge` connection is required for new deployments
+- no outbound bridge connection is required for new deployments
 
 The default workspace root is configured once in `epoch config`, but each project can also choose any writable folder on the HPC host. When a project provides its own folder, that folder becomes the workspace for that project instead of the default root.
 
@@ -51,7 +50,7 @@ pnpm -w build
 ### 2. Initialize Epoch on the HPC host
 
 ```bash
-node packages/hub/dist/cli.js init
+epoch init
 ```
 
 This creates:
@@ -66,13 +65,13 @@ The init/config flow now asks for:
 ### 3. Start the direct-connect service
 
 ```bash
-EPOCH_HOST=0.0.0.0 EPOCH_PORT=8787 node packages/hub/dist/cli.js start
+EPOCH_HOST=0.0.0.0 EPOCH_PORT=8787 epoch start
 ```
 
 Check status:
 
 ```bash
-node packages/hub/dist/cli.js status
+epoch status
 ss -lntp | rg ':8787'
 ```
 
@@ -152,15 +151,13 @@ Primary CLI:
 epoch <init|config|start|restart|stop|status|doctor>
 ```
 
-Repo-local equivalent:
+Repo-local equivalent while developing in this monorepo:
 
 ```bash
 node packages/hub/dist/cli.js <init|config|start|restart|stop|status|doctor>
 ```
 
-Compatibility aliases:
-- `epoch-hub` still points to the same CLI, but is deprecated
-- `epoch-bridge` remains only for legacy Hub+Bridge installs and is deprecated
+There is no separate public `epoch-hub` or `epoch-bridge` CLI anymore. Use `epoch` everywhere.
 
 ## Environment Variables
 
@@ -174,17 +171,6 @@ Compatibility aliases:
 | `EPOCH_HPC_WORKSPACE_ROOT` | unset | Legacy compatibility alias for workspace root |
 | `EPOCH_PAIR_WS_URL` | unset | Overrides pairing WebSocket URL |
 | `OPENAI_API_KEY` | unset | OpenAI API key |
-
-## Legacy Bridge Mode
-
-`packages/hpc-bridge` is kept only so older deployments still boot.
-
-New installations should not use it. Prefer:
-- `epoch init`
-- `epoch config`
-- `epoch start`
-
-If you still run the legacy bridge package, expect deprecation warnings and migration prompts.
 
 ## Development
 

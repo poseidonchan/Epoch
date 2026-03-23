@@ -1507,7 +1507,7 @@ export function toThread(record: CodexThreadRecord, turns: Turn[]): Thread {
     updatedAt: record.updatedAt,
     path: null,
     cwd: record.cwd,
-    cliVersion: "@epoch/hub/0.1.0",
+    cliVersion: "epoch/0.1.0",
     source: "appServer",
     gitInfo: null,
     turns,

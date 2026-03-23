@@ -29,7 +29,7 @@ test("requestPlanImplementationConfirmation resolves session thread before start
         updatedAt: 1,
         path: null,
         cwd: "/tmp/project",
-        cliVersion: "@epoch/hub/0.1.0",
+        cliVersion: "epoch/0.1.0",
         source: "appServer",
         gitInfo: null,
         turns: [
@@ -177,7 +177,7 @@ test("requestPlanImplementationConfirmation keeps pending unresolved when follow
         updatedAt: 1,
         path: null,
         cwd: "/tmp/project",
-        cliVersion: "@epoch/hub/0.1.0",
+        cliVersion: "epoch/0.1.0",
         source: "appServer",
         gitInfo: null,
         turns: [

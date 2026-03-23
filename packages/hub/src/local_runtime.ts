@@ -6,17 +6,6 @@ import os from "node:os";
 import process from "node:process";
 
 import type { NodeMethod } from "@epoch/protocol";
-import {
-  buildWorkspaceWriteEnv,
-  collectStorageUsage,
-  computeCpuPercentFromSamples,
-  computeRamPercentFromTotals,
-  parseMemInfoUsagePercent,
-  parseNvidiaSmiUtilizationPercent,
-  parseProcStatSample,
-  resolveRuntimeCommandCwd,
-  sampleCpuFromOsCpus,
-} from "@epoch/hpc-bridge";
 
 const execFileAsync = promisify(execFile);
 
@@ -1038,4 +1027,197 @@ function diffForSinglePath(fullDiff: string, filePath: string): string {
   const matches = sections.filter((section) => section.includes(` a/${normalized} `) || section.includes(` b/${normalized}`));
   if (matches.length === 0) return "";
   return matches.map((section) => (section.startsWith("diff --git ") ? section : `diff --git ${section}`)).join("\n");
+}
+
+async function collectStorageUsage(pathToInspect: string): Promise<{
+  totalBytes: number;
+  usedBytes: number;
+  availableBytes: number;
+  usedPercent: number;
+} | null> {
+  const trimmed = String(pathToInspect ?? "").trim();
+  if (!trimmed) return null;
+
+  try {
+    const { stdout } = await execFileAsync("df", ["-Pk", trimmed], {
+      env: { ...process.env, LC_ALL: "C" },
+    });
+    return parseDfPkOutput(String(stdout ?? ""));
+  } catch {
+    return null;
+  }
+}
+
+function parseDfPkOutput(raw: string): {
+  totalBytes: number;
+  usedBytes: number;
+  availableBytes: number;
+  usedPercent: number;
+} | null {
+  const lines = String(raw ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length < 2) return null;
+
+  const fields = lines[lines.length - 1].split(/\s+/).filter(Boolean);
+  if (fields.length < 5) return null;
+
+  const totalBlocks = Number(fields[1]);
+  const usedBlocks = Number(fields[2]);
+  const availableBlocks = Number(fields[3]);
+
+  if (!Number.isFinite(totalBlocks) || totalBlocks <= 0) return null;
+  if (!Number.isFinite(usedBlocks) || usedBlocks < 0) return null;
+  if (!Number.isFinite(availableBlocks) || availableBlocks < 0) return null;
+
+  return {
+    totalBytes: Math.round(totalBlocks * 1024),
+    usedBytes: Math.round(usedBlocks * 1024),
+    availableBytes: Math.round(availableBlocks * 1024),
+    usedPercent: parseCapacityPercent(fields[4], usedBlocks, totalBlocks),
+  };
+}
+
+function parseCapacityPercent(raw: string, usedBlocks: number, totalBlocks: number): number {
+  const match = String(raw ?? "").match(/(\d+(?:\.\d+)?)%/);
+  if (match) {
+    const parsed = Number(match[1]);
+    if (Number.isFinite(parsed)) {
+      return normalizePercent(parsed);
+    }
+  }
+  if (totalBlocks <= 0) return 0;
+  return normalizePercent((usedBlocks / totalBlocks) * 100);
+}
+
+function resolveRuntimeCommandCwd(args: {
+  workspaceRoot: string;
+  projectRoot: string;
+  rawCwd?: string | null;
+  fallbackCwd: string;
+}): string {
+  const normalized = normalizeOptionalString(args.rawCwd ?? undefined);
+  if (!normalized) {
+    return path.resolve(args.fallbackCwd);
+  }
+  if (path.isAbsolute(normalized)) {
+    return path.resolve(normalized);
+  }
+  if (normalized === "projects" || normalized.startsWith("projects/") || normalized.startsWith(`projects${path.sep}`)) {
+    return path.resolve(args.workspaceRoot, normalized);
+  }
+  return path.resolve(args.projectRoot, normalized);
+}
+
+function buildWorkspaceWriteEnv(projectRoot: string): Record<string, string> {
+  return {
+    HOME: projectRoot,
+    TMPDIR: path.join(projectRoot, "tmp"),
+    XDG_CACHE_HOME: path.join(projectRoot, ".cache"),
+    XDG_DATA_HOME: path.join(projectRoot, ".local", "share"),
+    XDG_CONFIG_HOME: path.join(projectRoot, ".config"),
+    PYTHONUSERBASE: path.join(projectRoot, ".local"),
+    PIP_USER: "0",
+    npm_config_prefix: path.join(projectRoot, ".npm-global"),
+  };
+}
+
+function parseProcStatSample(raw: string): ProcCpuSample | null {
+  const first = String(raw ?? "")
+    .split(/\r?\n/, 1)[0]
+    ?.trim();
+  if (!first || !first.startsWith("cpu ")) return null;
+  const parts = first
+    .split(/\s+/)
+    .slice(1)
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+  if (parts.length < 4) return null;
+  const total = parts.reduce((sum, value) => sum + value, 0);
+  const idle = (parts[3] ?? 0) + (parts[4] ?? 0);
+  if (!Number.isFinite(total) || total <= 0) return null;
+  return { idle, total };
+}
+
+function sampleCpuFromOsCpus(cpus: Array<{ times?: Record<string, unknown> }>): ProcCpuSample | null {
+  if (!Array.isArray(cpus) || cpus.length === 0) return null;
+  let idle = 0;
+  let total = 0;
+  for (const cpu of cpus) {
+    const times = cpu?.times;
+    if (!times || typeof times !== "object") continue;
+    for (const value of Object.values(times)) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed >= 0) total += parsed;
+    }
+    const idleTicks = Number(times.idle);
+    if (Number.isFinite(idleTicks) && idleTicks >= 0) idle += idleTicks;
+  }
+  if (!Number.isFinite(total) || total <= 0) return null;
+  return {
+    idle: Math.max(0, idle),
+    total,
+  };
+}
+
+function computeCpuPercentFromSamples(prev: ProcCpuSample, next: ProcCpuSample): number {
+  const deltaTotal = next.total - prev.total;
+  const deltaIdle = next.idle - prev.idle;
+  if (!Number.isFinite(deltaTotal) || deltaTotal <= 0) return 0;
+  const busy = Math.max(0, deltaTotal - Math.max(0, deltaIdle));
+  return normalizePercent((busy / deltaTotal) * 100);
+}
+
+function computeRamPercentFromTotals(totalBytes: number, freeBytes: number): number | null {
+  if (!Number.isFinite(totalBytes) || totalBytes <= 0) return null;
+  if (!Number.isFinite(freeBytes)) return null;
+  const usedBytes = Math.max(0, totalBytes - freeBytes);
+  return normalizePercent((usedBytes / totalBytes) * 100);
+}
+
+function parseMemInfoUsagePercent(raw: string): number | null {
+  let totalKB: number | null = null;
+  let availableKB: number | null = null;
+  for (const line of String(raw ?? "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("MemTotal:")) {
+      totalKB = parseLeadingInteger(trimmed);
+      continue;
+    }
+    if (trimmed.startsWith("MemAvailable:")) {
+      availableKB = parseLeadingInteger(trimmed);
+      continue;
+    }
+  }
+  if (totalKB == null || availableKB == null || totalKB <= 0) return null;
+  return normalizePercent(((totalKB - availableKB) / totalKB) * 100);
+}
+
+function parseNvidiaSmiUtilizationPercent(raw: string): number | undefined {
+  const values = String(raw ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => Number(line))
+    .filter((value) => Number.isFinite(value) && value >= 0 && value <= 100);
+  if (values.length === 0) return undefined;
+  return average(values);
+}
+
+function parseLeadingInteger(raw: string): number | null {
+  const match = String(raw ?? "").match(/(-?\d+)/);
+  if (!match) return null;
+  const value = Number.parseInt(match[1], 10);
+  return Number.isFinite(value) ? value : null;
+}
+
+function normalizePercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(Math.max(value, 0), 100);
+}
+
+function average(values: number[]): number {
+  if (!Array.isArray(values) || values.length === 0) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
