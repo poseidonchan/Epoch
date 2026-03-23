@@ -7,6 +7,7 @@ import {
   type HubConfig,
 } from "../config.js";
 import { HUB_DEFAULT_MODEL_ID, HUB_DEFAULT_PROVIDER, hubDefaultModelRef } from "../model.js";
+import { resolvePairingWSURL } from "./pair_qr.js";
 import { createWizardPrompter, createWizardUI, type WizardPrompter, type WizardUI } from "./wizard_ui.js";
 
 function describeAiConfig(ai: HubAiConfig | undefined): string {
@@ -60,15 +61,20 @@ async function runConfigWizard(args: {
 
   const previousAi = describeAiConfig(config.ai);
   const previousEmbeddingState = config.providerApiKeys?.openai ? "configured" : "not configured";
+  const previousDisplayName = config.displayName ?? "not configured";
   const previousWorkspaceRoot = config.workspaceRoot ?? "not configured";
-  const previousPublicWsUrl = config.publicWsUrl ?? "not configured";
+  const pairingWS = await resolvePairingWSURL({ env: process.env, config, defaultPort: 8787 });
+  const previousPublicWsUrl = pairingWS.wsURL;
+  const previousPublicWsUrlSource = pairingWS.source;
 
-  ui.banner("Epoch Direct Connect Configuration", "Guided setup for local runtime defaults, pairing URL, and embedding key");
+  ui.banner("Epoch Server Configuration", "Guided setup for direct pairing, local runtime defaults, and embedding key");
   ui.step(1, 5, "Load existing settings", "ok");
   ui.keyValue("State dir", stateDir);
+  ui.keyValue("Display name", previousDisplayName);
   ui.keyValue("Current AI config", previousAi);
   ui.keyValue("Default workspace root", previousWorkspaceRoot);
-  ui.keyValue("Public WS URL", previousPublicWsUrl);
+  ui.keyValue("Pairing WS URL", previousPublicWsUrl);
+  ui.keyValue("Pairing source", previousPublicWsUrlSource);
   ui.keyValue("Current embedding key (openai)", previousEmbeddingState);
   ui.keyValue("Target codex model", hubDefaultModelRef());
   ui.line();
@@ -83,13 +89,17 @@ async function runConfigWizard(args: {
   }
   ui.step(2, 5, "Collect direct-connect settings", "ok");
 
+  const displayName = await prompter.input({
+    message: "Display name shown in EpochApp:",
+    defaultValue: config.displayName ?? "",
+  });
   const workspaceRoot = await prompter.input({
     message: "Default workspace root for new projects:",
     defaultValue: config.workspaceRoot ?? "",
   });
   const publicWsUrl = await prompter.input({
-    message: "Public WS URL for phone pairing (optional, leave blank to keep loopback fallback):",
-    defaultValue: config.publicWsUrl ?? "",
+    message: "Pairing WS URL for phone pairing (leave blank to keep auto-detect/loopback):",
+    defaultValue: config.publicWsUrl ?? (pairingWS.source === "tailscale" ? pairingWS.wsURL : ""),
     allowEmpty: true,
   });
 
@@ -110,6 +120,7 @@ async function runConfigWizard(args: {
     defaultModelId: HUB_DEFAULT_MODEL_ID,
     auth: preserveCodexOAuthAuth(config.ai),
   };
+  config.displayName = displayName.trim();
   config.workspaceRoot = workspaceRoot.trim();
   config.publicWsUrl = publicWsUrl.trim() || null;
 
@@ -128,10 +139,11 @@ async function runConfigWizard(args: {
 
   await saveHubConfig({ stateDir, config });
   ui.step(5, 5, "Persist settings", "ok");
-  ui.success("Hub configuration saved.");
+  ui.success("Epoch server configuration saved.");
   ui.summary("Configuration summary", [
+    { key: "Display name", before: previousDisplayName, after: config.displayName ?? "not configured" },
     { key: "Default workspace root", before: previousWorkspaceRoot, after: config.workspaceRoot ?? "not configured" },
-    { key: "Public WS URL", before: previousPublicWsUrl, after: config.publicWsUrl ?? "not configured" },
+    { key: "Pairing WS URL", before: previousPublicWsUrl, after: config.publicWsUrl ?? "auto-detect / loopback" },
     { key: "AI backend", before: previousAi, after: describeAiConfig(config.ai) },
     { key: "AI target model", after: hubDefaultModelRef() },
     {
@@ -141,5 +153,5 @@ async function runConfigWizard(args: {
     },
   ]);
 
-  ui.note("If the Hub is running, restart it to apply changes.");
+  ui.note("If Epoch is running, restart it to apply changes.");
 }

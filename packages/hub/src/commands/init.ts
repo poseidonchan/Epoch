@@ -1,7 +1,7 @@
 import process from "node:process";
 import path from "node:path";
 
-import { ensureStateDir, getStateDir, loadOrCreateHubConfig } from "../config.js";
+import { ensureStateDir, getStateDir, loadOrCreateHubConfig, saveHubConfig } from "../config.js";
 import { connectDb, runMigrations } from "../db/db.js";
 import { buildHubPairingPayloadURL, renderHubPairingQRCode, resolvePairingWSURL } from "./pair_qr.js";
 import { configCommand } from "./config.js";
@@ -12,15 +12,15 @@ export async function initCommand(_argv: string[]) {
   const ui = createWizardUI();
   const prompter = createWizardPrompter(ui);
   try {
-    ui.banner("Epoch Hub Initialization", "Create state/config, run migrations, and print pairing QR");
+    ui.banner("Epoch Server Initialization", "Create local state, prepare direct pairing, and print the Epoch QR");
 
     const stateDir = getStateDir();
     await ensureStateDir(stateDir);
-    ui.step(1, 4, "Create or load Hub state directory", "ok");
+    ui.step(1, 4, "Create or load Epoch state directory", "ok");
 
     const config = await loadOrCreateHubConfig({ stateDir, allowCreate: true });
     if (!config) {
-      throw new Error("Failed to create hub config");
+      throw new Error("Failed to create Epoch config");
     }
 
     const dbPath = process.env.EPOCH_DB_PATH ?? path.join(stateDir, "epoch.sqlite");
@@ -33,21 +33,29 @@ export async function initCommand(_argv: string[]) {
     }
     ui.step(2, 4, "Database migrations", "ok");
 
-    ui.step(3, 4, "Hub config + token ready", "ok");
+    const pairingWS = await resolvePairingWSURL({ env: process.env, config, defaultPort: 8787 });
+    if (!config.publicWsUrl && pairingWS.source === "tailscale") {
+      config.publicWsUrl = pairingWS.wsURL;
+      await saveHubConfig({ stateDir, config });
+    }
+
+    ui.step(3, 4, "Server config + token ready", "ok");
     ui.keyValue("State dir", stateDir);
     ui.keyValue("DB", dbPath);
     ui.keyValue("Server ID", config.serverId);
+    ui.keyValue("Display Name", config.displayName ?? "not configured");
     ui.keyValue("Shared token (store this)", config.token);
-    const pairingWS = resolvePairingWSURL({ env: process.env, config, defaultPort: 8787 });
     const pairingPayloadURL = buildHubPairingPayloadURL({
       wsURL: pairingWS.wsURL,
       token: config.token,
       serverId: config.serverId,
+      name: config.displayName,
     });
     ui.line();
     ui.step(4, 4, "Pairing QR generated", "ok");
-    ui.line("Scan this in EpochApp Settings > Gateway > Scan Hub QR");
+    ui.line("Scan this in EpochApp > Settings > Servers > Scan Epoch QR");
     ui.keyValue("Pairing WS URL", pairingWS.wsURL);
+    ui.keyValue("Pairing Source", pairingWS.source);
     if (pairingWS.warning) {
       ui.warn(pairingWS.warning);
     }
@@ -57,7 +65,7 @@ export async function initCommand(_argv: string[]) {
     ui.line(pairingPayloadURL);
 
     if (!prompter.interactive) {
-      ui.note("Next: run `epoch config` to set workspace root, public WS URL, and optional OPENAI_API_KEY.");
+      ui.note("Next: run `epoch config` to set display name, pairing WS URL, workspace root, and optional OPENAI_API_KEY.");
       return;
     }
 

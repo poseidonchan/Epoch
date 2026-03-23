@@ -58,8 +58,9 @@ This creates:
 - `~/.epoch/epoch.sqlite`
 
 The init/config flow now asks for:
+- a display name for this Epoch server
 - a default workspace root on the HPC host
-- an explicit public pairing WebSocket URL for the phone to use
+- a pairing WebSocket URL for the phone to use
 - optional OpenAI credentials
 
 ### 3. Start the direct-connect service
@@ -77,19 +78,30 @@ ss -lntp | rg ':8787'
 
 ## Pair With EpochApp
 
-In the app, connect to the HPC host directly.
+In the app, pair directly with the Epoch server that runs on the HPC host.
+
+Preferred path:
+- run `epoch init` on the HPC host
+- if Tailscale is active, Epoch will auto-detect the tailnet address and print a ready-to-scan QR
+- in the iOS app, open `Settings > Servers > Scan Epoch QR`
+
+You can re-print the current QR later with:
+
+```bash
+epoch status --qr
+```
 
 Examples:
 - local testing: `ws://127.0.0.1:8787/ws`
-- Tailscale: `ws://100.x.y.z:8787/ws`
+- Tailscale: `ws://login01.your-tailnet.ts.net:8787/ws`
 - public test: `ws://<public-ip>:8787/ws`
 - production: `wss://hpc.yourdomain.com/ws`
 
 The pairing token is stored in `~/.epoch/config.json`.
 
 Important:
-- pairing URL generation no longer guesses a LAN IP
-- set the public/reachable URL explicitly in `epoch config`
+- explicit `publicWsUrl` config still wins when you need a custom `wss://.../ws` endpoint
+- otherwise Epoch prefers a detected Tailscale address, then falls back to loopback
 - `EPOCH_PAIR_WS_URL` can still override pairing output for one-off runs
 
 ## Project Folders

@@ -7,9 +7,9 @@ export async function stopCommand(_argv: string[]) {
 
   if (result.stopped) {
     const pidPart = result.pid ? ` (pid ${result.pid})` : "";
-    console.log(`Epoch Hub stopped${pidPart}.`);
+    console.log(`Epoch server stopped${pidPart}.`);
     return;
   }
 
-  console.log("No running Epoch Hub daemon found (already stopped).");
+  console.log("No running Epoch server daemon found (already stopped).");
 }

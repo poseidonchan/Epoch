@@ -5,6 +5,7 @@ import { stat } from "node:fs/promises";
 import { getStateDir, loadOrCreateHubConfig, resolveConfiguredWorkspaceRoot } from "../config.js";
 import { connectDb, runMigrations } from "../db/db.js";
 import { resolveHubModel } from "../model.js";
+import { resolvePairingWSURL } from "./pair_qr.js";
 import { CodexEngineRegistry } from "../codex_rpc/engine_registry.js";
 
 export async function doctorCommand(_argv: string[]) {
@@ -19,6 +20,7 @@ export async function doctorCommand(_argv: string[]) {
   console.log(`Config: ${config ? "present" : "missing (run epoch init)"}`);
   console.log(`DB: ${dbPath}`);
   console.log(`Default engine: ${defaultEngine}`);
+  console.log(`Display name: ${config?.displayName ?? "not configured"}`);
   if (modelResolved.ok) {
     console.log(`Model: ${modelResolved.ref}${modelResolved.hasApiKey ? "" : " (no credentials detected; run epoch config)"}`);
   } else {
@@ -43,6 +45,8 @@ export async function doctorCommand(_argv: string[]) {
         : normalizeNonEmptyString(config?.workspaceRoot)
           ? "config.json"
           : "default";
+    const pairing = await resolvePairingWSURL({ env: process.env, config, defaultPort: 8787 });
+    console.log(`Pairing WS URL: ${pairing.wsURL} (${pairing.source})`);
     console.log(`Workspace root: ${resolvedWorkspaceRoot} (${workspaceRootSource})`);
 
     if (defaultEngine === "codex-app-server") {

@@ -20,6 +20,7 @@ export type HubConfig = {
   serverId: string;
   token: string;
   createdAt: string;
+  displayName?: string;
   workspaceRoot?: string;
   publicWsUrl?: string | null;
   ai?: HubAiConfig;
@@ -86,6 +87,7 @@ export async function loadOrCreateHubConfig(opts: { stateDir: string; allowCreat
       serverId: uuidv4(),
       token,
       createdAt: new Date().toISOString(),
+      displayName: os.hostname(),
       workspaceRoot: legacyBridge?.workspaceRoot,
       publicWsUrl: null,
     }, opts.stateDir);
@@ -119,6 +121,7 @@ export function resolveConfiguredPublicWsUrl(args: {
 function normalizeHubConfig(config: HubConfig, stateDir: string): HubConfig {
   return {
     ...config,
+    displayName: normalizeOptionalString(config.displayName) ?? os.hostname(),
     workspaceRoot: resolveConfiguredWorkspaceRoot({ stateDir, config, env: {} }),
     publicWsUrl: normalizeOptionalString(config.publicWsUrl) ?? null,
   };
