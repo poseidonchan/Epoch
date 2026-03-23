@@ -8,6 +8,7 @@ export * from "./indexing/projectIndexing.js";
 export * from "./openai_settings.js";
 export * from "./model.js";
 export * from "./push_secrets.js";
+export * from "./workspace_directories.js";
 export * from "./codex_rpc/types.js";
 export * from "./codex_rpc/backpressure.js";
 export * from "./codex_rpc/connection_state.js";

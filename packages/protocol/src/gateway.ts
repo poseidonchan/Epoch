@@ -19,6 +19,8 @@ export const operatorMethods = [
   "artifacts.delete",
   "workspace.bootstrap.get",
   "workspace.bootstrap.update",
+  "workspace.directories.list",
+  "workspace.directories.resolve",
   "workspace.list",
   "workspace.content",
   "workspace.raw",

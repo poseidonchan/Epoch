@@ -49,6 +49,7 @@ import { fetchUrlContent } from "./indexing/fetchUrl.js";
 import { generateSessionTitle } from "./indexing/summarize.js";
 import { LocalRuntimeBridge } from "./local_runtime.js";
 import { createPushRelayClient } from "./push_relay_client.js";
+import { listWorkspaceDirectories, resolveWorkspaceDirectory } from "./workspace_directories.js";
 import type { SilentPushSender } from "@epoch/push-relay";
 
 type Role = "operator" | "node";
@@ -1486,6 +1487,46 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
           return;
         }
         sendResOk(ws, id, { ok: true });
+        return;
+      }
+      case "workspace.directories.list": {
+        const inputPath = normalizeOptionalString(params.path) ?? process.cwd();
+        const includeHidden = Boolean(params.includeHidden ?? false);
+        const limit = clampWorkspaceListLimit(params.limit);
+        try {
+          const result = await listWorkspaceDirectories(inputPath, {
+            includeHidden,
+            limit,
+          });
+          sendResOk(ws, id, {
+            path: result.path,
+            entries: result.entries.map((entry) => ({
+              name: entry.name,
+              path: entry.path,
+            })),
+            truncated: result.truncated,
+          });
+        } catch (error) {
+          sendResError(ws, id, "BAD_REQUEST", error instanceof Error ? error.message : "Unable to list directories");
+        }
+        return;
+      }
+      case "workspace.directories.resolve": {
+        const inputPath = normalizeOptionalString(params.path);
+        if (!inputPath) {
+          sendResError(ws, id, "BAD_REQUEST", "Missing path");
+          return;
+        }
+        try {
+          const resolved = await resolveWorkspaceDirectory(inputPath);
+          sendResOk(ws, id, {
+            path: resolved.path,
+            name: resolved.name,
+            parentPath: resolved.parentPath,
+          });
+        } catch (error) {
+          sendResError(ws, id, "BAD_REQUEST", error instanceof Error ? error.message : "Unable to resolve directory");
+        }
         return;
       }
       case "workspace.list": {
