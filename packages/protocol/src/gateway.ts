@@ -25,6 +25,9 @@ export const operatorMethods = [
   "settings.openai.get",
   "settings.openai.set",
   "models.current",
+  "push.device.register",
+  "push.device.unregister",
+  "push.device.heartbeat",
   "hpc.prefs.set",
 ] as const;
 

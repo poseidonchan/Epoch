@@ -64,6 +64,42 @@ export type CodexPlanSnapshotRecord = {
   updatedAt: number;
 };
 
+export type CodexPushDeviceRecord = {
+  serverId: string;
+  installationId: string;
+  apnsToken: string;
+  environment: string;
+  deviceName: string;
+  platform: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CodexLiveSessionChangeMetadata = {
+  turnId?: string;
+  turnStatus?: TurnStatus;
+  statusText?: string;
+  [key: string]: unknown;
+};
+
+export type CodexLiveSessionSnapshot = {
+  serverId: string;
+  projectId: string;
+  sessionId: string;
+  threadId: string;
+  turnStatus: TurnStatus;
+  statusText: string;
+  pendingApprovals: number;
+  pendingPrompts: number;
+  lastAssistantItemPreview: string;
+  lastEventAt: number;
+};
+
+export type CodexLiveSessionChangesResult = {
+  nextCursor: number;
+  changedSessions: CodexLiveSessionSnapshot[];
+};
+
 export class CodexRepository {
   private readonly pool: DbPool;
   private readonly stateDir: string;
@@ -482,6 +518,180 @@ export class CodexRepository {
     };
   }
 
+  async upsertPushDevice(args: {
+    serverId: string;
+    installationId: string;
+    apnsToken: string;
+    environment: string;
+    deviceName: string;
+    platform: string;
+    seenAt?: string;
+  }) {
+    const seenAt = normalizeNonEmptyString(args.seenAt) ?? new Date().toISOString();
+    await this.pool.query(
+      `INSERT INTO push_devices (
+         server_id, installation_id, apns_token, environment, device_name, platform, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$7)
+       ON CONFLICT(server_id, installation_id) DO UPDATE SET
+         apns_token=EXCLUDED.apns_token,
+         environment=EXCLUDED.environment,
+         device_name=EXCLUDED.device_name,
+         platform=EXCLUDED.platform,
+         updated_at=EXCLUDED.updated_at`,
+      [
+        args.serverId,
+        args.installationId,
+        args.apnsToken,
+        args.environment,
+        args.deviceName,
+        args.platform,
+        seenAt,
+      ]
+    );
+  }
+
+  async deletePushDevice(args: { serverId: string; installationId: string }): Promise<number> {
+    const result = await this.pool.query(
+      `DELETE FROM push_devices
+       WHERE server_id=$1 AND installation_id=$2`,
+      [args.serverId, args.installationId]
+    );
+    return Number(result.rowCount ?? 0);
+  }
+
+  async listPushDevices(args: { serverId: string }): Promise<CodexPushDeviceRecord[]> {
+    const rows = await this.pool.query<any>(
+      `SELECT server_id, installation_id, apns_token, environment, device_name, platform, created_at, updated_at
+       FROM push_devices
+       WHERE server_id=$1
+       ORDER BY updated_at DESC, installation_id ASC`,
+      [args.serverId]
+    );
+
+    return rows.rows
+      .map((row: any) => mapPushDeviceRow(row))
+      .filter((row: CodexPushDeviceRecord | null): row is CodexPushDeviceRecord => row != null);
+  }
+
+  async appendLiveSessionChange(args: {
+    token: string;
+    serverId: string;
+    projectId: string;
+    sessionId: string;
+    threadId: string;
+    reason: string;
+    metadata?: CodexLiveSessionChangeMetadata;
+    createdAt?: number;
+  }): Promise<number> {
+    await this.pool.query(
+      `INSERT INTO codex_live_session_events (
+         token, server_id, project_id, session_id, thread_id, reason, metadata_json, created_at
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [
+        args.token,
+        args.serverId,
+        args.projectId,
+        args.sessionId,
+        args.threadId,
+        args.reason,
+        JSON.stringify(args.metadata ?? {}),
+        args.createdAt ?? nowUnixSeconds(),
+      ]
+    );
+    const rows = await this.pool.query<{ id: number }>(`SELECT last_insert_rowid() AS id`);
+    return Number(rows.rows[0]?.id ?? 0) || 0;
+  }
+
+  async listLiveSessionChanges(args: {
+    token: string;
+    cursor?: number | null;
+    limit?: number | null;
+    sessionIds?: string[] | null;
+  }): Promise<CodexLiveSessionChangesResult> {
+    const cursor = Math.max(0, Number(args.cursor ?? 0) || 0);
+    const limit = Math.min(200, Math.max(1, Number(args.limit ?? 50) || 50));
+    const params: unknown[] = [args.token, cursor];
+    const filters = ["token=$1", "id>$2"];
+
+    const sessionIds = Array.from(
+      new Set(
+        (args.sessionIds ?? [])
+          .map((sessionId) => normalizeNonEmptyString(sessionId))
+          .filter((sessionId): sessionId is string => sessionId != null)
+      )
+    );
+    if (sessionIds.length > 0) {
+      const placeholders: string[] = [];
+      for (const sessionId of sessionIds) {
+        params.push(sessionId);
+        placeholders.push(`$${params.length}`);
+      }
+      filters.push(`session_id IN (${placeholders.join(", ")})`);
+    }
+
+    params.push(limit);
+    const rows = await this.pool.query<any>(
+      `WITH changed AS (
+         SELECT MAX(id) AS id
+         FROM codex_live_session_events
+         WHERE ${filters.join(" AND ")}
+         GROUP BY session_id
+         ORDER BY MAX(id) ASC
+         LIMIT $${params.length}
+       )
+       SELECT e.id, e.server_id, e.project_id, e.session_id, e.thread_id, e.reason, e.metadata_json, e.created_at
+       FROM codex_live_session_events e
+       JOIN changed c ON c.id = e.id
+       ORDER BY e.id ASC`,
+      params as any[]
+    );
+
+    let nextCursor = cursor;
+    const changedSessions: CodexLiveSessionSnapshot[] = [];
+
+    for (const row of rows.rows) {
+      const eventId = Number(row.id ?? 0);
+      if (Number.isFinite(eventId)) {
+        nextCursor = Math.max(nextCursor, eventId);
+      }
+      const serverId = normalizeNonEmptyString(row.server_id);
+      const projectId = normalizeNonEmptyString(row.project_id);
+      const sessionId = normalizeNonEmptyString(row.session_id);
+      const threadId = normalizeNonEmptyString(row.thread_id);
+      if (!serverId || !projectId || !sessionId || !threadId) {
+        continue;
+      }
+
+      const metadata = parseJsonObject(row.metadata_json) ?? {};
+      const pendingCounts = await this.readPendingInputCounts({
+        token: args.token,
+        sessionId,
+      });
+      const liveTurnStatus =
+        normalizeLiveTurnStatus(metadata.turnStatus)
+        ?? await this.readLatestTurnStatus(threadId)
+        ?? "inProgress";
+      const lastAssistantItemPreview = await this.readLastAssistantItemPreview(threadId);
+      changedSessions.push({
+        serverId,
+        projectId,
+        sessionId,
+        threadId,
+        turnStatus: liveTurnStatus,
+        statusText: normalizeNonEmptyString(metadata.statusText) ?? liveTurnStatus,
+        pendingApprovals: pendingCounts.pendingApprovals,
+        pendingPrompts: pendingCounts.pendingPrompts,
+        lastAssistantItemPreview,
+        lastEventAt: Number(row.created_at ?? 0),
+      });
+    }
+
+    return {
+      nextCursor,
+      changedSessions,
+    };
+  }
+
   async upsertPendingInput(args: {
     token: string;
     requestId: string;
@@ -643,6 +853,51 @@ export class CodexRepository {
     const now = nowUnixSeconds();
     await this.expirePendingInputsForToken(token, now);
     await this.pool.query(`DELETE FROM codex_plan_snapshots WHERE token=$1`, [token]);
+  }
+
+  private async readPendingInputCounts(args: {
+    token: string;
+    sessionId: string;
+  }): Promise<{ pendingApprovals: number; pendingPrompts: number }> {
+    const rows = await this.pool.query<any>(
+      `SELECT
+         SUM(CASE WHEN kind='approval' THEN 1 ELSE 0 END) AS pending_approvals,
+         SUM(CASE WHEN kind IN ('prompt', 'implement_confirmation') THEN 1 ELSE 0 END) AS pending_prompts
+       FROM codex_pending_inputs
+       WHERE token=$1 AND session_id=$2 AND status='pending'`,
+      [args.token, args.sessionId]
+    );
+    const row = rows.rows[0] ?? {};
+    return {
+      pendingApprovals: Number(row.pending_approvals ?? 0) || 0,
+      pendingPrompts: Number(row.pending_prompts ?? 0) || 0,
+    };
+  }
+
+  private async readLatestTurnStatus(threadId: string): Promise<TurnStatus | null> {
+    const rows = await this.pool.query<any>(
+      `SELECT status
+       FROM turns
+       WHERE thread_id=$1
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [threadId]
+    );
+    if (rows.rows.length === 0) return null;
+    return normalizeLiveTurnStatus(rows.rows[0]?.status);
+  }
+
+  private async readLastAssistantItemPreview(threadId: string): Promise<string> {
+    const rows = await this.pool.query<any>(
+      `SELECT payload_json
+       FROM items
+       WHERE thread_id=$1 AND type IN ('agentMessage', 'plan')
+       ORDER BY updated_at DESC, created_at DESC, id DESC
+       LIMIT 1`,
+      [threadId]
+    );
+    if (rows.rows.length === 0) return "";
+    return previewFromLiveItemPayload(rows.rows[0]?.payload_json);
   }
 
   async removeThread(threadId: string) {
@@ -1465,6 +1720,52 @@ function mapPlanSnapshotRow(row: any): CodexPlanSnapshotRecord | null {
     plan,
     updatedAt: Number(row.updated_at ?? 0),
   };
+}
+
+function mapPushDeviceRow(row: any): CodexPushDeviceRecord | null {
+  const serverId = normalizeNonEmptyString(row.server_id);
+  const installationId = normalizeNonEmptyString(row.installation_id);
+  const apnsToken = normalizeNonEmptyString(row.apns_token);
+  const environment = normalizeNonEmptyString(row.environment);
+  const deviceName = normalizeNonEmptyString(row.device_name);
+  const platform = normalizeNonEmptyString(row.platform);
+  const createdAt = normalizeNonEmptyString(row.created_at);
+  const updatedAt = normalizeNonEmptyString(row.updated_at);
+  if (!serverId || !installationId || !apnsToken || !environment || !deviceName || !platform || !createdAt || !updatedAt) {
+    return null;
+  }
+  return {
+    serverId,
+    installationId,
+    apnsToken,
+    environment,
+    deviceName,
+    platform,
+    createdAt,
+    updatedAt,
+  };
+}
+
+function normalizeLiveTurnStatus(raw: unknown): TurnStatus | null {
+  const value = normalizeNonEmptyString(raw);
+  switch (value) {
+    case "inProgress":
+    case "completed":
+    case "interrupted":
+    case "failed":
+      return value;
+    default:
+      return null;
+  }
+}
+
+function previewFromLiveItemPayload(raw: unknown): string {
+  const parsed = parseJsonObject(raw);
+  const text =
+    normalizeNonEmptyString(parsed?.text)
+    ?? normalizeNonEmptyString(parsed?.aggregatedOutput)
+    ?? normalizeNonEmptyString(parsed?.diff);
+  return text ? previewFromText(text) : "";
 }
 
 function parsePlanSnapshot(raw: unknown): Array<{ step: string; status: "pending" | "inProgress" | "completed" }> {

@@ -21,6 +21,9 @@ export async function doctorCommand(_argv: string[]) {
   console.log(`DB: ${dbPath}`);
   console.log(`Default engine: ${defaultEngine}`);
   console.log(`Display name: ${config?.displayName ?? "not configured"}`);
+  console.log(`Push relay: ${config?.pushEnabled === true ? "enabled" : "disabled"}`);
+  console.log(`Push relay URL: ${config?.pushRelayUrl ?? "not configured"}`);
+  console.log(`Push relay secret: ${config?.pushRelaySharedSecret ? "configured" : "not configured"}`);
   if (modelResolved.ok) {
     console.log(`Model: ${modelResolved.ref}${modelResolved.hasApiKey ? "" : " (no credentials detected; run epoch config)"}`);
   } else {

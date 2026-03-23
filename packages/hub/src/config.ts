@@ -23,6 +23,9 @@ export type HubConfig = {
   displayName?: string;
   workspaceRoot?: string;
   publicWsUrl?: string | null;
+  pushRelayUrl?: string | null;
+  pushRelaySharedSecret?: string | null;
+  pushEnabled?: boolean;
   ai?: HubAiConfig;
   openaiSettings?: {
     ocrModel?: string;
@@ -90,6 +93,9 @@ export async function loadOrCreateHubConfig(opts: { stateDir: string; allowCreat
       displayName: os.hostname(),
       workspaceRoot: legacyBridge?.workspaceRoot,
       publicWsUrl: null,
+      pushRelayUrl: null,
+      pushRelaySharedSecret: null,
+      pushEnabled: false,
     }, opts.stateDir);
     await saveHubConfig({ stateDir: opts.stateDir, config });
     return config;
@@ -124,6 +130,9 @@ function normalizeHubConfig(config: HubConfig, stateDir: string): HubConfig {
     displayName: normalizeOptionalString(config.displayName) ?? os.hostname(),
     workspaceRoot: resolveConfiguredWorkspaceRoot({ stateDir, config, env: {} }),
     publicWsUrl: normalizeOptionalString(config.publicWsUrl) ?? null,
+    pushRelayUrl: normalizeOptionalString(config.pushRelayUrl) ?? null,
+    pushRelaySharedSecret: normalizeOptionalString(config.pushRelaySharedSecret) ?? null,
+    pushEnabled: config.pushEnabled === true,
   };
 }
 

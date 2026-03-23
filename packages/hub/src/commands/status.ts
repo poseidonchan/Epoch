@@ -24,6 +24,9 @@ export async function statusCommand(argv: string[]) {
   ui.keyValue("Workspace root", config?.workspaceRoot ?? "not configured");
   ui.keyValue("Pairing WS URL", pairingWS?.wsURL ?? "not configured");
   ui.keyValue("Pairing Source", pairingWS?.source ?? "not configured");
+  ui.keyValue("Push Relay", config?.pushEnabled === true ? "enabled" : "disabled");
+  ui.keyValue("Push Relay URL", config?.pushRelayUrl ?? "not configured");
+  ui.keyValue("Push Relay secret", config?.pushRelaySharedSecret ? "configured" : "not configured");
   ui.keyValue("Daemon", running ? `running (pid ${daemonInfo?.pid})` : "stopped");
 
   if (daemonInfo?.host) {

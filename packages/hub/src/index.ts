@@ -1,5 +1,6 @@
 export * from "./server.js";
 export * from "./config.js";
+export * from "./db/db.js";
 export * from "./local_runtime.js";
 export * from "./indexing/chunking.js";
 export * from "./indexing/extract.js";

@@ -53,10 +53,16 @@ test("saveHubConfig persists direct-connect publicWsUrl and workspaceRoot", asyn
       createdAt: "2026-03-23T00:00:00.000Z",
       workspaceRoot: "/srv/epoch/workspace",
       publicWsUrl: "wss://edge.example/ws",
+      pushRelayUrl: "https://relay.example",
+      pushRelaySharedSecret: "relay_secret_1",
+      pushEnabled: true,
     },
   });
 
   const raw = JSON.parse(await readFile(path.join(stateDir, "config.json"), "utf8"));
   assert.equal(raw.workspaceRoot, "/srv/epoch/workspace");
   assert.equal(raw.publicWsUrl, "wss://edge.example/ws");
+  assert.equal(raw.pushRelayUrl, "https://relay.example");
+  assert.equal(raw.pushRelaySharedSecret, "relay_secret_1");
+  assert.equal(raw.pushEnabled, true);
 });
