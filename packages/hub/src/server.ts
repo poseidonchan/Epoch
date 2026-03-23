@@ -49,6 +49,7 @@ import { fetchUrlContent } from "./indexing/fetchUrl.js";
 import { generateSessionTitle } from "./indexing/summarize.js";
 import { LocalRuntimeBridge } from "./local_runtime.js";
 import { createPushRelayClient } from "./push_relay_client.js";
+import type { SilentPushSender } from "@epoch/push-relay";
 
 type Role = "operator" | "node";
 
@@ -58,6 +59,7 @@ type HubStartOptions = {
   config: HubConfig;
   stateDir: string;
   pool: DbPool;
+  pushSender?: SilentPushSender | null;
 };
 
 type ConnectionContext =
@@ -366,12 +368,21 @@ function createHubState(opts: HubStartOptions) {
     workspaceRoot,
   });
   const localNodeCtx = createLocalNodeContext(localRuntime);
+  const repository = new CodexRepository({
+    pool: opts.pool,
+    stateDir: opts.stateDir,
+  });
   return {
     config: opts.config,
     stateDir: opts.stateDir,
     pool: opts.pool,
+    repository,
     engines,
-    pushRelayClient: createPushRelayClient(opts.config),
+    pushRelayClient: createPushRelayClient({
+      config: opts.config,
+      repository,
+      sender: opts.pushSender ?? null,
+    }),
     localRuntime,
     operators: new Set<OperatorConn>(),
     node: { ws: createNoopSocket(), ctx: localNodeCtx } as NodeConn,
@@ -418,10 +429,7 @@ function createNoopSocket(): WebSocket {
 }
 
 function codexRepositoryForState(state: HubState): CodexRepository {
-  return new CodexRepository({
-    pool: state.pool,
-    stateDir: state.stateDir,
-  });
+  return state.repository;
 }
 
 function requireHttpAuth(state: HubState, req: { headers: Record<string, string | string[] | undefined> }) {

@@ -62,6 +62,9 @@ importers:
       '@epoch/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@epoch/push-relay':
+        specifier: workspace:*
+        version: link:../push-relay
       '@fastify/multipart':
         specifier: ^9.2.1
         version: 9.4.0

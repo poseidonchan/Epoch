@@ -1,3 +1,6 @@
+import type { SilentPushDispatch, SilentPushSender } from "@epoch/push-relay";
+
+import type { CodexPushDeviceRecord, CodexRepository } from "./codex_rpc/repository.js";
 import type { HubConfig } from "./config.js";
 
 type DeviceRegistrationArgs = {
@@ -37,13 +40,16 @@ export interface PushRelayClient {
   notifyLiveSession(args: LiveSessionRelayArgs): Promise<void>;
 }
 
-export function createPushRelayClient(config: HubConfig): PushRelayClient {
-  const baseUrl = normalizeOptionalString(config.pushRelayUrl);
-  const sharedSecret = normalizeOptionalString(config.pushRelaySharedSecret);
-  if (config.pushEnabled !== true || !baseUrl || !sharedSecret) {
+export function createPushRelayClient(args: {
+  config: HubConfig;
+  repository: CodexRepository;
+  sender?: SilentPushSender | null;
+  now?: () => number;
+}): PushRelayClient {
+  if (args.config.pushEnabled !== true || !args.sender) {
     return new NoopPushRelayClient();
   }
-  return new HttpPushRelayClient(baseUrl, sharedSecret);
+  return new EmbeddedPushRelayClient(args.repository, args.sender, args.now ?? (() => Date.now()));
 }
 
 class NoopPushRelayClient implements PushRelayClient {
@@ -53,46 +59,106 @@ class NoopPushRelayClient implements PushRelayClient {
   async notifyLiveSession(_args: LiveSessionRelayArgs): Promise<void> {}
 }
 
-class HttpPushRelayClient implements PushRelayClient {
+class EmbeddedPushRelayClient implements PushRelayClient {
+  private readonly dedupeByDeviceKey = new Map<string, { fingerprint: string; sentAt: number }>();
+
   constructor(
-    private readonly baseUrl: string,
-    private readonly sharedSecret: string
+    private readonly repository: CodexRepository,
+    private readonly sender: SilentPushSender,
+    private readonly now: () => number
   ) {}
 
-  async registerDevice(args: DeviceRegistrationArgs): Promise<void> {
-    await this.post("/v1/devices/register", args);
-  }
+  async registerDevice(_args: DeviceRegistrationArgs): Promise<void> {}
 
   async unregisterDevice(args: DeviceUnregisterArgs): Promise<void> {
-    await this.post("/v1/devices/unregister", args);
+    this.dedupeByDeviceKey.delete(deviceKey(args.serverId, args.installationId));
   }
 
-  async heartbeatDevice(args: DeviceHeartbeatArgs): Promise<void> {
-    await this.post("/v1/devices/heartbeat", args);
-  }
+  async heartbeatDevice(_args: DeviceHeartbeatArgs): Promise<void> {}
 
   async notifyLiveSession(args: LiveSessionRelayArgs): Promise<void> {
-    await this.post("/v1/events/live-session", {
-      serverId: args.serverId,
-      ...(args.cursorHint != null ? { cursorHint: args.cursorHint } : {}),
-      ...(args.changedSessionIds?.length ? { changedSessionIds: args.changedSessionIds } : {}),
-      ...(normalizeOptionalString(args.reason) ? { reason: args.reason } : {}),
-    });
-  }
+    const devices = await this.repository.listPushDevices({ serverId: args.serverId });
+    const dispatches = devices
+      .map((device) => buildDispatch(args, device))
+      .filter((dispatch): dispatch is SilentPushDispatch => dispatch != null);
 
-  private async post(path: string, payload: Record<string, unknown>) {
-    const response = await fetch(new URL(path, ensureTrailingSlash(this.baseUrl)), {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${this.sharedSecret}`,
-      },
-      body: JSON.stringify(payload),
-    });
-    if (!response.ok) {
-      throw new Error(`Push relay request failed (${response.status})`);
+    for (const dispatch of dispatches) {
+      if (!this.shouldDispatch(dispatch)) {
+        continue;
+      }
+      try {
+        await this.sender.sendSilentPush(dispatch);
+      } catch (error) {
+        console.warn("failed to send embedded APNs push", {
+          error,
+          serverId: dispatch.payload.serverId,
+          installationId: dispatch.device.installationId,
+        });
+      }
     }
   }
+
+  private shouldDispatch(dispatch: SilentPushDispatch): boolean {
+    const key = deviceKey(dispatch.device.serverId, dispatch.device.installationId);
+    const fingerprint = JSON.stringify({
+      serverId: dispatch.payload.serverId,
+      cursorHint: dispatch.payload.cursorHint ?? null,
+      changedSessionIds: dispatch.payload.changedSessionIds,
+      reason: dispatch.payload.reason ?? null,
+    });
+    const now = this.now();
+    const previous = this.dedupeByDeviceKey.get(key);
+    if (previous && previous.fingerprint === fingerprint && now - previous.sentAt < 5_000) {
+      return false;
+    }
+    this.dedupeByDeviceKey.set(key, {
+      fingerprint,
+      sentAt: now,
+    });
+    return true;
+  }
+}
+
+function buildDispatch(
+  args: LiveSessionRelayArgs,
+  device: CodexPushDeviceRecord
+): SilentPushDispatch | null {
+  const serverId = normalizeOptionalString(args.serverId);
+  const installationId = normalizeOptionalString(device.installationId);
+  const apnsToken = normalizeOptionalString(device.apnsToken);
+  const environment = normalizeOptionalString(device.environment);
+  if (!serverId || !installationId || !apnsToken || !environment) {
+    return null;
+  }
+
+  return {
+    device: {
+      serverId,
+      installationId,
+      apnsToken,
+      environment,
+      deviceName: normalizeOptionalString(device.deviceName) ?? "Epoch iPhone",
+      platform: normalizeOptionalString(device.platform) ?? "iOS",
+      updatedAt: Date.parse(device.updatedAt) || 0,
+    },
+    payload: {
+      serverId,
+      ...(args.cursorHint != null ? { cursorHint: args.cursorHint } : {}),
+      changedSessionIds: normalizedStringArray(args.changedSessionIds),
+      ...(normalizeOptionalString(args.reason) ? { reason: normalizeOptionalString(args.reason)! } : {}),
+    },
+  };
+}
+
+function normalizedStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .map((entry) => normalizeOptionalString(entry))
+        .filter((entry): entry is string => entry != null)
+    )
+  );
 }
 
 function normalizeOptionalString(value: unknown): string | null {
@@ -101,6 +167,6 @@ function normalizeOptionalString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function ensureTrailingSlash(url: string): string {
-  return url.endsWith("/") ? url : `${url}/`;
+function deviceKey(serverId: string, installationId: string): string {
+  return `${serverId}::${installationId}`;
 }

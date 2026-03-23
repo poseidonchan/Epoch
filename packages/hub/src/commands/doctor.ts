@@ -5,6 +5,7 @@ import { stat } from "node:fs/promises";
 import { getStateDir, loadOrCreateHubConfig, resolveConfiguredWorkspaceRoot } from "../config.js";
 import { connectDb, runMigrations } from "../db/db.js";
 import { resolveHubModel } from "../model.js";
+import { readPushKeyStatus } from "../push_secrets.js";
 import { resolvePairingWSURL } from "./pair_qr.js";
 import { CodexEngineRegistry } from "../codex_rpc/engine_registry.js";
 
@@ -13,6 +14,7 @@ export async function doctorCommand(_argv: string[]) {
   const config = await loadOrCreateHubConfig({ stateDir, allowCreate: false });
   const engines = new CodexEngineRegistry({ config, stateDir });
   const defaultEngine = engines.defaultEngineName();
+  const pushKeyStatus = config ? await readPushKeyStatus({ stateDir, config }) : null;
 
   const dbPath = process.env.EPOCH_DB_PATH ?? path.join(stateDir, "epoch.sqlite");
   const modelResolved = resolveHubModel(config);
@@ -21,9 +23,10 @@ export async function doctorCommand(_argv: string[]) {
   console.log(`DB: ${dbPath}`);
   console.log(`Default engine: ${defaultEngine}`);
   console.log(`Display name: ${config?.displayName ?? "not configured"}`);
-  console.log(`Push relay: ${config?.pushEnabled === true ? "enabled" : "disabled"}`);
-  console.log(`Push relay URL: ${config?.pushRelayUrl ?? "not configured"}`);
-  console.log(`Push relay secret: ${config?.pushRelaySharedSecret ? "configured" : "not configured"}`);
+  console.log(`Background push: ${config?.pushEnabled === true ? "enabled" : "disabled"}`);
+  console.log(`Push topic: ${config?.push?.bundleId ?? "not configured"}`);
+  console.log(`Encrypted APNs key: ${pushKeyStatus?.exists ? "present" : "missing"}`);
+  console.log(`Encrypted key permissions: ${pushKeyStatus?.privatePermissions ? "0600" : "not private"}`);
   if (modelResolved.ok) {
     console.log(`Model: ${modelResolved.ref}${modelResolved.hasApiKey ? "" : " (no credentials detected; run epoch config)"}`);
   } else {

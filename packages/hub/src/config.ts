@@ -16,6 +16,14 @@ export type HubAiConfig = {
   auth: HubAiAuthConfig;
 };
 
+export type HubPushConfig = {
+  teamId: string;
+  keyId: string;
+  bundleId: string;
+  encryptedKeyPath: string;
+  configuredAt?: string;
+};
+
 export type HubConfig = {
   serverId: string;
   token: string;
@@ -23,6 +31,7 @@ export type HubConfig = {
   displayName?: string;
   workspaceRoot?: string;
   publicWsUrl?: string | null;
+  push?: HubPushConfig | null;
   pushRelayUrl?: string | null;
   pushRelaySharedSecret?: string | null;
   pushEnabled?: boolean;
@@ -93,6 +102,7 @@ export async function loadOrCreateHubConfig(opts: { stateDir: string; allowCreat
       displayName: os.hostname(),
       workspaceRoot: legacyBridge?.workspaceRoot,
       publicWsUrl: null,
+      push: null,
       pushRelayUrl: null,
       pushRelaySharedSecret: null,
       pushEnabled: false,
@@ -130,6 +140,7 @@ function normalizeHubConfig(config: HubConfig, stateDir: string): HubConfig {
     displayName: normalizeOptionalString(config.displayName) ?? os.hostname(),
     workspaceRoot: resolveConfiguredWorkspaceRoot({ stateDir, config, env: {} }),
     publicWsUrl: normalizeOptionalString(config.publicWsUrl) ?? null,
+    push: normalizeHubPushConfig(config.push),
     pushRelayUrl: normalizeOptionalString(config.pushRelayUrl) ?? null,
     pushRelaySharedSecret: normalizeOptionalString(config.pushRelaySharedSecret) ?? null,
     pushEnabled: config.pushEnabled === true,
@@ -152,4 +163,24 @@ function normalizeOptionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeHubPushConfig(value: HubConfig["push"]): HubPushConfig | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const teamId = normalizeOptionalString(value.teamId);
+  const keyId = normalizeOptionalString(value.keyId);
+  const bundleId = normalizeOptionalString(value.bundleId);
+  const encryptedKeyPath = normalizeOptionalString(value.encryptedKeyPath);
+  if (!teamId || !keyId || !bundleId || !encryptedKeyPath) {
+    return null;
+  }
+  return {
+    teamId,
+    keyId,
+    bundleId,
+    encryptedKeyPath,
+    configuredAt: normalizeOptionalString(value.configuredAt) ?? undefined,
+  };
 }

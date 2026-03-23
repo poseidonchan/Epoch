@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { loadOrCreateHubConfig, saveHubConfig } from "../dist/index.js";
+import { decryptEncryptedApnsKey, importEncryptedApnsKey, loadOrCreateHubConfig, saveHubConfig } from "../dist/index.js";
 
 test("loadOrCreateHubConfig imports workspaceRoot from legacy bridge config on first direct-connect setup", async () => {
   const originalHome = process.env.HOME;
@@ -42,7 +42,7 @@ test("loadOrCreateHubConfig imports workspaceRoot from legacy bridge config on f
   }
 });
 
-test("saveHubConfig persists direct-connect publicWsUrl and workspaceRoot", async () => {
+test("saveHubConfig persists direct-connect publicWsUrl and embedded push metadata", async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "epoch-config-save-"));
 
   await saveHubConfig({
@@ -53,16 +53,47 @@ test("saveHubConfig persists direct-connect publicWsUrl and workspaceRoot", asyn
       createdAt: "2026-03-23T00:00:00.000Z",
       workspaceRoot: "/srv/epoch/workspace",
       publicWsUrl: "wss://edge.example/ws",
-      pushRelayUrl: "https://relay.example",
-      pushRelaySharedSecret: "relay_secret_1",
       pushEnabled: true,
+      push: {
+        teamId: "TEAM1234",
+        keyId: "KEY1234",
+        bundleId: "dev.epoch.app",
+        encryptedKeyPath: "/srv/epoch/.epoch/secrets/apns-key.enc",
+      },
     },
   });
 
   const raw = JSON.parse(await readFile(path.join(stateDir, "config.json"), "utf8"));
   assert.equal(raw.workspaceRoot, "/srv/epoch/workspace");
   assert.equal(raw.publicWsUrl, "wss://edge.example/ws");
-  assert.equal(raw.pushRelayUrl, "https://relay.example");
-  assert.equal(raw.pushRelaySharedSecret, "relay_secret_1");
   assert.equal(raw.pushEnabled, true);
+  assert.deepEqual(raw.push, {
+    teamId: "TEAM1234",
+    keyId: "KEY1234",
+    bundleId: "dev.epoch.app",
+    encryptedKeyPath: "/srv/epoch/.epoch/secrets/apns-key.enc",
+  });
+});
+
+test("importEncryptedApnsKey encrypts and decrypts a local APNs private key", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "epoch-push-key-"));
+  const sourcePath = path.join(stateDir, "AuthKey_TEST123.p8");
+  const privateKey = [
+    "-----BEGIN PRIVATE KEY-----",
+    "VGhpcyBpcyBhIHRlc3Qga2V5Lg==",
+    "-----END PRIVATE KEY-----",
+  ].join("\n");
+  await writeFile(sourcePath, privateKey + "\n", "utf8");
+
+  const imported = await importEncryptedApnsKey({
+    stateDir,
+    sourcePath,
+    passphrase: "local passphrase",
+  });
+  const decrypted = await decryptEncryptedApnsKey({
+    encryptedKeyPath: imported.encryptedKeyPath,
+    passphrase: "local passphrase",
+  });
+
+  assert.equal(decrypted, privateKey);
 });

@@ -2,6 +2,7 @@ import process from "node:process";
 
 import { getStateDir, loadOrCreateHubConfig } from "../config.js";
 import { isProcessRunning, readHubDaemonInfo } from "../daemon.js";
+import { readPushKeyStatus } from "../push_secrets.js";
 import { buildHubPairingPayloadURL, renderHubPairingQRCode, resolvePairingWSURL } from "./pair_qr.js";
 import { createWizardUI } from "./wizard_ui.js";
 
@@ -13,6 +14,7 @@ export async function statusCommand(argv: string[]) {
   const running = Boolean(daemonInfo && daemonInfo.pid > 1 && isProcessRunning(daemonInfo.pid));
   const showQR = argv.includes("--qr");
   const pairingWS = config ? await resolvePairingWSURL({ env: process.env, config, defaultPort: 8787 }) : null;
+  const pushKeyStatus = config ? await readPushKeyStatus({ stateDir, config }) : null;
 
   ui.banner("Epoch Server Status");
   ui.step(1, 1, "Read configuration and daemon status", "ok");
@@ -24,9 +26,10 @@ export async function statusCommand(argv: string[]) {
   ui.keyValue("Workspace root", config?.workspaceRoot ?? "not configured");
   ui.keyValue("Pairing WS URL", pairingWS?.wsURL ?? "not configured");
   ui.keyValue("Pairing Source", pairingWS?.source ?? "not configured");
-  ui.keyValue("Push Relay", config?.pushEnabled === true ? "enabled" : "disabled");
-  ui.keyValue("Push Relay URL", config?.pushRelayUrl ?? "not configured");
-  ui.keyValue("Push Relay secret", config?.pushRelaySharedSecret ? "configured" : "not configured");
+  ui.keyValue("Background push", config?.pushEnabled === true ? "enabled" : "disabled");
+  ui.keyValue("Push topic", config?.push?.bundleId ?? "not configured");
+  ui.keyValue("Encrypted APNs key", pushKeyStatus?.exists ? "present" : "missing");
+  ui.keyValue("Unlock required on start", config?.pushEnabled === true ? "yes" : "no");
   ui.keyValue("Daemon", running ? `running (pid ${daemonInfo?.pid})` : "stopped");
 
   if (daemonInfo?.host) {
