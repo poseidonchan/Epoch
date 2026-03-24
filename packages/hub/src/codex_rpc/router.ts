@@ -30,7 +30,6 @@ import type { CodexRuntimeBridge, SessionPermissionLevel } from "./runtime_bridg
 import { TurnAggregationState } from "./turn_aggregator.js";
 import type { JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Thread, ThreadItem, Turn, TurnStatus } from "./types.js";
 import { nowUnixSeconds } from "./types.js";
-import type { PushRelayClient } from "../push_relay_client.js";
 
 type CodexRouterContext = {
   repository: CodexRepository;
@@ -39,7 +38,6 @@ type CodexRouterContext = {
   token: string;
   serverId: string;
   runtimeBridge?: CodexRuntimeBridge;
-  pushRelayClient?: PushRelayClient;
 };
 
 type RuntimePolicyShape = {
@@ -63,7 +61,6 @@ export class CodexRpcRouter {
   private readonly token: string;
   private readonly serverId: string;
   private readonly runtimeBridge: CodexRuntimeBridge | null;
-  private readonly pushRelayClient: PushRelayClient | null;
 
   private readonly turnAggregators = new Map<string, TurnAggregationState>();
   private readonly turnPlanModeByScopedTurnId = new Map<string, boolean>();
@@ -75,7 +72,6 @@ export class CodexRpcRouter {
     this.token = ctx.token;
     this.serverId = ctx.serverId;
     this.runtimeBridge = ctx.runtimeBridge ?? null;
-    this.pushRelayClient = ctx.pushRelayClient ?? null;
   }
 
   async handleRequest(request: JsonRpcRequest) {
@@ -1050,7 +1046,7 @@ export class CodexRpcRouter {
       metadata.turnStatus = turnStatus;
     }
 
-    const cursorHint = await this.repository.appendLiveSessionChange({
+    await this.repository.appendLiveSessionChange({
       token: this.token,
       serverId: this.serverId,
       projectId: args.projectId,
@@ -1059,14 +1055,6 @@ export class CodexRpcRouter {
       reason: args.method,
       metadata,
       createdAt: nowUnixSeconds(),
-    });
-    void this.pushRelayClient?.notifyLiveSession({
-      serverId: this.serverId,
-      cursorHint,
-      changedSessionIds: [args.sessionMapping.sessionId],
-      reason: args.method,
-    }).catch(() => {
-      // best effort relay fanout
     });
   }
 

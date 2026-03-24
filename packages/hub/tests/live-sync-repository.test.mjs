@@ -6,7 +6,7 @@ import path from "node:path";
 
 import * as hub from "../dist/index.js";
 
-test("CodexRepository upserts push devices and records live session snapshots", async () => {
+test("CodexRepository records live session snapshots without push device registration", async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "epoch-live-sync-repo-"));
 
   try {
@@ -62,30 +62,6 @@ test("CodexRepository upserts push devices and records live session snapshots", 
         params: { prompt: "Need input" },
         createdAt: 1_763_000_001,
       });
-
-      await repo.upsertPushDevice({
-        serverId: "server_live_1",
-        installationId: "install_live_1",
-        apnsToken: "apns_live_1",
-        environment: "sandbox",
-        deviceName: "Epoch iPhone",
-        platform: "iOS",
-        seenAt: "2026-03-23T00:00:00.000Z",
-      });
-      await repo.upsertPushDevice({
-        serverId: "server_live_1",
-        installationId: "install_live_1",
-        apnsToken: "apns_live_2",
-        environment: "sandbox",
-        deviceName: "Epoch iPhone 2",
-        platform: "iOS",
-        seenAt: "2026-03-23T00:01:00.000Z",
-      });
-
-      const registeredDevices = await repo.listPushDevices({ serverId: "server_live_1" });
-      assert.equal(registeredDevices.length, 1);
-      assert.equal(registeredDevices[0].apnsToken, "apns_live_2");
-      assert.equal(registeredDevices[0].deviceName, "Epoch iPhone 2");
 
       await repo.appendLiveSessionChange({
         token: "tok_live_1",

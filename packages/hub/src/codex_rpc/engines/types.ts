@@ -56,6 +56,7 @@ export interface CodexEngineSession {
   interruptTurn(args: { threadId: string; turnId: string }): Promise<void>;
   steerTurn?(args: { threadId: string; turnId: string; input: UserInput[] }): Promise<Record<string, unknown>>;
   handleClientResponse?(payload: { id: string | number; result?: unknown; error?: { code: number; message: string; data?: unknown } }): Promise<boolean>;
+  activeTurnCount(): number;
   close(): Promise<void>;
 }
 

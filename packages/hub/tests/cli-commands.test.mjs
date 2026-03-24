@@ -27,6 +27,9 @@ test("hub status shows daemon-aware status output", async () => {
   assert.match(stdout, /Epoch Server Status/);
   assert.match(stdout, /Config:\s+missing \(run epoch init\)/i);
   assert.match(stdout, /Daemon:\s+stopped/i);
+  assert.doesNotMatch(stdout, /Background push/i);
+  assert.doesNotMatch(stdout, /Encrypted APNs key/i);
+  assert.doesNotMatch(stdout, /Unlock required on start/i);
 });
 
 test("hub status --qr prints epoch pairing payload with display name", async () => {
@@ -64,4 +67,18 @@ test("hub status normalizes daemon metadata defaults", async () => {
   assert.match(stdout, /Host:\s+0\.0\.0\.0/);
   assert.match(stdout, /Port:\s+8787/);
   assert.match(stdout, /Log path:\s+.*hub\.log/);
+  assert.doesNotMatch(stdout, /Background push/i);
+  assert.doesNotMatch(stdout, /Encrypted APNs key/i);
+});
+
+test("hub doctor no longer mentions APNs or push setup", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "hub-doctor-"));
+  const stdout = await runHub(["doctor"], { EPOCH_STATE_DIR: stateDir })
+    .then((result) => result.stdout)
+    .catch((error) => error.stdout ?? "");
+
+  assert.match(stdout, /Config:\s+missing \(run epoch init\)/i);
+  assert.doesNotMatch(stdout, /Background push/i);
+  assert.doesNotMatch(stdout, /Push topic/i);
+  assert.doesNotMatch(stdout, /APNs/i);
 });
