@@ -12,7 +12,7 @@ type ConfigMode = "init" | "config";
 type LifecycleAction = "start" | "restart" | "skip";
 
 const CONFIG_USAGE =
-  "Usage: epoch-bridge config --hub <ws://.../ws> --token <token> --workspace-root <absolute-path> [--partition <name>] [--account <name>] [--qos <name>] [--time-mins <minutes>] [--cpus <n>] [--mem-mb <n>] [--gpus <n>]";
+  "Usage: epoch-bridge config --hub <ws://.../ws> --token <token> --workspace-root <absolute-path> [--partition <name>] [--account <name>] [--qos <name>] [--time-mins <minutes>] [--cpus <n>] [--mem-mb <n>] [--gpus <n>] (legacy bridge mode)";
 
 export type ConfigCommandOptions = {
   mode?: ConfigMode;
@@ -31,8 +31,8 @@ export async function configCommand(argv: string[], opts: ConfigCommandOptions =
     const stateDir = configDir();
     const defaultsFromFlags = parseBridgeConfigFlags(argv);
 
-    const heading = mode === "init" ? "Epoch Bridge Initialization Wizard" : "Epoch Bridge Configuration Wizard";
-    ui.banner(heading, "Set Hub URL/token, workspace root, and scheduling defaults");
+    const heading = mode === "init" ? "Legacy Epoch Bridge Initialization Wizard" : "Legacy Epoch Bridge Configuration Wizard";
+    ui.banner(heading, "Legacy bridge setup. For new installs prefer the direct-connect `epoch` service.");
     ui.step(1, 5, "Load existing bridge configuration", "ok");
     ui.keyValue("Config path", path.join(stateDir, "config.json"));
     ui.keyValue("Existing config", existing ? "present" : "missing");
@@ -101,7 +101,7 @@ export async function configCommand(argv: string[], opts: ConfigCommandOptions =
       const daemonInfo = await readBridgeDaemonInfo(stateDir);
       running = Boolean(daemonInfo && daemonInfo.pid > 1 && isProcessRunning(daemonInfo.pid));
       const shouldLaunch = await prompter.confirm({
-        message: running ? "Restart Epoch Bridge now?" : "Start Epoch Bridge now?",
+        message: running ? "Restart legacy Epoch Bridge now?" : "Start legacy Epoch Bridge now?",
         defaultYes: true,
       });
 
@@ -116,7 +116,7 @@ export async function configCommand(argv: string[], opts: ConfigCommandOptions =
     }
 
     if (lifecycleAction === "skip") {
-      ui.note("Next: run `epoch-bridge start` when ready.");
+      ui.note("Next: run `epoch-bridge start` when ready, or use `epoch start` for the direct-connect service.");
       return;
     }
 

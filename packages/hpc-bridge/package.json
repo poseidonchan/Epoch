@@ -2,15 +2,13 @@
   "name": "@epoch/hpc-bridge",
   "version": "0.1.0",
   "type": "module",
-  "bin": {
-    "epoch-bridge": "dist/cli.js"
-  },
+  "private": true,
   "main": "dist/index.js",
   "files": [
     "dist/"
   ],
   "scripts": {
-    "build": "tsup src/cli.ts src/index.ts --format esm --clean",
+    "build": "tsup src/index.ts --format esm --clean",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm -w --filter @epoch/hpc-bridge... build && node --test tests/*.test.mjs"
   },

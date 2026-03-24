@@ -1,14 +1,16 @@
 import type { HubConfig } from "../config.js";
 import { CodexAppServerEngine } from "./engines/codex_app_server.js";
+import { EpochHpcEngine } from "./engines/epoch_hpc_engine.js";
 import type { CodexEngineSession } from "./engines/types.js";
 
-export type CodexEngineName = "codex-app-server";
+export type CodexEngineName = "codex-app-server" | "epoch-hpc";
 
-const DEFAULT_ENGINE: CodexEngineName = "codex-app-server";
+const DEFAULT_ENGINE: CodexEngineName = "epoch-hpc";
 
 export class CodexEngineRegistry {
   private readonly stateDir: string;
   private codexAppServerEngine: CodexAppServerEngine | null = null;
+  private epochHpcEngine: EpochHpcEngine | null = null;
 
   constructor(opts: { config: HubConfig | null; stateDir: string }) {
     this.stateDir = opts.stateDir;
@@ -21,8 +23,12 @@ export class CodexEngineRegistry {
 
   async getEngine(name: string | null | undefined): Promise<CodexEngineSession> {
     const normalized = normalizeEngineName(name) ?? this.defaultEngineName();
-    if (normalized !== "codex-app-server") {
-      throw new Error(`Unsupported engine: ${String(name ?? "unknown")}`);
+
+    if (normalized === "epoch-hpc") {
+      if (!this.epochHpcEngine) {
+        this.epochHpcEngine = new EpochHpcEngine({ stateDir: this.stateDir });
+      }
+      return this.epochHpcEngine;
     }
 
     if (!this.codexAppServerEngine) {
@@ -41,6 +47,10 @@ export class CodexEngineRegistry {
   }
 
   async close() {
+    if (this.epochHpcEngine) {
+      await this.epochHpcEngine.close();
+      this.epochHpcEngine = null;
+    }
     if (this.codexAppServerEngine) {
       await this.codexAppServerEngine.close();
       this.codexAppServerEngine = null;
@@ -55,6 +65,7 @@ export class CodexEngineRegistry {
 export function normalizeEngineName(raw: unknown): CodexEngineName | null {
   if (typeof raw !== "string") return null;
   const normalized = raw.trim().toLowerCase();
+  if (normalized === "hpc" || normalized === "epoch-hpc") return "epoch-hpc";
   if (normalized === "pi" || normalized === "pi-adapter") return "codex-app-server";
   if (normalized === "codex" || normalized === "codex-app-server") return "codex-app-server";
   return null;

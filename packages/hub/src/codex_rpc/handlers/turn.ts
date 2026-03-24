@@ -4,9 +4,10 @@ import path from "node:path";
 import process from "node:process";
 
 import { buildProjectFileContextStream } from "../../indexing/projectIndexing.js";
+import { loadOrCreateHubConfig, resolveConfiguredWorkspaceRoot } from "../../config.js";
 import { resolveHubProvider } from "../../model.js";
 import { loadOpenAIApiKeyFromStateDir } from "../../openai_settings.js";
-import type { CodexEngineRegistry } from "../engine_registry.js";
+import { normalizeEngineName, type CodexEngineRegistry } from "../engine_registry.js";
 import type { EngineStartTurnResult, EngineStreamEvent } from "../engines/types.js";
 import type { CodexRepository } from "../repository.js";
 import { nowUnixSeconds, type ThreadItem, type Turn, type UserInput } from "../types.js";
@@ -97,7 +98,11 @@ export async function handleTurnStart(
   let projectContext = await buildTurnInputWithProjectContext(ctx.repository, threadRecord.projectId, input);
   let engineInput = projectContext.input;
   let projectContextDeveloperInstructions = projectContext.developerInstructions;
-  if (threadRecord.engine !== "codex-app-server") {
+  const requestedEngineNameRaw = normalizeNonEmptyString(threadRecord.engine) ?? ctx.engines.defaultEngineName();
+  const requestedEngineName = normalizeEngineName(requestedEngineNameRaw) ?? requestedEngineNameRaw;
+  let engine = await ctx.engines.getEngine(requestedEngineName);
+  const engineName = normalizeEngineName(requestedEngineName) ?? requestedEngineName;
+  if (engineName === "codex-app-server" && threadRecord.engine !== "codex-app-server") {
     await ctx.repository.updateThread({
       id: threadId,
       engine: "codex-app-server",
@@ -108,10 +113,13 @@ export async function handleTurnStart(
       engine: "codex-app-server",
     };
   }
-  let engine = await ctx.engines.getEngine("codex-app-server");
-  let shouldInjectHistoryFallbackContext = readThreadSyncState(threadRecord.statusJson) === "needsRemoteHydration";
+  let shouldInjectHistoryFallbackContext =
+    engineName === "codex-app-server" && readThreadSyncState(threadRecord.statusJson) === "needsRemoteHydration";
 
   const repairCodexThreadMapping = async () => {
+    if (engineName !== "codex-app-server") {
+      return;
+    }
     if (!engine.threadStart) {
       throw new Error("Codex app-server engine does not support thread/start.");
     }
@@ -250,12 +258,14 @@ export async function handleTurnStart(
     engine = await ctx.engines.getEngine("codex-app-server");
   };
 
-  if (!isValidCodexAppServerThreadId(threadId)) {
-    await repairCodexThreadMapping();
-  }
+  if (engineName === "codex-app-server") {
+    if (!isValidCodexAppServerThreadId(threadId)) {
+      await repairCodexThreadMapping();
+    }
 
-  if (readThreadSyncState(threadRecord?.statusJson) === "needsRemoteHydration") {
-    await repairCodexThreadMapping();
+    if (readThreadSyncState(threadRecord?.statusJson) === "needsRemoteHydration") {
+      await repairCodexThreadMapping();
+    }
   }
 
   const historyFallbackDeveloperInstructions = shouldInjectHistoryFallbackContext
@@ -284,7 +294,7 @@ export async function handleTurnStart(
       sandboxPolicy: toCodexSandboxParam(injectWorkspaceRoots(settings.sandbox, settings.cwd)),
     });
   } catch (err) {
-    if (!isLikelyCodexMissingThreadError(err)) {
+    if (engineName !== "codex-app-server" || !isLikelyCodexMissingThreadError(err)) {
       throw err;
     }
 
@@ -715,7 +725,13 @@ export async function handleTurnSteer(
 
   const engine = await ctx.engines.getEngine(threadRecord.engine);
   if (!engine.steerTurn) {
-    throw new Error(`Engine ${threadRecord.engine} does not support turn/steer`);
+    const engineName = normalizeEngineName(threadRecord.engine) ?? threadRecord.engine;
+    if (engineName === "epoch-hpc") {
+      throw new Error(
+        "Engine epoch-hpc does not support turn/steer yet. Use turn/interrupt, then start a new turn with your guidance."
+      );
+    }
+    throw new Error(`Engine ${engineName} does not support turn/steer`);
   }
   return await engine.steerTurn({
     threadId,
@@ -922,36 +938,34 @@ function extractProjectRelativeCwd(rawCwd: string, projectId: string): string | 
 }
 
 async function resolveProjectWorkspacePath(repository: CodexRepository, projectId: string): Promise<string> {
-  const workspaceRoot = await resolveWorkspaceRoot(repository);
-  if (!workspaceRoot) {
-    throw new Error("CAPABILITY_MISSING: node workspaceRoot is unavailable");
+  try {
+    const rows = await repository.query<{ hpc_workspace_path: string | null }>(
+      `SELECT hpc_workspace_path
+       FROM projects
+       WHERE id=$1
+       LIMIT 1`,
+      [projectId]
+    );
+    const persisted = normalizeNonEmptyString(rows[0]?.hpc_workspace_path);
+    if (persisted) {
+      return path.resolve(persisted);
+    }
+  } catch {
+    // ignore lookup failures and fall back to the configured default root
   }
+
+  const workspaceRoot = await resolveWorkspaceRoot(repository);
   return path.join(workspaceRoot, "projects", projectId);
 }
 
-async function resolveWorkspaceRoot(repository: CodexRepository): Promise<string | null> {
-  const envRoot = normalizeNonEmptyString(process.env.EPOCH_HPC_WORKSPACE_ROOT);
-  if (envRoot) return envRoot;
-
-  let rows: any[] = [];
-  try {
-    rows = await repository.query<any>(
-      `SELECT permissions
-       FROM nodes
-       ORDER BY last_seen_at DESC, created_at DESC
-       LIMIT 20`
-    );
-  } catch {
-    return null;
-  }
-
-  for (const row of rows) {
-    const parsed = parseJsonObject(row?.permissions);
-    const workspaceRoot = normalizeNonEmptyString(parsed?.workspaceRoot);
-    if (workspaceRoot) return workspaceRoot;
-  }
-
-  return null;
+async function resolveWorkspaceRoot(repository: CodexRepository): Promise<string> {
+  const stateDir = repository.stateDirectory();
+  const config = await loadOrCreateHubConfig({ stateDir, allowCreate: false }).catch(() => null);
+  return resolveConfiguredWorkspaceRoot({
+    stateDir,
+    config,
+    env: process.env,
+  });
 }
 
 function parseJsonObject(raw: unknown): Record<string, unknown> | null {

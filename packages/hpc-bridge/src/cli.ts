@@ -15,6 +15,9 @@ const cmd = args[0];
 
 async function main() {
   try {
+    if (cmd && cmd !== "-h" && cmd !== "--help") {
+      console.warn("epoch-bridge is deprecated. Use `epoch <init|config|start|restart|stop|status|doctor>` for direct-connect deployments.");
+    }
     switch (cmd) {
       case "init":
         await initCommand(args.slice(1));
@@ -44,6 +47,7 @@ async function main() {
       case "--help":
       case undefined:
         console.log("Usage: epoch-bridge <init|config|pair|start|restart|stop|status|doctor>");
+        console.log("Deprecated: use `epoch <init|config|start|restart|stop|status|doctor>` on the HPC host.");
         return;
       default:
         console.error(`Unknown command: ${cmd}`);

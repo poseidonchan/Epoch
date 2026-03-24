@@ -18,14 +18,40 @@ function runHub(args, env = {}) {
 test("hub --help includes stop and status", async () => {
   const { stdout } = await runHub(["--help"]);
   assert.match(stdout, /init\|config\|start\|restart\|stop\|status\|doctor/);
+  assert.match(stdout, /Usage:\s+epoch\s+</i);
 });
 
 test("hub status shows daemon-aware status output", async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "hub-status-"));
   const { stdout } = await runHub(["status"], { EPOCH_STATE_DIR: stateDir });
-  assert.match(stdout, /Epoch Hub Status/);
-  assert.match(stdout, /Config:\s+missing \(run epoch-hub init\)/i);
+  assert.match(stdout, /Epoch Server Status/);
+  assert.match(stdout, /Config:\s+missing \(run epoch init\)/i);
   assert.match(stdout, /Daemon:\s+stopped/i);
+});
+
+test("hub status --qr prints epoch pairing payload with display name", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "hub-status-qr-"));
+  await writeFile(
+    path.join(stateDir, "config.json"),
+    JSON.stringify(
+      {
+        serverId: "srv_status_qr",
+        token: "tok_status_qr",
+        createdAt: "2026-03-23T00:00:00.000Z",
+        displayName: "Tailnet Login",
+        publicWsUrl: "ws://login01.epoch.ts.net:8787/ws",
+      },
+      null,
+      2
+    ) + "\n",
+    "utf8"
+  );
+
+  const { stdout } = await runHub(["status", "--qr"], { EPOCH_STATE_DIR: stateDir });
+  assert.match(stdout, /Pairing URL \(fallback\):/);
+  assert.match(stdout, /epoch:\/\/pair\?v=1/);
+  assert.match(stdout, /name=Tailnet\+Login/);
+  assert.match(stdout, /serverId=srv_status_qr/);
 });
 
 test("hub status normalizes daemon metadata defaults", async () => {

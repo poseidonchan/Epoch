@@ -19,12 +19,17 @@ export const operatorMethods = [
   "artifacts.delete",
   "workspace.bootstrap.get",
   "workspace.bootstrap.update",
+  "workspace.directories.list",
+  "workspace.directories.resolve",
   "workspace.list",
   "workspace.content",
   "workspace.raw",
   "settings.openai.get",
   "settings.openai.set",
   "models.current",
+  "push.device.register",
+  "push.device.unregister",
+  "push.device.heartbeat",
   "hpc.prefs.set",
 ] as const;
 

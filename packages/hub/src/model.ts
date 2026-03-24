@@ -159,7 +159,7 @@ export function resolveHubModel(config?: HubConfig | null): HubModelResolution {
     const provider = String(ai.provider).trim() || HUB_DEFAULT_PROVIDER;
     const modelId = String(ai.defaultModelId ?? "").trim();
     if (!modelId) {
-      return { ok: false, ref: `${provider}/(default)`, reason: "missing_ref", message: "Missing default model id. Run: epoch-hub config" };
+      return { ok: false, ref: `${provider}/(default)`, reason: "missing_ref", message: "Missing default model id. Run: epoch config" };
     }
     const hasApiKey = hasConfiguredCredentials(config, provider) || Boolean(getEnvApiKey(provider));
     return { ok: true, ref: `${provider}/${modelId}`, provider, modelId, hasApiKey };
@@ -175,7 +175,7 @@ export function resolveHubModel(config?: HubConfig | null): HubModelResolution {
 
   const ref = String(refRaw).trim();
   if (!ref) {
-    return { ok: false, ref: null, reason: "missing_ref", message: "Missing model config. Run: epoch-hub config" };
+    return { ok: false, ref: null, reason: "missing_ref", message: "Missing model config. Run: epoch config" };
   }
 
   const idx = ref.indexOf("/");

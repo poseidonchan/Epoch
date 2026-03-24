@@ -16,10 +16,25 @@ export type HubAiConfig = {
   auth: HubAiAuthConfig;
 };
 
+export type HubPushConfig = {
+  teamId: string;
+  keyId: string;
+  bundleId: string;
+  encryptedKeyPath: string;
+  configuredAt?: string;
+};
+
 export type HubConfig = {
   serverId: string;
   token: string;
   createdAt: string;
+  displayName?: string;
+  workspaceRoot?: string;
+  publicWsUrl?: string | null;
+  push?: HubPushConfig | null;
+  pushRelayUrl?: string | null;
+  pushRelaySharedSecret?: string | null;
+  pushEnabled?: boolean;
   ai?: HubAiConfig;
   openaiSettings?: {
     ocrModel?: string;
@@ -36,6 +51,10 @@ export type HubConfig = {
 
 export function getStateDir(): string {
   return process.env.EPOCH_STATE_DIR ?? path.join(os.homedir(), ".epoch");
+}
+
+export function defaultWorkspaceRoot(stateDir: string): string {
+  return path.join(stateDir, "workspace");
 }
 
 export async function ensureStateDir(stateDir: string) {
@@ -59,7 +78,7 @@ export async function loadOrCreateHubConfig(opts: { stateDir: string; allowCreat
   const cfgPath = configPath(opts.stateDir);
   try {
     const raw = await readFile(cfgPath, "utf8");
-    const parsed = JSON.parse(raw) as HubConfig;
+    const parsed = normalizeHubConfig(JSON.parse(raw) as HubConfig, opts.stateDir);
     // Ensure token file isn't world-readable (best-effort).
     await chmod(cfgPath, 0o600).catch(() => {
       // ignore
@@ -75,12 +94,93 @@ export async function loadOrCreateHubConfig(opts: { stateDir: string; allowCreat
     }
 
     const token = randomBytes(32).toString("base64url");
-    const config: HubConfig = {
+    const legacyBridge = await readLegacyBridgeConfig();
+    const config: HubConfig = normalizeHubConfig({
       serverId: uuidv4(),
       token,
       createdAt: new Date().toISOString(),
-    };
+      displayName: os.hostname(),
+      workspaceRoot: legacyBridge?.workspaceRoot,
+      publicWsUrl: null,
+      push: null,
+      pushRelayUrl: null,
+      pushRelaySharedSecret: null,
+      pushEnabled: false,
+    }, opts.stateDir);
     await saveHubConfig({ stateDir: opts.stateDir, config });
     return config;
   }
+}
+
+export function resolveConfiguredWorkspaceRoot(args: {
+  stateDir: string;
+  config?: HubConfig | null;
+  env?: NodeJS.ProcessEnv;
+}): string {
+  const env = args.env ?? process.env;
+  return normalizeOptionalString(env.EPOCH_WORKSPACE_ROOT)
+    ?? normalizeOptionalString(env.EPOCH_HPC_WORKSPACE_ROOT)
+    ?? normalizeOptionalString(args.config?.workspaceRoot)
+    ?? defaultWorkspaceRoot(args.stateDir);
+}
+
+export function resolveConfiguredPublicWsUrl(args: {
+  config?: HubConfig | null;
+  env?: NodeJS.ProcessEnv;
+}): string | null {
+  const env = args.env ?? process.env;
+  return normalizeOptionalString(env.EPOCH_PAIR_WS_URL)
+    ?? normalizeOptionalString(args.config?.publicWsUrl)
+    ?? null;
+}
+
+function normalizeHubConfig(config: HubConfig, stateDir: string): HubConfig {
+  return {
+    ...config,
+    displayName: normalizeOptionalString(config.displayName) ?? os.hostname(),
+    workspaceRoot: resolveConfiguredWorkspaceRoot({ stateDir, config, env: {} }),
+    publicWsUrl: normalizeOptionalString(config.publicWsUrl) ?? null,
+    push: normalizeHubPushConfig(config.push),
+    pushRelayUrl: normalizeOptionalString(config.pushRelayUrl) ?? null,
+    pushRelaySharedSecret: normalizeOptionalString(config.pushRelaySharedSecret) ?? null,
+    pushEnabled: config.pushEnabled === true,
+  };
+}
+
+async function readLegacyBridgeConfig(): Promise<{ workspaceRoot?: string } | null> {
+  const legacyPath = path.join(os.homedir(), ".epoch-bridge", "config.json");
+  try {
+    const raw = JSON.parse(await readFile(legacyPath, "utf8")) as Record<string, unknown>;
+    return {
+      workspaceRoot: normalizeOptionalString(raw.workspaceRoot) ?? undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeOptionalString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeHubPushConfig(value: HubConfig["push"]): HubPushConfig | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const teamId = normalizeOptionalString(value.teamId);
+  const keyId = normalizeOptionalString(value.keyId);
+  const bundleId = normalizeOptionalString(value.bundleId);
+  const encryptedKeyPath = normalizeOptionalString(value.encryptedKeyPath);
+  if (!teamId || !keyId || !bundleId || !encryptedKeyPath) {
+    return null;
+  }
+  return {
+    teamId,
+    keyId,
+    bundleId,
+    encryptedKeyPath,
+    configuredAt: normalizeOptionalString(value.configuredAt) ?? undefined,
+  };
 }

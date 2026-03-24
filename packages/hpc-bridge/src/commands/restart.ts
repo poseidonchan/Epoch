@@ -6,7 +6,7 @@ import { startBridgeDaemon, stopBridgeDaemon } from "../daemon.js";
 export async function restartCommand(_argv: string[]) {
   const cfg = await loadConfig();
   if (!cfg) {
-    throw new Error("Config missing. Run: epoch-bridge config");
+    throw new Error("Legacy bridge config missing. Run: epoch init for direct-connect mode, or epoch-bridge config for legacy bridge mode.");
   }
 
   const stateDir = configDir();
@@ -18,5 +18,5 @@ export async function restartCommand(_argv: string[]) {
     env: process.env,
     cwd: process.cwd(),
   });
-  console.log(`Epoch Bridge restarted (pid ${info.pid}). Logs: ${info.logPath}`);
+  console.log(`Epoch Bridge (legacy) restarted (pid ${info.pid}). Logs: ${info.logPath}`);
 }

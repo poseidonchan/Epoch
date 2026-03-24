@@ -121,6 +121,9 @@ test("handleEpochSessionRead includes context payload with remaining tokens", as
   const threadId = "123e4567-e89b-12d3-a456-426614174202";
   try {
     const repository = {
+      stateDirectory() {
+        return "/tmp/epoch-token-usage-context";
+      },
       async query(sql, args = []) {
         const normalized = String(sql);
         if (normalized.includes("FROM sessions") && normalized.includes("WHERE project_id=$1 AND id=$2")) {
@@ -180,7 +183,7 @@ test("handleEpochSessionRead includes context payload with remaining tokens", as
           updatedAt: 2,
           path: null,
           cwd: "projects/123e4567-e89b-12d3-a456-426614174200",
-          cliVersion: "@epoch/hub/0.1.0",
+          cliVersion: "epoch/0.1.0",
           source: "appServer",
           gitInfo: null,
           turns: [],
@@ -242,6 +245,9 @@ test("handleEpochSessionRead marks mapped threads for remote rehydration when cw
 
   try {
     const repository = {
+      stateDirectory() {
+        return "/tmp/epoch-token-usage-rehydrate";
+      },
       async query(sql, args = []) {
         const normalized = String(sql);
         if (normalized.includes("FROM sessions") && normalized.includes("WHERE project_id=$1 AND id=$2")) {
@@ -298,7 +304,7 @@ test("handleEpochSessionRead marks mapped threads for remote rehydration when cw
           updatedAt: 2,
           path: null,
           cwd: expectedWorkspace,
-          cliVersion: "@epoch/hub/0.1.0",
+          cliVersion: "epoch/0.1.0",
           source: "appServer",
           gitInfo: null,
           turns: [],
@@ -345,15 +351,23 @@ test("handleEpochSessionRead marks mapped threads for remote rehydration when cw
   }
 });
 
-test("handleEpochSessionRead fails fast when workspace root is unavailable", async () => {
-  const originalRoot = process.env.EPOCH_HPC_WORKSPACE_ROOT;
-  delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
-
+test("handleEpochSessionRead falls back to the default direct-connect workspace root", async () => {
   const projectId = "123e4567-e89b-12d3-a456-426614174220";
   const sessionId = "123e4567-e89b-12d3-a456-426614174221";
+  const threadId = "123e4567-e89b-12d3-a456-426614174225";
+  const stateDir = "/tmp/epoch-session-default-state";
+  const expectedCwd = `${stateDir}/workspace/projects/${projectId}`;
+  let updatedThread = null;
+  const originalWorkspaceRoot = process.env.EPOCH_WORKSPACE_ROOT;
+  const originalLegacyRoot = process.env.EPOCH_HPC_WORKSPACE_ROOT;
+  delete process.env.EPOCH_WORKSPACE_ROOT;
+  delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
 
   try {
     const repository = {
+      stateDirectory() {
+        return stateDir;
+      },
       async query(sql, args = []) {
         const normalized = String(sql);
         if (normalized.includes("FROM sessions") && normalized.includes("WHERE project_id=$1 AND id=$2")) {
@@ -368,76 +382,6 @@ test("handleEpochSessionRead fails fast when workspace root is unavailable", asy
               created_at: "2026-02-01T00:00:00.000Z",
               updated_at: "2026-02-02T00:00:00.000Z",
               backend_engine: "codex-app-server",
-              codex_thread_id: null,
-              codex_model: "gpt-5.1",
-              codex_model_provider: "openai",
-              codex_approval_policy: "on-request",
-              codex_sandbox_json: JSON.stringify({ mode: "workspace-write" }),
-              hpc_workspace_state: "queued",
-              permission_level: "default",
-            },
-          ];
-        }
-        if (normalized.includes("FROM nodes")) {
-          return [];
-        }
-        throw new Error(`Unexpected SQL: ${normalized}`);
-      },
-    };
-
-    await assert.rejects(
-      () =>
-        handleEpochSessionRead(
-          {
-            repository,
-            engines: {},
-            pendingUserInputSummaryBySession: new Map(),
-            runtimeToken: "tok_workspace_missing",
-          },
-          {
-            projectId,
-            sessionId,
-            includeTurns: false,
-          }
-        ),
-      /CAPABILITY_MISSING: node workspaceRoot is unavailable/
-    );
-  } finally {
-    if (originalRoot == null) {
-      delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
-    } else {
-      process.env.EPOCH_HPC_WORKSPACE_ROOT = originalRoot;
-    }
-  }
-});
-
-test("handleEpochSessionRead resolves workspace root from nodes table when env is unavailable", async () => {
-  const originalRoot = process.env.EPOCH_HPC_WORKSPACE_ROOT;
-  delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
-
-  const projectId = "123e4567-e89b-12d3-a456-426614174222";
-  const sessionId = "123e4567-e89b-12d3-a456-426614174223";
-  const threadId = "123e4567-e89b-12d3-a456-426614174224";
-  const workspaceRoot = "/tmp/epoch-from-node";
-  const expectedCwd = `${workspaceRoot}/projects/${projectId}`;
-  let updatedThread = null;
-
-  try {
-    const repository = {
-      async query(sql, args = []) {
-        const normalized = String(sql);
-        if (normalized.includes("FROM sessions") && normalized.includes("WHERE project_id=$1 AND id=$2")) {
-          assert.equal(args[0], projectId);
-          assert.equal(args[1], sessionId);
-          return [
-            {
-              id: sessionId,
-              project_id: projectId,
-              title: "Session Workspace From Node",
-              lifecycle: "active",
-              created_at: "2026-02-01T00:00:00.000Z",
-              updated_at: "2026-02-02T00:00:00.000Z",
-              backend_engine: "codex-app-server",
               codex_thread_id: threadId,
               codex_model: "gpt-5.1",
               codex_model_provider: "openai",
@@ -448,12 +392,9 @@ test("handleEpochSessionRead resolves workspace root from nodes table when env i
             },
           ];
         }
-        if (normalized.includes("FROM nodes")) {
-          return [
-            {
-              permissions: JSON.stringify({ workspaceRoot }),
-            },
-          ];
+        if (normalized.includes("FROM projects") && normalized.includes("hpc_workspace_path")) {
+          assert.equal(args[0], projectId);
+          return [];
         }
         throw new Error(`Unexpected SQL: ${normalized}`);
       },
@@ -487,7 +428,132 @@ test("handleEpochSessionRead resolves workspace root from nodes table when env i
           updatedAt: 2,
           path: null,
           cwd: expectedCwd,
-          cliVersion: "@epoch/hub/0.1.0",
+          cliVersion: "epoch/0.1.0",
+          source: "appServer",
+          gitInfo: null,
+          turns: [],
+        };
+      },
+      async assignThreadToSession(args) {
+        assert.equal(args.threadId, threadId);
+        assert.equal(args.sessionId, sessionId);
+      },
+      async listPendingInputsForSession() {
+        return [];
+      },
+      async readPlanSnapshotForSession() {
+        return null;
+      },
+    };
+
+    const result = await handleEpochSessionRead(
+      {
+        repository,
+        engines: {},
+        pendingUserInputSummaryBySession: new Map(),
+        runtimeToken: "tok_workspace_missing",
+      },
+      {
+        projectId,
+        sessionId,
+        includeTurns: false,
+      }
+    );
+
+    assert.ok(updatedThread);
+    assert.equal(updatedThread.cwd, expectedCwd);
+    assert.equal(result.thread.cwd, expectedCwd);
+  } finally {
+    if (originalWorkspaceRoot == null) {
+      delete process.env.EPOCH_WORKSPACE_ROOT;
+    } else {
+      process.env.EPOCH_WORKSPACE_ROOT = originalWorkspaceRoot;
+    }
+    if (originalLegacyRoot == null) {
+      delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
+    } else {
+      process.env.EPOCH_HPC_WORKSPACE_ROOT = originalLegacyRoot;
+    }
+  }
+});
+
+test("handleEpochSessionRead prefers a persisted project workspace path when available", async () => {
+  const projectId = "123e4567-e89b-12d3-a456-426614174222";
+  const sessionId = "123e4567-e89b-12d3-a456-426614174223";
+  const threadId = "123e4567-e89b-12d3-a456-426614174224";
+  const chosenWorkspacePath = "/srv/hpc/custom-session-project";
+  let updatedThread = null;
+  const originalWorkspaceRoot = process.env.EPOCH_WORKSPACE_ROOT;
+  const originalLegacyRoot = process.env.EPOCH_HPC_WORKSPACE_ROOT;
+  delete process.env.EPOCH_WORKSPACE_ROOT;
+  delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
+
+  try {
+    const repository = {
+      stateDirectory() {
+        return "/tmp/epoch-session-state";
+      },
+      async query(sql, args = []) {
+        const normalized = String(sql);
+        if (normalized.includes("FROM sessions") && normalized.includes("WHERE project_id=$1 AND id=$2")) {
+          assert.equal(args[0], projectId);
+          assert.equal(args[1], sessionId);
+          return [
+            {
+              id: sessionId,
+              project_id: projectId,
+              title: "Session Workspace From Node",
+              lifecycle: "active",
+              created_at: "2026-02-01T00:00:00.000Z",
+              updated_at: "2026-02-02T00:00:00.000Z",
+              backend_engine: "codex-app-server",
+              codex_thread_id: threadId,
+              codex_model: "gpt-5.1",
+              codex_model_provider: "openai",
+              codex_approval_policy: "on-request",
+              codex_sandbox_json: JSON.stringify({ mode: "workspace-write" }),
+              hpc_workspace_state: "queued",
+              permission_level: "default",
+            },
+          ];
+        }
+        if (normalized.includes("FROM projects") && normalized.includes("hpc_workspace_path")) {
+          assert.equal(args[0], projectId);
+          return [{ hpc_workspace_path: chosenWorkspacePath }];
+        }
+        throw new Error(`Unexpected SQL: ${normalized}`);
+      },
+      async getThreadRecord(id) {
+        assert.equal(id, threadId);
+        return {
+          id: threadId,
+          projectId,
+          cwd: `projects/${projectId}`,
+          modelProvider: "openai",
+          modelId: "gpt-5.1",
+          preview: "",
+          createdAt: 1,
+          updatedAt: 2,
+          archived: false,
+          statusJson: JSON.stringify({ syncState: "ready" }),
+          engine: "codex-app-server",
+        };
+      },
+      async updateThread(args) {
+        updatedThread = args;
+      },
+      async readThread(id, includeTurns) {
+        assert.equal(id, threadId);
+        assert.equal(typeof includeTurns, "boolean");
+        return {
+          id: threadId,
+          preview: "",
+          modelProvider: "openai",
+          createdAt: 1,
+          updatedAt: 2,
+          path: null,
+          cwd: chosenWorkspacePath,
+          cliVersion: "epoch/0.1.0",
           source: "appServer",
           gitInfo: null,
           turns: [],
@@ -520,13 +586,18 @@ test("handleEpochSessionRead resolves workspace root from nodes table when env i
     );
 
     assert.ok(updatedThread);
-    assert.equal(updatedThread.cwd, expectedCwd);
-    assert.equal(result.thread.cwd, expectedCwd);
+    assert.equal(updatedThread.cwd, chosenWorkspacePath);
+    assert.equal(result.thread.cwd, chosenWorkspacePath);
   } finally {
-    if (originalRoot == null) {
+    if (originalWorkspaceRoot == null) {
+      delete process.env.EPOCH_WORKSPACE_ROOT;
+    } else {
+      process.env.EPOCH_WORKSPACE_ROOT = originalWorkspaceRoot;
+    }
+    if (originalLegacyRoot == null) {
       delete process.env.EPOCH_HPC_WORKSPACE_ROOT;
     } else {
-      process.env.EPOCH_HPC_WORKSPACE_ROOT = originalRoot;
+      process.env.EPOCH_HPC_WORKSPACE_ROOT = originalLegacyRoot;
     }
   }
 });

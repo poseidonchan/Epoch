@@ -26,6 +26,6 @@ export function handleInitialize(
   connection.initializedRequestReceived = true;
 
   return {
-    userAgent: "@epoch/hub/0.1.0",
+    userAgent: "epoch/0.1.0",
   };
 }

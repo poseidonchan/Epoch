@@ -30,13 +30,16 @@ import type { CodexRuntimeBridge, SessionPermissionLevel } from "./runtime_bridg
 import { TurnAggregationState } from "./turn_aggregator.js";
 import type { JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Thread, ThreadItem, Turn, TurnStatus } from "./types.js";
 import { nowUnixSeconds } from "./types.js";
+import type { PushRelayClient } from "../push_relay_client.js";
 
 type CodexRouterContext = {
   repository: CodexRepository;
   engines: CodexEngineRegistry;
   connection: CodexConnectionState;
   token: string;
+  serverId: string;
   runtimeBridge?: CodexRuntimeBridge;
+  pushRelayClient?: PushRelayClient;
 };
 
 type RuntimePolicyShape = {
@@ -58,7 +61,9 @@ export class CodexRpcRouter {
   private readonly engines: CodexEngineRegistry;
   private readonly connection: CodexConnectionState;
   private readonly token: string;
+  private readonly serverId: string;
   private readonly runtimeBridge: CodexRuntimeBridge | null;
+  private readonly pushRelayClient: PushRelayClient | null;
 
   private readonly turnAggregators = new Map<string, TurnAggregationState>();
   private readonly turnPlanModeByScopedTurnId = new Map<string, boolean>();
@@ -68,7 +73,9 @@ export class CodexRpcRouter {
     this.engines = ctx.engines;
     this.connection = ctx.connection;
     this.token = ctx.token;
+    this.serverId = ctx.serverId;
     this.runtimeBridge = ctx.runtimeBridge ?? null;
+    this.pushRelayClient = ctx.pushRelayClient ?? null;
   }
 
   async handleRequest(request: JsonRpcRequest) {
@@ -266,6 +273,16 @@ export class CodexRpcRouter {
           this.connection.sendResult(request.id, result);
           return;
         }
+        case "epoch/live/changes": {
+          const result = await this.repository.listLiveSessionChanges({
+            token: this.token,
+            cursor: normalizeNonNegativeInteger(params.cursor) ?? 0,
+            limit: normalizePositiveInteger(params.limit) ?? 50,
+            sessionIds: normalizeStringArray(params.sessionIds),
+          });
+          this.connection.sendResult(request.id, result);
+          return;
+        }
         case "epoch/hpc/prefs/set": {
           const result = await handleEpochHpcPrefsSet({ repository: this.repository, engines: this.engines }, params);
           this.connection.sendResult(request.id, result);
@@ -342,13 +359,13 @@ export class CodexRpcRouter {
   private async assertRemoteRuntimeAvailableForTurn() {
     if (!this.runtimeBridge) return;
     if (!this.runtimeBridge.isNodeConnected()) {
-      throw new Error("NODE_OFFLINE: HPC bridge is not connected");
+      throw new Error("NODE_OFFLINE: Epoch runtime is unavailable");
     }
     const commands = new Set(this.runtimeBridge.listNodeCommands());
     const required = ["runtime.exec.start", "runtime.exec.cancel", "runtime.fs.applyPatch", "runtime.fs.diff"];
     const missing = required.filter((cmd) => !commands.has(cmd));
     if (missing.length > 0) {
-      throw new Error(`CAPABILITY_MISSING: HPC bridge missing runtime methods (${missing.join(", ")})`);
+      throw new Error(`CAPABILITY_MISSING: Epoch runtime missing methods (${missing.join(", ")})`);
     }
   }
 
@@ -379,7 +396,7 @@ export class CodexRpcRouter {
     params: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     if (!this.runtimeBridge) {
-      throw new Error("CAPABILITY_MISSING: remote runtime bridge is not configured");
+      throw new Error("CAPABILITY_MISSING: runtime bridge is not configured");
     }
     await this.assertRemoteRuntimeAvailableForTurn();
 
@@ -486,7 +503,7 @@ export class CodexRpcRouter {
     params: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     if (!this.runtimeBridge) {
-      throw new Error("CAPABILITY_MISSING: remote runtime bridge is not configured");
+      throw new Error("CAPABILITY_MISSING: runtime bridge is not configured");
     }
     await this.assertRemoteRuntimeAvailableForTurn();
 
@@ -804,6 +821,14 @@ export class CodexRpcRouter {
       createdAt: nowUnixSeconds(),
     });
 
+    await this.recordLiveSessionChange({
+      threadId,
+      projectId,
+      sessionMapping,
+      method,
+      params,
+    });
+
     if (persistTurnItemState && method === "turn/started") {
       const turn = params.turn as Record<string, unknown> | undefined;
       const turnId = normalizeNonEmptyString(turn?.id);
@@ -999,6 +1024,50 @@ export class CodexRpcRouter {
           });
         });
     }
+  }
+
+  private async recordLiveSessionChange(args: {
+    threadId: string;
+    projectId: string | null;
+    sessionMapping: { projectId: string; sessionId: string } | null;
+    method: string;
+    params: Record<string, unknown>;
+  }) {
+    if (!args.projectId || !args.sessionMapping) {
+      return;
+    }
+    if (!shouldRecordLiveSessionChange(args.method)) {
+      return;
+    }
+
+    const metadata: Record<string, unknown> = {};
+    const turnId = normalizeLiveChangeTurnId(args.params);
+    if (turnId) {
+      metadata.turnId = turnId;
+    }
+    const turnStatus = normalizeLiveChangeTurnStatus(args.params);
+    if (turnStatus) {
+      metadata.turnStatus = turnStatus;
+    }
+
+    const cursorHint = await this.repository.appendLiveSessionChange({
+      token: this.token,
+      serverId: this.serverId,
+      projectId: args.projectId,
+      sessionId: args.sessionMapping.sessionId,
+      threadId: args.threadId,
+      reason: args.method,
+      metadata,
+      createdAt: nowUnixSeconds(),
+    });
+    void this.pushRelayClient?.notifyLiveSession({
+      serverId: this.serverId,
+      cursorHint,
+      changedSessionIds: [args.sessionMapping.sessionId],
+      reason: args.method,
+    }).catch(() => {
+      // best effort relay fanout
+    });
   }
 
   private async requestPlanImplementationConfirmation(args: {
@@ -1463,6 +1532,18 @@ function normalizeStringRecord(raw: unknown): Record<string, string> | null {
   return Object.fromEntries(entries);
 }
 
+function normalizeStringArray(raw: unknown): string[] | null {
+  if (!Array.isArray(raw)) return null;
+  const values = Array.from(
+    new Set(
+      raw
+        .map((entry) => normalizeNonEmptyString(entry))
+        .filter((entry): entry is string => entry != null)
+    )
+  );
+  return values.length > 0 ? values : [];
+}
+
 function normalizeRuntimePolicyShape(raw: unknown): RuntimePolicyShape | null {
   const obj = normalizeObject(raw);
   if (!obj) return null;
@@ -1514,6 +1595,51 @@ function normalizeNonNegativeInteger(raw: unknown): number | null {
     }
   }
   return null;
+}
+
+function shouldRecordLiveSessionChange(method: string): boolean {
+  switch (method) {
+    case "turn/started":
+    case "turn/completed":
+    case "turn/plan/updated":
+    case "item/started":
+    case "item/completed":
+    case "item/commandExecution/outputDelta":
+    case "item/fileChange/outputDelta":
+    case "item/tool/requestUserInput":
+    case "item/commandExecution/requestApproval":
+    case "item/fileChange/requestApproval":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function normalizeLiveChangeTurnId(params: Record<string, unknown>): string | null {
+  const turn = params.turn;
+  if (turn && typeof turn === "object" && !Array.isArray(turn)) {
+    const turnId = normalizeNonEmptyString((turn as Record<string, unknown>).id);
+    if (turnId) return turnId;
+  }
+  return normalizeNonEmptyString(params.turnId);
+}
+
+function normalizeLiveChangeTurnStatus(params: Record<string, unknown>): TurnStatus | null {
+  const turn = params.turn;
+  if (turn && typeof turn === "object" && !Array.isArray(turn)) {
+    const status = normalizeTurnStatus((turn as Record<string, unknown>).status);
+    if (status) return status;
+  }
+  const directStatus = normalizeNonEmptyString(params.status);
+  switch (directStatus) {
+    case "inProgress":
+    case "completed":
+    case "interrupted":
+    case "failed":
+      return directStatus;
+    default:
+      return null;
+  }
 }
 
 function safeParseJsonObject(raw: string): Record<string, unknown> | null {

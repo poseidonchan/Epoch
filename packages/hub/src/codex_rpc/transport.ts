@@ -10,6 +10,7 @@ import { CodexRepository } from "./repository.js";
 import type { CodexRuntimeBridge } from "./runtime_bridge.js";
 import { CodexRpcRouter } from "./router.js";
 import { isJsonRpcNotification, isJsonRpcRequest, isJsonRpcResponse, type JsonRpcRequest, type JsonRpcResponse } from "./types.js";
+import type { PushRelayClient } from "../push_relay_client.js";
 
 const OVERLOAD_ERROR_CODE = -32001;
 const OVERLOAD_ERROR_MESSAGE = "Server overloaded; retry later.";
@@ -21,6 +22,7 @@ export type CodexTransportOptions = {
   stateDir: string;
   pool: DbPool;
   runtimeBridge?: CodexRuntimeBridge;
+  pushRelayClient?: PushRelayClient;
 };
 
 type CodexRuntime = {
@@ -146,6 +148,7 @@ function getOrCreateRuntime(args: {
   stateDir: string;
   pool: DbPool;
   runtimeBridge?: CodexRuntimeBridge;
+  pushRelayClient?: PushRelayClient;
 }): CodexRuntime {
   const existing = runtimesByToken.get(args.token);
   if (existing) {
@@ -162,7 +165,9 @@ function getOrCreateRuntime(args: {
     engines,
     connection,
     token: args.token,
+    serverId: args.config.serverId,
     runtimeBridge: args.runtimeBridge,
+    pushRelayClient: args.pushRelayClient,
   });
   const ready = repository.clearActiveCodexStateForToken(args.token).catch(() => {});
   const runtime: CodexRuntime = {

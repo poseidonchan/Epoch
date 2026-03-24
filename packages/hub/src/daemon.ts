@@ -125,20 +125,27 @@ export async function startHubDaemon(opts: {
   port: number;
   env: NodeJS.ProcessEnv;
   cwd: string;
+  stdinPayload?: string | null;
+  extraArgs?: string[];
 }): Promise<HubDaemonInfo> {
   await mkdir(opts.stateDir, { recursive: true });
 
   const logPath = hubLogPath(opts.stateDir);
   const out = openSync(logPath, "a", 0o600);
   const err = out;
+  const extraArgs = Array.isArray(opts.extraArgs) ? opts.extraArgs : [];
+  const needsStdin = typeof opts.stdinPayload === "string" && opts.stdinPayload.length > 0;
 
-  const child = spawn(opts.nodePath, [opts.cliPath, "start", "--foreground"], {
+  const child = spawn(opts.nodePath, [opts.cliPath, "start", "--foreground", ...extraArgs], {
     cwd: opts.cwd,
     env: opts.env,
     detached: true,
-    stdio: ["ignore", out, err],
+    stdio: [needsStdin ? "pipe" : "ignore", out, err],
   });
 
+  if (needsStdin && child.stdin) {
+    child.stdin.end(opts.stdinPayload);
+  }
   child.unref();
 
   const info: HubDaemonInfo = {

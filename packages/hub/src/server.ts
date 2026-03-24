@@ -11,7 +11,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 
 import { isNodeMethod, isOperatorMethod, type NodeMethod } from "@epoch/protocol";
 
-import { saveHubConfig, type HubConfig } from "./config.js";
+import { resolveConfiguredWorkspaceRoot, saveHubConfig, type HubConfig } from "./config.js";
 import type { DbPool } from "./db/db.js";
 import { CodexEngineRegistry } from "./codex_rpc/engine_registry.js";
 import { getEnvApiKey, listHubModelsForProvider, resolveHubProvider } from "./model.js";
@@ -47,6 +47,10 @@ import {
 import { extractInlineAttachmentTextForPrompt } from "./indexing/extract.js";
 import { fetchUrlContent } from "./indexing/fetchUrl.js";
 import { generateSessionTitle } from "./indexing/summarize.js";
+import { LocalRuntimeBridge } from "./local_runtime.js";
+import { createPushRelayClient } from "./push_relay_client.js";
+import { listWorkspaceDirectories, resolveWorkspaceDirectory } from "./workspace_directories.js";
+import type { SilentPushSender } from "@epoch/push-relay";
 
 type Role = "operator" | "node";
 
@@ -56,6 +60,7 @@ type HubStartOptions = {
   config: HubConfig;
   stateDir: string;
   pool: DbPool;
+  pushSender?: SilentPushSender | null;
 };
 
 type ConnectionContext =
@@ -138,7 +143,6 @@ type HpcNodeUsage = {
 
 type ResourceSnapshot = {
   computeConnected: boolean;
-  queueDepth: number;
   storageUsedPercent: number;
   storageTotalBytes?: number;
   storageUsedBytes?: number;
@@ -146,7 +150,6 @@ type ResourceSnapshot = {
   cpuPercent: number;
   ramPercent: number;
   gpuPercent?: number;
-  hpc?: HpcStatus;
 };
 
 type HpcPrefs = {
@@ -205,6 +208,10 @@ export async function startHub(opts: HubStartOptions): Promise<HubHandle> {
   });
 
   const state = createHubState(opts);
+  const unsubscribeLocalRuntime = state.localRuntime.subscribeNodeEvents((event, payload) => {
+    void handleNodeEvent(state, event, payload);
+  });
+  state.resources = await state.localRuntime.resourceSnapshot().catch(() => state.resources);
   await ensureHubDirs(opts.stateDir);
 
   if ((process.env.EPOCH_REPAIR_ON_START ?? "1") !== "0") {
@@ -280,10 +287,10 @@ export async function startHub(opts: HubStartOptions): Promise<HubHandle> {
       config: state.config,
       stateDir: state.stateDir,
       pool: state.pool,
+      pushRelayClient: state.pushRelayClient,
       runtimeBridge: {
-        isNodeConnected: () => Boolean(state.node),
-        listNodeCommands: () =>
-          Array.isArray(state.node?.ctx.commands) ? state.node!.ctx.commands.map((entry) => String(entry)) : [],
+        isNodeConnected: () => true,
+        listNodeCommands: () => state.localRuntime.listNodeCommands(),
         callNode: async (method, params) => {
           const response = await callNode(state, method, params);
           if (!response || typeof response !== "object" || Array.isArray(response)) return {};
@@ -308,6 +315,7 @@ export async function startHub(opts: HubStartOptions): Promise<HubHandle> {
   fastify.log.info(`Epoch Hub listening on http://${opts.host}:${opts.port} (ws: /ws, codex: /codex)`);
 
   const close = async () => {
+    unsubscribeLocalRuntime();
     try {
       for (const op of state.operators) {
         try {
@@ -355,21 +363,37 @@ export async function startHub(opts: HubStartOptions): Promise<HubHandle> {
 
 function createHubState(opts: HubStartOptions) {
   const engines = new CodexEngineRegistry({ config: opts.config, stateDir: opts.stateDir });
+  const workspaceRoot = resolveConfiguredWorkspaceRoot({ stateDir: opts.stateDir, config: opts.config, env: process.env });
+  const localRuntime = new LocalRuntimeBridge({
+    stateDir: opts.stateDir,
+    workspaceRoot,
+  });
+  const localNodeCtx = createLocalNodeContext(localRuntime);
+  const repository = new CodexRepository({
+    pool: opts.pool,
+    stateDir: opts.stateDir,
+  });
   return {
     config: opts.config,
     stateDir: opts.stateDir,
     pool: opts.pool,
+    repository,
     engines,
+    pushRelayClient: createPushRelayClient({
+      config: opts.config,
+      repository,
+      sender: opts.pushSender ?? null,
+    }),
+    localRuntime,
     operators: new Set<OperatorConn>(),
-    node: null as NodeConn | null,
+    node: { ws: createNoopSocket(), ctx: localNodeCtx } as NodeConn,
     hpcPrefs: null as HpcPrefs | null,
     seq: 0,
     pendingNodeRequests: new Map<string, PendingNodeRequest>(),
     nodeEventSubscribers: new Set<NodeEventSubscriber>(),
     agentsSyncMemo: new Map<string, { hash: string; source: string; ts: number }>(),
     resources: {
-      computeConnected: false,
-      queueDepth: 0,
+      computeConnected: true,
       storageUsedPercent: 0,
       cpuPercent: 0,
       ramPercent: 0,
@@ -380,6 +404,34 @@ function createHubState(opts: HubStartOptions) {
 }
 
 type HubState = ReturnType<typeof createHubState>;
+
+function createLocalNodeContext(localRuntime: LocalRuntimeBridge): ConnectionContext & { role: "node" } {
+  return {
+    role: "node",
+    connectionId: "local-runtime",
+    deviceId: "local-runtime",
+    deviceName: "Epoch Local Runtime",
+    platform: process.platform,
+    clientName: "epoch",
+    clientVersion: "0.1.0",
+    caps: ["fs", "artifacts", "logs", "shell"],
+    commands: localRuntime.listNodeCommands(),
+    permissions: {
+      workspaceRoot: localRuntime.workspaceRoot(),
+    },
+  };
+}
+
+function createNoopSocket(): WebSocket {
+  return {
+    send() {},
+    close() {},
+  } as unknown as WebSocket;
+}
+
+function codexRepositoryForState(state: HubState): CodexRepository {
+  return state.repository;
+}
 
 function requireHttpAuth(state: HubState, req: { headers: Record<string, string | string[] | undefined> }) {
   const header = req.headers["authorization"];
@@ -392,6 +444,7 @@ function requireHttpAuth(state: HubState, req: { headers: Record<string, string 
 function registerHttpRoutes(fastify: FastifyInstance, state: HubState) {
   fastify.get("/status/resources", async (req, reply) => {
     if (!requireHttpAuth(state, req)) return reply.code(401).send({ error: "unauthorized" });
+    state.resources = await state.localRuntime.resourceSnapshot().catch(() => state.resources);
     return reply.send(state.resources);
   });
 
@@ -594,12 +647,10 @@ function registerHttpRoutes(fastify: FastifyInstance, state: HubState) {
       return reply.send(raw);
     }
 
-    const node = state.node;
-    const workspaceRoot = node?.ctx.permissions?.workspaceRoot as string | undefined;
-    if (node && workspaceRoot) {
-      const abs = path.join(workspaceRoot, "projects", projectId, cleanPath);
-      const res = await callNode(state, "fs.readRange", {
-        path: abs,
+    if (state.localRuntime) {
+      const res = await callNode(state, "runtime.fs.read", {
+        projectId,
+        path: cleanPath,
         offset: 0,
         length: 1024 * 1024,
         encoding: "utf8",
@@ -661,18 +712,16 @@ function registerHttpRoutes(fastify: FastifyInstance, state: HubState) {
     }
 
     const MAX_BYTES = 10 * 1024 * 1024;
-    const node = state.node;
-    const workspaceRoot = node?.ctx.permissions?.workspaceRoot as string | undefined;
-    if (node && workspaceRoot) {
-      const abs = path.join(workspaceRoot, "projects", projectId, cleanPath);
+    if (state.localRuntime) {
       const chunks: Buffer[] = [];
       let offset = 0;
       let total = 0;
       const CHUNK = 256 * 1024;
 
       while (true) {
-        const res = await callNode(state, "fs.readRange", {
-          path: abs,
+        const res = await callNode(state, "runtime.fs.read", {
+          projectId,
+          path: cleanPath,
           offset,
           length: CHUNK,
           encoding: "base64",
@@ -843,7 +892,7 @@ async function handleWsConnection(ws: WebSocket, state: HubState) {
           roleAccepted: role,
           scopesAccepted: role === "operator" ? (ctx as any).scopes : undefined,
           commandsAccepted: role === "node" ? (ctx as any).commands : undefined,
-          server: { name: "@epoch/hub", version: "0.1.0" },
+          server: { name: "epoch", version: "0.1.0" },
         });
         return;
       }
@@ -887,14 +936,8 @@ async function handleWsConnection(ws: WebSocket, state: HubState) {
       }
     } else {
       if (state.node?.ws === ws) {
-        state.node = null;
-        state.resources.computeConnected = false;
-        state.resources.queueDepth = 0;
-        state.resources.storageUsedPercent = 0;
-        state.resources.storageTotalBytes = undefined;
-        state.resources.storageUsedBytes = undefined;
-        state.resources.storageAvailableBytes = undefined;
-        state.resources.hpc = undefined;
+        state.node = { ws: createNoopSocket(), ctx: createLocalNodeContext(state.localRuntime) } as NodeConn;
+        state.resources.computeConnected = true;
       }
     }
   });
@@ -918,7 +961,8 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
       }
       case "projects.create": {
         const name = String(params.name ?? "").trim() || "Untitled Project";
-        const project = await createProject(state, name);
+        const workspacePath = normalizeOptionalString(params.workspacePath);
+        const project = await createProject(state, name, workspacePath ?? undefined);
         sendResOk(ws, id, { project });
         broadcastEvent(state, "projects.updated", { project, change: "created" });
         return;
@@ -1162,6 +1206,7 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
             const engineResult = await engine.modelList({});
             const data = (engineResult as any).data as Array<{
               id: string;
+              provider?: string;
               displayName?: string;
               supportedReasoningEfforts?: Array<{ reasoningEffort: string; description?: string }>;
               defaultReasoningEffort?: string;
@@ -1176,6 +1221,7 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
                   : [];
                 return {
                   id: m.id,
+                  provider: typeof m.provider === "string" && m.provider.trim().length > 0 ? m.provider.trim() : provider,
                   name: m.displayName ?? m.id,
                   reasoning: hasReasoning,
                   thinkingLevels,
@@ -1218,8 +1264,107 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
         sendResOk(ws, id, {
           provider,
           defaultModelId,
-          models: models.map((m) => ({ ...m, thinkingLevels: m.reasoning ? ["minimal", "low", "medium", "high", "xhigh"] : [] })),
+          models: models.map((m) => ({
+            ...m,
+            provider,
+            thinkingLevels: m.reasoning ? ["minimal", "low", "medium", "high", "xhigh"] : [],
+          })),
           thinkingLevels: ["minimal", "low", "medium", "high", "xhigh"],
+        });
+        return;
+      }
+      case "push.device.register": {
+        const installationId = normalizeOptionalString(params.installationId);
+        const apnsToken = normalizeOptionalString(params.apnsToken);
+        const environment = normalizeOptionalString(params.environment);
+        const deviceName = normalizeOptionalString(params.deviceName);
+        const platform = normalizeOptionalString(params.platform);
+        if (!installationId || !apnsToken || !environment || !deviceName || !platform) {
+          sendResError(ws, id, "BAD_REQUEST", "Missing installationId/apnsToken/environment/deviceName/platform");
+          return;
+        }
+        await codexRepositoryForState(state).upsertPushDevice({
+          serverId: state.config.serverId,
+          installationId,
+          apnsToken,
+          environment,
+          deviceName,
+          platform,
+          seenAt: new Date().toISOString(),
+        });
+        void state.pushRelayClient.registerDevice({
+          serverId: state.config.serverId,
+          installationId,
+          apnsToken,
+          environment,
+          deviceName,
+          platform,
+        }).catch(() => {
+          // best effort relay fanout registration
+        });
+        sendResOk(ws, id, {
+          ok: true,
+          serverId: state.config.serverId,
+        });
+        return;
+      }
+      case "push.device.unregister": {
+        const installationId = normalizeOptionalString(params.installationId);
+        if (!installationId) {
+          sendResError(ws, id, "BAD_REQUEST", "Missing installationId");
+          return;
+        }
+        await codexRepositoryForState(state).deletePushDevice({
+          serverId: state.config.serverId,
+          installationId,
+        });
+        void state.pushRelayClient.unregisterDevice({
+          serverId: state.config.serverId,
+          installationId,
+        }).catch(() => {
+          // best effort relay fanout unregister
+        });
+        sendResOk(ws, id, {
+          ok: true,
+          serverId: state.config.serverId,
+        });
+        return;
+      }
+      case "push.device.heartbeat": {
+        const installationId = normalizeOptionalString(params.installationId);
+        if (!installationId) {
+          sendResError(ws, id, "BAD_REQUEST", "Missing installationId");
+          return;
+        }
+        const repository = codexRepositoryForState(state);
+        const registered = (await repository.listPushDevices({ serverId: state.config.serverId }))
+          .find((device) => device.installationId == installationId);
+        if (!registered) {
+          sendResError(ws, id, "NOT_FOUND", "Push device not registered");
+          return;
+        }
+        await repository.upsertPushDevice({
+          serverId: state.config.serverId,
+          installationId,
+          apnsToken: normalizeOptionalString(params.apnsToken) ?? registered.apnsToken,
+          environment: normalizeOptionalString(params.environment) ?? registered.environment,
+          deviceName: normalizeOptionalString(params.deviceName) ?? registered.deviceName,
+          platform: normalizeOptionalString(params.platform) ?? registered.platform,
+          seenAt: new Date().toISOString(),
+        });
+        void state.pushRelayClient.heartbeatDevice({
+          serverId: state.config.serverId,
+          installationId,
+          apnsToken: normalizeOptionalString(params.apnsToken),
+          environment: normalizeOptionalString(params.environment),
+          deviceName: normalizeOptionalString(params.deviceName),
+          platform: normalizeOptionalString(params.platform),
+        }).catch(() => {
+          // best effort relay heartbeat
+        });
+        sendResOk(ws, id, {
+          ok: true,
+          serverId: state.config.serverId,
         });
         return;
       }
@@ -1348,6 +1493,46 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
           return;
         }
         sendResOk(ws, id, { ok: true });
+        return;
+      }
+      case "workspace.directories.list": {
+        const inputPath = normalizeOptionalString(params.path) ?? process.cwd();
+        const includeHidden = Boolean(params.includeHidden ?? false);
+        const limit = clampWorkspaceListLimit(params.limit);
+        try {
+          const result = await listWorkspaceDirectories(inputPath, {
+            includeHidden,
+            limit,
+          });
+          sendResOk(ws, id, {
+            path: result.path,
+            entries: result.entries.map((entry) => ({
+              name: entry.name,
+              path: entry.path,
+            })),
+            truncated: result.truncated,
+          });
+        } catch (error) {
+          sendResError(ws, id, "BAD_REQUEST", error instanceof Error ? error.message : "Unable to list directories");
+        }
+        return;
+      }
+      case "workspace.directories.resolve": {
+        const inputPath = normalizeOptionalString(params.path);
+        if (!inputPath) {
+          sendResError(ws, id, "BAD_REQUEST", "Missing path");
+          return;
+        }
+        try {
+          const resolved = await resolveWorkspaceDirectory(inputPath);
+          sendResOk(ws, id, {
+            path: resolved.path,
+            name: resolved.name,
+            parentPath: resolved.parentPath,
+          });
+        } catch (error) {
+          sendResError(ws, id, "BAD_REQUEST", error instanceof Error ? error.message : "Unable to resolve directory");
+        }
         return;
       }
       case "workspace.list": {
@@ -1541,15 +1726,15 @@ async function listProjects(state: HubState) {
     codexApprovalPolicy: normalizeOptionalString(r.codex_approval_policy),
     codexSandbox: safeJsonObject(r.codex_sandbox_json),
     hpcWorkspacePath: normalizeOptionalString(r.hpc_workspace_path),
-    hpcWorkspaceState: normalizeOptionalString(r.hpc_workspace_state) ?? "queued",
+    hpcWorkspaceState: normalizeOptionalString(r.hpc_workspace_state) ?? "ready",
   }));
 }
 
-async function createProject(state: HubState, name: string) {
+async function createProject(state: HubState, name: string, requestedWorkspacePath?: string) {
   const id = uuidv4();
   const now = new Date().toISOString();
   const backendEngine = normalizeCodexEngine(process.env.EPOCH_CODEX_DEFAULT_ENGINE) ?? "codex-app-server";
-  const workspacePath = resolveProjectWorkspacePath(state, id);
+  const workspacePath = resolveProjectWorkspacePath(state, id, requestedWorkspacePath);
   await state.pool.query(
     `INSERT INTO projects (
        id, name, created_at, updated_at,
@@ -1557,14 +1742,11 @@ async function createProject(state: HubState, name: string) {
        codex_approval_policy, codex_sandbox_json,
        hpc_workspace_path, hpc_workspace_state
      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-    [id, name, now, now, backendEngine, null, null, "on-request", null, workspacePath, "queued"]
+    [id, name, now, now, backendEngine, null, null, "on-request", null, workspacePath, "ready"]
   );
   await ensureProjectDirs(state, id);
   await ensureBootstrapDefaults(state, id);
-  await queueWorkspaceProvisioning(state, { projectId: id, workspacePath, requestedBy: "projects.create" });
-  void drainWorkspaceProvisioningQueue(state).catch(() => {
-    // best effort
-  });
+  await state.localRuntime.callNode("workspace.project.ensure", { projectId: id, workspacePath });
   return {
     id,
     name,
@@ -1576,7 +1758,7 @@ async function createProject(state: HubState, name: string) {
     codexApprovalPolicy: "on-request",
     codexSandbox: null,
     hpcWorkspacePath: workspacePath,
-    hpcWorkspaceState: "queued",
+    hpcWorkspaceState: "ready",
   };
 }
 
@@ -1637,7 +1819,7 @@ async function updateProject(
     codexApprovalPolicy: normalizeOptionalString(r.codex_approval_policy),
     codexSandbox: safeJsonObject(r.codex_sandbox_json),
     hpcWorkspacePath: normalizeOptionalString(r.hpc_workspace_path),
-    hpcWorkspaceState: normalizeOptionalString(r.hpc_workspace_state) ?? "queued",
+    hpcWorkspaceState: normalizeOptionalString(r.hpc_workspace_state) ?? "ready",
   };
 }
 
@@ -1667,7 +1849,7 @@ async function deleteProject(state: HubState, projectId: string) {
     codexApprovalPolicy: normalizeOptionalString(row.codex_approval_policy),
     codexSandbox: safeJsonObject(row.codex_sandbox_json),
     hpcWorkspacePath: normalizeOptionalString(row.hpc_workspace_path),
-    hpcWorkspaceState: normalizeOptionalString(row.hpc_workspace_state) ?? "queued",
+    hpcWorkspaceState: normalizeOptionalString(row.hpc_workspace_state) ?? "ready",
   };
 }
 
@@ -3599,13 +3781,12 @@ function safeJsonString(raw: unknown): string | null {
   return null;
 }
 
-function resolveProjectWorkspacePath(state: HubState, projectId: string): string {
-  const nodeWorkspaceRoot = state.node?.ctx.permissions?.workspaceRoot;
-  const root = normalizeOptionalString(typeof nodeWorkspaceRoot === "string" ? nodeWorkspaceRoot : process.env.EPOCH_HPC_WORKSPACE_ROOT);
-  if (root) {
-    return path.join(root, "projects", projectId);
+function resolveProjectWorkspacePath(state: HubState, projectId: string, requestedWorkspacePath?: string): string {
+  const requested = normalizeOptionalString(requestedWorkspacePath);
+  if (requested) {
+    return path.resolve(requested);
   }
-  return path.join("projects", projectId);
+  return path.join(resolveConfiguredWorkspaceRoot({ stateDir: state.stateDir, config: state.config, env: process.env }), "projects", projectId);
 }
 
 async function queueWorkspaceProvisioning(
@@ -3752,26 +3933,12 @@ function isAgentsPath(pathValue: string): boolean {
   return normalized === "AGENTS.md";
 }
 
-function expectedWorkspacePathForProject(state: HubState, projectId: string): string | null {
-  const workspaceRoot = normalizeOptionalString(state.node?.ctx.permissions?.workspaceRoot);
-  if (!workspaceRoot) return null;
-  return path.join(workspaceRoot, "projects", projectId);
-}
-
 async function assertWorkspaceRuntimeReady(state: HubState, projectId: string) {
-  if (!state.node) {
-    throw new Error("NODE_OFFLINE: HPC bridge is not connected");
-  }
-  const commands = new Set((state.node.ctx.commands ?? []).map((entry) => String(entry)));
+  const commands = new Set(state.localRuntime.listNodeCommands());
   const required = ["runtime.fs.list", "runtime.fs.read", "runtime.fs.stat"];
   const missing = required.filter((method) => !commands.has(method));
   if (missing.length > 0) {
-    throw new Error(`CAPABILITY_MISSING: HPC bridge missing runtime methods (${missing.join(", ")})`);
-  }
-
-  const expectedPath = expectedWorkspacePathForProject(state, projectId);
-  if (!expectedPath) {
-    throw new Error("CAPABILITY_MISSING: node workspaceRoot is unavailable");
+    throw new Error(`CAPABILITY_MISSING: local runtime missing methods (${missing.join(", ")})`);
   }
   const row = await state.pool.query<{ hpc_workspace_path: string | null }>(
     "SELECT hpc_workspace_path FROM projects WHERE id=$1 LIMIT 1",
@@ -3784,19 +3951,12 @@ async function assertWorkspaceRuntimeReady(state: HubState, projectId: string) {
   if (!persistedPath) {
     throw new Error("BAD_REQUEST: project workspace is not provisioned");
   }
-  const resolvedExpected = path.resolve(expectedPath);
-  const resolvedPersisted = path.resolve(persistedPath);
-  if (resolvedExpected !== resolvedPersisted) {
-    throw new Error(
-      `BAD_REQUEST: project workspace path mismatch (expected ${resolvedExpected}, got ${resolvedPersisted})`
-    );
-  }
 }
 
 function classifyGatewayError(err: unknown): { code: "NODE_OFFLINE" | "BAD_REQUEST" | "NOT_FOUND" | "INTERNAL"; message: string } {
   const message = String(err instanceof Error ? err.message : err ?? "internal error");
   if (message === "NODE_OFFLINE" || message.startsWith("NODE_OFFLINE:")) {
-    return { code: "NODE_OFFLINE", message: message === "NODE_OFFLINE" ? "HPC bridge is not connected" : message };
+    return { code: "NODE_OFFLINE", message: message === "NODE_OFFLINE" ? "Epoch runtime is unavailable" : message };
   }
   if (message.startsWith("NOT_FOUND:")) return { code: "NOT_FOUND", message: message.slice("NOT_FOUND:".length).trim() || message };
   if (message.startsWith("CAPABILITY_MISSING:")) return { code: "BAD_REQUEST", message };
@@ -3983,6 +4143,10 @@ function markAgentsSyncMemo(state: HubState, projectId: string, hash: string, so
 }
 
 async function callNode(state: HubState, method: NodeMethod, params: any) {
+  if (state.localRuntime) {
+    const localParams = await attachWorkspacePathForLocalRuntime(state, params);
+    return await state.localRuntime.callNode(method, localParams);
+  }
   const node = state.node;
   if (!node) throw new Error("NODE_OFFLINE");
   if (!isNodeMethod(method)) {
@@ -3999,6 +4163,26 @@ async function callNode(state: HubState, method: NodeMethod, params: any) {
     }, 60_000);
     state.pendingNodeRequests.set(id, { resolve, reject, timeout });
   });
+}
+
+async function attachWorkspacePathForLocalRuntime(state: HubState, params: Record<string, unknown> | undefined) {
+  const normalized = params && typeof params === "object" && !Array.isArray(params)
+    ? { ...params }
+    : {};
+  if (typeof normalized.workspacePath === "string" && normalized.workspacePath.trim()) {
+    return normalized;
+  }
+  const projectId = normalizeId(normalized.projectId);
+  if (!projectId) return normalized;
+  const rows = await state.pool.query<{ hpc_workspace_path: string | null }>(
+    "SELECT hpc_workspace_path FROM projects WHERE id=$1 LIMIT 1",
+    [projectId]
+  );
+  const workspacePath = normalizeOptionalString(rows.rows[0]?.hpc_workspace_path);
+  if (workspacePath) {
+    normalized.workspacePath = workspacePath;
+  }
+  return normalized;
 }
 
 function preview(text: string) {
@@ -4052,9 +4236,6 @@ function normalizeIndexStatus(value: unknown): "processing" | "indexed" | "faile
 
 export function mergeResourceSnapshotFromHeartbeat(previous: ResourceSnapshot, payload: any): ResourceSnapshot {
   const next: ResourceSnapshot = { ...previous, computeConnected: true };
-  if (typeof payload?.queueDepth === "number" && Number.isFinite(payload.queueDepth)) {
-    next.queueDepth = Math.max(0, Math.floor(payload.queueDepth));
-  }
   if (typeof payload?.storageUsedPercent === "number" && Number.isFinite(payload.storageUsedPercent)) {
     next.storageUsedPercent = payload.storageUsedPercent;
   }
@@ -4075,9 +4256,6 @@ export function mergeResourceSnapshotFromHeartbeat(previous: ResourceSnapshot, p
   }
   if (typeof payload?.gpuPercent === "number" && Number.isFinite(payload.gpuPercent)) {
     next.gpuPercent = payload.gpuPercent;
-  }
-  if (Object.prototype.hasOwnProperty.call(payload ?? {}, "hpc")) {
-    next.hpc = normalizeHpcStatus(payload?.hpc);
   }
   return next;
 }

@@ -7,6 +7,7 @@ import type { CodexEngineRegistry } from "../engine_registry.js";
 import type { CodexRepository } from "../repository.js";
 import { nowUnixSeconds, type Thread, type ThreadItem, type Turn, type UserInput } from "../types.js";
 import { handleThreadRollback, maybePersistThreadFromResponse } from "./thread.js";
+import { loadOrCreateHubConfig, resolveConfiguredWorkspaceRoot } from "../../config.js";
 import { generateSessionTitle } from "../../indexing/summarize.js";
 import { getEnvApiKey } from "../../model.js";
 import { loadOpenAIApiKeyFromStateDir } from "../../openai_settings.js";
@@ -29,7 +30,7 @@ type EnsureMappedThreadResult = {
 type SessionPatch = {
   title?: string;
   lifecycle?: "active" | "archived";
-  backendEngine?: "codex-app-server";
+  backendEngine?: "codex-app-server" | "epoch-hpc";
   codexModel?: string | null;
   codexModelProvider?: string | null;
   codexApprovalPolicy?: string | null;
@@ -63,15 +64,16 @@ export async function handleEpochProjectCreate(
 ): Promise<Record<string, unknown>> {
   const params = rawParams ?? {};
   const name = normalizeNonEmptyString(params.name) ?? "Untitled Project";
-  const backendEngine = normalizeBackendEngine(params.backendEngine) ?? "codex-app-server";
+  const backendEngine = normalizeBackendEngine(params.backendEngine) ?? "epoch-hpc";
   const codexModelProvider = normalizeNonEmptyString(params.codexModelProvider);
   const codexModel = normalizeNonEmptyString(params.codexModel);
   const codexApprovalPolicy = normalizeNonEmptyString(params.codexApprovalPolicy);
   const codexSandbox = normalizeSandboxPolicy(params.codexSandbox);
+  const requestedWorkspacePath = normalizeNonEmptyString(params.workspacePath);
 
   const projectId = uuidv4();
   const nowIso = new Date().toISOString();
-  const workspacePath = await resolveProjectWorkspacePath(ctx.repository, projectId);
+  const workspacePath = await resolveProjectWorkspacePath(ctx.repository, projectId, requestedWorkspacePath);
 
   await ctx.repository.query(
     `INSERT INTO projects (
@@ -90,17 +92,13 @@ export async function handleEpochProjectCreate(
       codexApprovalPolicy,
       codexSandbox ? JSON.stringify(codexSandbox) : null,
       workspacePath,
-      "queued",
+      "ready",
     ]
   );
 
   await ctx.repository.ensureProjectStorage(projectId);
   await ensureBootstrapDefaults(ctx.repository.stateDirectory(), projectId);
-  await enqueueWorkspaceProvisioning(ctx.repository, {
-    projectId,
-    workspacePath,
-    requestedBy: "epoch/project/create",
-  });
+  await ensureProjectWorkspaceReady(workspacePath);
 
   const rows = await ctx.repository.query<any>(
     `SELECT id, name, created_at, updated_at, backend_engine, codex_model_provider, codex_model_id,
@@ -155,6 +153,14 @@ export async function handleEpochProjectUpdate(
 
   const updates: string[] = [];
   const values: unknown[] = [];
+  if (Object.prototype.hasOwnProperty.call(params, "backendEngine")) {
+    const backendEngine = normalizeBackendEngine((params as Record<string, unknown>).backendEngine);
+    if (!backendEngine) {
+      throw new Error("Invalid backendEngine");
+    }
+    updates.push(`backend_engine=$${values.length + 1}`);
+    values.push(backendEngine);
+  }
   if (Object.prototype.hasOwnProperty.call(params, "codexApprovalPolicy")) {
     updates.push(`codex_approval_policy=$${values.length + 1}`);
     values.push(normalizeNonEmptyString(params.codexApprovalPolicy));
@@ -288,7 +294,8 @@ export async function handleEpochSessionCreate(
   const nextIndex = Number(countRows[0]?.count ?? 0) + 1;
 
   const title = normalizeNonEmptyString(params.title) ?? `Session ${nextIndex}`;
-  const backendEngine = normalizeBackendEngine(params.backendEngine) ?? normalizeBackendEngine(project.backend_engine) ?? "codex-app-server";
+  const backendEngine =
+    normalizeBackendEngine(params.backendEngine) ?? normalizeBackendEngine(project.backend_engine) ?? "epoch-hpc";
   const codexModelProvider = normalizeNonEmptyString(params.codexModelProvider) ?? normalizeNonEmptyString(project.codex_model_provider);
   const codexModel = normalizeNonEmptyString(params.codexModel) ?? normalizeNonEmptyString(project.codex_model_id);
   const codexApprovalPolicy =
@@ -296,7 +303,7 @@ export async function handleEpochSessionCreate(
   const codexSandbox = Object.prototype.hasOwnProperty.call(params, "codexSandbox")
     ? normalizeSandboxPolicy(params.codexSandbox)
     : safeJsonParseObject(project.codex_sandbox_json) ?? normalizeSandboxPolicy(null);
-  const hpcWorkspaceState = normalizeNonEmptyString(project.hpc_workspace_state) ?? "queued";
+  const hpcWorkspaceState = normalizeNonEmptyString(project.hpc_workspace_state) ?? "ready";
 
   const sessionId = uuidv4();
   const nowIso = new Date().toISOString();
@@ -443,7 +450,7 @@ export async function handleEpochSessionUpdate(
   }
 
   let sessionRow = sessionRows[0];
-  const effectiveBackend = normalizeBackendEngine(sessionRow.backend_engine) ?? "codex-app-server";
+  const effectiveBackend = normalizeBackendEngine(sessionRow.backend_engine) ?? "epoch-hpc";
   const currentThreadId = normalizeNonEmptyString(sessionRow.codex_thread_id);
   const modelProvider = normalizeNonEmptyString(sessionRow.codex_model_provider) ?? DEFAULT_MODEL_PROVIDER;
   const modelId = normalizeNonEmptyString(sessionRow.codex_model);
@@ -617,7 +624,7 @@ export async function handleEpochSessionRead(
 
   let sessionRow = rows[0];
   let threadId = normalizeNonEmptyString(sessionRow.codex_thread_id);
-  const backendEngine = normalizeBackendEngine(sessionRow.backend_engine) ?? "codex-app-server";
+  const backendEngine = normalizeBackendEngine(sessionRow.backend_engine) ?? "epoch-hpc";
   const modelProvider = normalizeNonEmptyString(sessionRow.codex_model_provider) ?? DEFAULT_MODEL_PROVIDER;
   const modelId = normalizeNonEmptyString(sessionRow.codex_model);
   const approvalPolicy = normalizeNonEmptyString(sessionRow.codex_approval_policy) ?? DEFAULT_APPROVAL_POLICY;
@@ -794,7 +801,7 @@ export async function handleEpochSessionRegenerate(
   const sessionRow = rows[0];
 
   let threadId = normalizeNonEmptyString(sessionRow.codex_thread_id);
-  const backendEngine = normalizeBackendEngine(sessionRow.backend_engine) ?? "codex-app-server";
+  const backendEngine = normalizeBackendEngine(sessionRow.backend_engine) ?? "epoch-hpc";
   const modelProvider = normalizeNonEmptyString(sessionRow.codex_model_provider) ?? DEFAULT_MODEL_PROVIDER;
   const modelId = normalizeNonEmptyString(sessionRow.codex_model);
   const approvalPolicy = normalizeNonEmptyString(sessionRow.codex_approval_policy) ?? DEFAULT_APPROVAL_POLICY;
@@ -1057,13 +1064,13 @@ function mapProjectRow(row: any) {
     name: String(row.name ?? "Untitled Project"),
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
-    backendEngine: normalizeBackendEngine(row.backend_engine) ?? "codex-app-server",
+    backendEngine: normalizeBackendEngine(row.backend_engine) ?? "epoch-hpc",
     codexModelProvider: normalizeNonEmptyString(row.codex_model_provider),
     codexModel: normalizeNonEmptyString(row.codex_model_id),
     codexApprovalPolicy: normalizeNonEmptyString(row.codex_approval_policy),
     codexSandbox: safeJsonParseObject(row.codex_sandbox_json),
     hpcWorkspacePath: normalizeNonEmptyString(row.hpc_workspace_path),
-    hpcWorkspaceState: normalizeNonEmptyString(row.hpc_workspace_state) ?? "queued",
+    hpcWorkspaceState: normalizeNonEmptyString(row.hpc_workspace_state) ?? "ready",
   };
 }
 
@@ -1076,7 +1083,7 @@ function mapSessionRow(row: any, pendingSummary?: { count: number; kind: string 
     lifecycle: String(row.lifecycle ?? "active"),
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
-    backendEngine: normalizeBackendEngine(row.backend_engine) ?? "codex-app-server",
+    backendEngine: normalizeBackendEngine(row.backend_engine) ?? "epoch-hpc",
     codexThreadId: normalizeNonEmptyString(row.codex_thread_id),
     codexModel: normalizeNonEmptyString(row.codex_model),
     codexModelProvider: normalizeNonEmptyString(row.codex_model_provider),
@@ -1175,7 +1182,7 @@ async function createMappedThreadForSession(
   args: {
     sessionId: string;
     projectId: string;
-    backendEngine: "codex-app-server";
+    backendEngine: "codex-app-server" | "epoch-hpc";
     modelProvider: string;
     modelId: string | null;
     approvalPolicy: string;
@@ -1192,6 +1199,36 @@ async function createMappedThreadForSession(
     reasoningEffort: null,
     syncState: "ready",
   };
+
+  if (args.backendEngine === "epoch-hpc") {
+    const threadId = `thr_${uuidv4()}`;
+    const createdAt = nowUnixSeconds();
+    await repository.createThread({
+      id: threadId,
+      projectId: args.projectId,
+      cwd,
+      modelProvider: args.modelProvider,
+      modelId: args.modelId,
+      preview: "",
+      statusJson: JSON.stringify(status),
+      engine: "epoch-hpc",
+      createdAt,
+    });
+    await repository.assignThreadToSession({ threadId, sessionId: args.sessionId });
+    return {
+      id: threadId,
+      preview: "",
+      modelProvider: args.modelProvider,
+      createdAt,
+      updatedAt: createdAt,
+      path: null,
+      cwd,
+      cliVersion: "epoch/0.1.0",
+      source: "appServer",
+      gitInfo: null,
+      turns: [],
+    };
+  }
 
   const engine = await engines.getEngine("codex-app-server");
   if (!engine.threadStart) {
@@ -1258,7 +1295,7 @@ async function createMappedThreadForSession(
     updatedAt: createdAt,
     path: null,
     cwd: resolvedCwd,
-    cliVersion: "@epoch/hub/0.1.0",
+    cliVersion: "epoch/0.1.0",
     source: "appServer",
     gitInfo: null,
     turns: [],
@@ -1270,7 +1307,7 @@ async function ensureMappedThreadForSession(
   args: {
     projectId: string;
     sessionId: string;
-    backendEngine: "codex-app-server";
+    backendEngine: "codex-app-server" | "epoch-hpc";
     currentThreadId: string | null;
     modelProvider: string;
     modelId: string | null;
@@ -1288,6 +1325,46 @@ async function ensureMappedThreadForSession(
     reasoningEffort: null,
     syncState: "ready",
   };
+
+  if (args.backendEngine === "epoch-hpc") {
+    if (args.currentThreadId) {
+      const existing = await ctx.repository.getThreadRecord(args.currentThreadId);
+      if (existing?.engine === "epoch-hpc") {
+        await ctx.repository.updateThread({
+          id: existing.id,
+          modelProvider: args.modelProvider,
+          modelId: args.modelId,
+          cwd: settings.cwd,
+          statusJson: applyThreadSyncState(JSON.stringify(settings), "ready"),
+          engine: "epoch-hpc",
+          updatedAt: nowUnixSeconds(),
+        });
+        const thread = await ctx.repository.readThread(existing.id, true);
+        if (thread) {
+          return {
+            thread,
+            syncState: "ready",
+            rehydratedFromLegacy: false,
+          };
+        }
+      }
+    }
+
+    const created = await createMappedThreadForSession(ctx.repository, ctx.engines, {
+      sessionId: args.sessionId,
+      projectId: args.projectId,
+      backendEngine: "epoch-hpc",
+      modelProvider: args.modelProvider,
+      modelId: args.modelId,
+      approvalPolicy: args.approvalPolicy,
+      sandbox: args.sandbox,
+    });
+    return {
+      thread: created,
+      syncState: "ready",
+      rehydratedFromLegacy: false,
+    };
+  }
 
   if (args.currentThreadId) {
     const existing = await ctx.repository.getThreadRecord(args.currentThreadId);
@@ -1318,7 +1395,7 @@ async function ensureMappedThreadForSession(
   const created = await createMappedThreadForSession(ctx.repository, ctx.engines, {
     sessionId: args.sessionId,
     projectId: args.projectId,
-    backendEngine: "codex-app-server",
+    backendEngine: args.backendEngine,
     modelProvider: args.modelProvider,
     modelId: args.modelId,
     approvalPolicy: args.approvalPolicy,
@@ -1764,67 +1841,51 @@ async function ensureSessionTranscript(stateDir: string, projectId: string, sess
   await appendFile(transcriptPath, "", "utf8");
 }
 
-async function enqueueWorkspaceProvisioning(
+async function resolveProjectWorkspacePath(
   repository: CodexRepository,
-  args: { projectId: string; workspacePath: string; requestedBy: string }
-) {
-  const nowIso = new Date().toISOString();
-  await repository.query(
-    `INSERT INTO workspace_provisioning_queue (
-       project_id, workspace_path, status, attempts, last_error, requested_by, created_at, updated_at
-     ) VALUES ($1,$2,'queued',0,NULL,$3,$4,$4)`,
-    [args.projectId, args.workspacePath, args.requestedBy, nowIso]
-  );
-}
-
-async function resolveProjectWorkspacePath(repository: CodexRepository, projectId: string): Promise<string> {
-  const root = await resolveWorkspaceRoot(repository);
-  if (!root) {
-    throw new Error("CAPABILITY_MISSING: node workspaceRoot is unavailable");
+  projectId: string,
+  requestedWorkspacePath?: string | null
+): Promise<string> {
+  const requested = normalizeNonEmptyString(requestedWorkspacePath);
+  if (requested) {
+    return path.resolve(requested);
   }
+
+  try {
+    const rows = await repository.query<{ hpc_workspace_path: string | null }>(
+      `SELECT hpc_workspace_path FROM projects WHERE id=$1 LIMIT 1`,
+      [projectId]
+    );
+    const persisted = normalizeNonEmptyString(rows[0]?.hpc_workspace_path);
+    if (persisted) return persisted;
+  } catch {
+    // ignore lookup failures and fall back to configured root
+  }
+
+  const root = await resolveWorkspaceRoot(repository);
   return path.join(root, "projects", projectId);
 }
 
-async function resolveWorkspaceRoot(repository: CodexRepository): Promise<string | null> {
-  const envRoot = normalizeNonEmptyString(process.env.EPOCH_HPC_WORKSPACE_ROOT);
-  if (envRoot) return envRoot;
-
-  let rows: any[] = [];
-  try {
-    rows = await repository.query<any>(
-      `SELECT permissions
-       FROM nodes
-       ORDER BY last_seen_at DESC, created_at DESC
-       LIMIT 20`
-    );
-  } catch {
-    return null;
-  }
-
-  for (const row of rows) {
-    const parsed = parseJsonObject(row?.permissions);
-    const workspaceRoot = normalizeNonEmptyString(parsed?.workspaceRoot);
-    if (workspaceRoot) return workspaceRoot;
-  }
-  return null;
+async function resolveWorkspaceRoot(repository: CodexRepository): Promise<string> {
+  const config = await loadOrCreateHubConfig({ stateDir: repository.stateDirectory(), allowCreate: false }).catch(() => null);
+  return resolveConfiguredWorkspaceRoot({
+    stateDir: repository.stateDirectory(),
+    config,
+    env: process.env,
+  });
 }
 
-function parseJsonObject(raw: unknown): Record<string, unknown> | null {
-  if (!raw) return null;
-  if (typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
-  if (typeof raw !== "string") return null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    return parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
+async function ensureProjectWorkspaceReady(workspacePath: string) {
+  await mkdir(workspacePath, { recursive: true });
+  await mkdir(path.join(workspacePath, "artifacts"), { recursive: true });
+  await mkdir(path.join(workspacePath, "runs"), { recursive: true });
+  await mkdir(path.join(workspacePath, "logs"), { recursive: true });
 }
 
-function normalizeBackendEngine(raw: unknown): "codex-app-server" | null {
+function normalizeBackendEngine(raw: unknown): "codex-app-server" | "epoch-hpc" | null {
   if (typeof raw !== "string") return null;
   const value = raw.trim().toLowerCase();
+  if (value === "hpc" || value === "epoch-hpc") return "epoch-hpc";
   if (value === "pi" || value === "pi-adapter") return "codex-app-server";
   if (value === "codex" || value === "codex-app-server") return "codex-app-server";
   return null;

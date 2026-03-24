@@ -2,29 +2,39 @@
 
 Epoch is an AI programming workbench for computational science.
 
-This repository is the open-source backend/tooling part of Epoch:
-- `packages/hub` (Hub server)
-- `packages/hpc-bridge` (HPC Bridge)
-- `packages/protocol` (shared protocol schema)
+This repository contains the open-source server/tooling:
+- `packages/hub`: the direct-connect Epoch service that runs on each HPC host
+- `packages/protocol`: the shared protocol schema
 
-The iOS app source code is private and maintained in a separate repository.
+The iOS app source code is private and maintained separately.
 
-## What You Get Here
+## Epoch Is Now One Piece of Software
 
-- Hub service with WebSocket + HTTP APIs
-- Pairing token + QR generation for the iPhone app
-- Optional HPC Bridge that connects outbound to Hub and integrates with Slurm
+Epoch no longer expects a new deployment to be split across separate public `hub` and `bridge` CLIs.
 
-## Prerequisites
+For new setups, think about Epoch like this:
+- you run one `epoch` service on the machine you want to work on
+- EpochApp connects directly to that machine over `ws://` or `wss://`
+- pairing, SQLite state, projects, sessions, runtime tools, file indexing, and optional background push all live in that one service
+- there is no separate public `epoch-hub` or `epoch-bridge` command you need to install for normal direct-connect use
 
+If you have older notes that mention `epoch-hub`, `epoch-bridge`, or a separate bridge deployment, those notes are outdated for the current direct-connect model.
+
+## What You Install
+
+Today this repository is installed from source.
+
+Recommended target machine:
+- an HPC login node
+- a workstation
+- a server the phone can reach over Tailscale, LAN, or a public `wss://` endpoint
+
+Prerequisites:
 - Node.js `>=22`
-- `pnpm@10.30.1` (recommended via `corepack`)
-- Linux/macOS
-- Optional: Slurm environment (for real HPC job execution)
+- `pnpm@10.30.1` via `corepack`
+- Linux or macOS
 
-## Quick Start
-
-### 1. Clone and install
+## Install From Source
 
 ```bash
 git clone https://github.com/poseidonchan/Epoch.git
@@ -36,213 +46,372 @@ pnpm install
 pnpm -w build
 ```
 
-If `pnpm` is not found:
+The CLI binary in this repo is `epoch`, provided by `packages/hub`.
+
+All commands below use `epoch` for readability. If you are running directly from this checkout, the equivalent command is:
 
 ```bash
-# Option A (recommended)
-corepack enable
-corepack prepare pnpm@10.30.1 --activate
-
-# Option B (fallback)
-npx -y pnpm@10.30.1 install
+node packages/hub/dist/cli.js <command>
 ```
 
-### 2. Initialize Hub
+Examples:
 
 ```bash
 node packages/hub/dist/cli.js init
+node packages/hub/dist/cli.js config
+node packages/hub/dist/cli.js start
 ```
 
-This creates:
-- `~/.epoch/config.json` (contains shared token)
+## Quick Start
+
+For a first deployment, the normal flow is:
+
+1. Build the repo on the host machine.
+2. Run `epoch init`.
+3. Run `epoch config`.
+4. Run `epoch start`.
+5. Run `epoch status --qr`.
+6. In EpochApp, scan the QR and connect.
+
+The rest of this README explains each step in detail.
+
+## First-Time Setup
+
+### 1. Initialize Epoch State
+
+Run:
+
+```bash
+epoch init
+```
+
+This creates or prepares:
+- `~/.epoch/config.json`
 - `~/.epoch/epoch.sqlite`
+- a generated `serverId`
+- a generated shared token used for pairing/auth
+- a pairing QR payload
 
-### 3. Start Hub
+What `epoch init` does in practice:
+- creates the local Epoch state directory
+- runs SQLite migrations
+- resolves a pairing WebSocket URL
+- prints a QR that EpochApp can scan
 
-```bash
-EPOCH_HOST=0.0.0.0 EPOCH_PORT=8787 node packages/hub/dist/cli.js start
-```
+If Tailscale is available, Epoch tries to auto-detect the Tailscale hostname and uses that for pairing output. Otherwise it falls back to loopback until you configure a better phone-reachable address.
 
-Check status:
+Important:
+- `epoch init` gets the service ready
+- `epoch config` is where you set the human-facing name, workspace root, pairing URL, and keys
 
-```bash
-node packages/hub/dist/cli.js status
-ss -lntp | rg ':8787'
-```
+### 2. Configure Epoch
 
-## Connect the iPhone App
-
-In iPhone app: `Settings -> Gateway`
-
-- `WS URL`: one of the valid forms below
-- `Shared token`: from `~/.epoch/config.json`
-
-Common URL examples:
-- Same machine/simulator: `ws://127.0.0.1:8787/ws`
-- Tailscale: `ws://100.x.y.z:8787/ws`
-- Public test: `ws://<public-ip>:8787/ws`
-- Production (recommended): `wss://hub.yourdomain.com/ws`
-
-## Network Modes (Recommended Order)
-
-1. Tailscale (best for private setups)
-2. Public `wss://` via reverse proxy (best for production)
-3. Public plain `ws://` on `8787` (temporary/testing only)
-
-## AWS Security Group Setup
-
-### If using plain `ws://<public-ip>:8787/ws`
-
-Inbound:
-- Type: `Custom TCP`
-- Port: `8787`
-- Source: start with your HPC egress IP `/32` (or temporary `0.0.0.0/0` for testing)
-
-### If using `wss://hub.yourdomain.com/ws` (recommended)
-
-Inbound:
-- `HTTP` port `80` from `0.0.0.0/0` (for certificate issuance)
-- `HTTPS` port `443` from `0.0.0.0/0`
-
-Do not keep accidental invalid rules (for example port `0`).
-
-## Reverse Proxy (Caddy, recommended)
-
-1. Point DNS `hub.yourdomain.com` to your EC2 public IP.
-2. Keep Hub running on localhost only:
+Run:
 
 ```bash
-EPOCH_HOST=127.0.0.1 EPOCH_PORT=8787 node packages/hub/dist/cli.js start
+epoch config
 ```
 
-3. Install and configure Caddy:
+This is the main setup wizard for the new all-in-one Epoch deployment.
+
+The wizard asks for:
+
+| Setting | What it means | Recommended value |
+|---|---|---|
+| Display name | The server name shown in EpochApp | A machine label users recognize, such as `GPU Login 01` |
+| Default workspace root | Where new Epoch-managed projects will be created on the host | A writable path such as `/data/epoch-workspace` or `~/.epoch/workspace` |
+| Pairing WS URL | The WebSocket URL the phone should connect to | Leave blank if Tailscale auto-detect is correct; otherwise set `ws://host:8787/ws` or `wss://host.example.com/ws` |
+| Background push | Optional APNs silent push support for keeping live sessions synced when the app backgrounds | Skip unless you need iPhone background wakeups |
+| `OPENAI_API_KEY` | OpenAI key used by Epoch's OpenAI-powered runtime paths | Configure this unless you intentionally inject it through the shell environment |
+
+After `epoch config`, the config file normally lives at:
 
 ```bash
-sudo apt update
-sudo apt install -y caddy
-
-sudo tee /etc/caddy/Caddyfile >/dev/null <<'CFG'
-hub.yourdomain.com {
-    reverse_proxy 127.0.0.1:8787
-}
-CFG
-
-sudo systemctl restart caddy
-sudo systemctl status caddy --no-pager
+~/.epoch/config.json
 ```
 
-4. Verify:
+## How To Set the OpenAI Key
+
+If someone on your team says "set the APC key", check what they mean.
+
+In the current Epoch codebase:
+- there is no config field literally named `APC key`
+- the OpenAI credential you usually want is `OPENAI_API_KEY`
+- APNs push uses a separate Apple `.p8` key and is optional
+
+### Option A: Set It In `epoch config` (recommended)
+
+Run:
 
 ```bash
-curl -i https://hub.yourdomain.com/status/resources
+epoch config
 ```
 
-`401 unauthorized` here is expected and means network path is working.
+When prompted, paste your `OPENAI_API_KEY`.
 
-## HPC Bridge Setup
+This stores the key inside Epoch's local state so the service can use it after restarts.
 
-Run on HPC/head node:
+Use this path when:
+- you want the host to keep working after reboot/login without manually exporting a shell variable each time
+- you are setting up a shared server and want the key attached to that Epoch instance
+
+### Option B: Set It In the Environment
+
+You can also provide the key at runtime:
 
 ```bash
-node packages/hpc-bridge/dist/cli.js init
+export OPENAI_API_KEY="sk-..."
+epoch start
 ```
 
-When prompted:
-- `Hub WS URL`: use your reachable hub URL (for example `ws://18.x.x.x:8787/ws` or `wss://hub.yourdomain.com/ws`)
-- `Shared token`: paste token from Hub `config.json`
-- `Workspace root`: absolute writable path on HPC
+This is useful when:
+- you do not want the key stored in `~/.epoch/config.json`
+- you inject secrets through a scheduler, secrets manager, or shell profile
 
-Then start:
+### What the OpenAI Key Is Used For
+
+In the current direct-connect Epoch service, `OPENAI_API_KEY` is used for OpenAI-backed features such as:
+- running OpenAI-powered Epoch turns when the runtime needs it
+- file indexing / embedding / OCR-related flows that depend on OpenAI
+- some generated metadata such as AI-created titles
+
+If the key is missing, Epoch may still start, but OpenAI-backed actions will fail.
+
+### Verify the Key
+
+Run:
 
 ```bash
-node packages/hpc-bridge/dist/cli.js start
+epoch doctor
 ```
 
-## Connectivity Verification Commands
+You should see a model line without the "no credentials detected" warning.
 
-### From any remote machine (or HPC)
+## Optional: Configure APNs Background Push
+
+This is only needed if you want EpochApp to receive silent background wakeups so live Codex sessions keep syncing while the app is backgrounded.
+
+You do not need this for:
+- normal pairing
+- foreground use
+- local testing
+
+You do need this if:
+- background session continuity on iPhone matters
+- you want EpochApp to wake up and reconnect after changes while it is in the background
+
+`epoch config` can walk you through this. It asks for:
+- Apple Developer Team ID
+- APNs Key ID
+- EpochApp bundle identifier
+- path to the APNs `.p8` private key
+- a local unlock passphrase used to encrypt that key on disk
+
+Important behavior:
+- the APNs private key is encrypted into `~/.epoch/secrets/`
+- it is not written raw into `config.json`
+- when background push is enabled, `epoch start` asks for the local unlock passphrase so the running process can decrypt the APNs key into memory
+
+## Start the Epoch Service
+
+Once initialization and configuration are done, start Epoch:
 
 ```bash
-nc -vz <hub-host> 8787
-curl -i http://<hub-host>:8787/status/resources
+epoch start
 ```
 
-Interpretation:
-- TCP success + `401 unauthorized`: network OK, auth missing (expected without token)
-- `Connection refused`: Hub not listening
-- Timeout: SG/firewall/routing issue
+Default listen settings:
+- `EPOCH_HOST=0.0.0.0`
+- `EPOCH_PORT=8787`
+
+By default `epoch start` daemonizes the service and writes logs under the Epoch state directory.
+
+Useful commands:
+
+```bash
+epoch status
+epoch status --qr
+epoch doctor
+epoch restart
+epoch stop
+```
+
+For foreground development/debugging:
+
+```bash
+epoch start --foreground
+```
+
+To change host/port for a run:
+
+```bash
+EPOCH_HOST=0.0.0.0 EPOCH_PORT=8787 epoch start
+```
+
+## Pair With EpochApp
+
+After the service is running, pair the iPhone app directly to this host.
+
+Recommended pairing flow:
+
+1. Run `epoch status --qr` on the host.
+2. In the iPhone app, open `Settings > Servers > Scan Epoch QR`.
+3. Scan the QR.
+4. Connect.
+
+Examples of valid pairing URLs:
+- local testing: `ws://127.0.0.1:8787/ws`
+- Tailscale: `ws://login01.your-tailnet.ts.net:8787/ws`
+- public test: `ws://<public-ip>:8787/ws`
+- production behind TLS: `wss://hpc.yourdomain.com/ws`
+
+Important rules:
+- the phone must be able to reach the host at the pairing URL
+- `ws://127.0.0.1:8787/ws` only works for loopback/local scenarios, not for a remote phone
+- if auto-detected pairing output is wrong, set the correct URL in `epoch config`
+- `publicWsUrl` in config is the persistent way to override the pairing URL
+- `EPOCH_PAIR_WS_URL` is a one-off environment override
+
+The pairing token is stored in `~/.epoch/config.json`.
+
+## Daily Usage
+
+The normal operator workflow is:
+
+1. Make sure the host is reachable from the phone.
+2. Start Epoch with `epoch start`.
+3. Open EpochApp and connect to the saved server.
+4. Create a project or pick an existing one.
+5. Work inside the configured default workspace root or an explicit project folder.
+
+The normal maintenance workflow is:
+
+```bash
+epoch status
+epoch doctor
+epoch restart
+```
+
+## Project Folders and Workspace Behavior
+
+Epoch supports two workspace modes.
+
+### 1. Default Workspace Root
+
+If a project does not specify its own folder, Epoch uses the configured workspace root.
+
+Typical default:
+
+```bash
+~/.epoch/workspace
+```
+
+Projects are then created under an Epoch-managed area beneath that root.
+
+### 2. Explicit Project Folder
+
+A project can also point at a specific writable folder on the host.
+
+This is the preferred mode when you want Epoch to work inside an existing checkout or research directory instead of an Epoch-managed project folder.
+
+Requirements for explicit folders:
+- the path must be writable by the Epoch process
+- Epoch may create `artifacts/`, `runs/`, and `logs/` under that folder as needed
+- runtime tools are scoped to that chosen project folder
+
+## Connectivity and Validation Checks
+
+### Check service state
+
+```bash
+epoch status
+```
+
+### Re-print the pairing QR
+
+```bash
+epoch status --qr
+```
+
+### Run a health-style check
+
+```bash
+epoch doctor
+```
+
+`epoch doctor` is the quickest way to confirm:
+- config exists
+- DB migrations are valid
+- the workspace root resolves correctly
+- a model is configured
+- credentials are present
+
+### Check the resource endpoint manually
+
+Without token:
+
+```bash
+curl -i http://<host>:8787/status/resources
+```
 
 With token:
 
 ```bash
 TOKEN=$(jq -r .token ~/.epoch/config.json)
-curl -i -H "Authorization: Bearer $TOKEN" http://<hub-host>:8787/status/resources
+curl -i -H "Authorization: Bearer $TOKEN" http://<host>:8787/status/resources
 ```
 
-Expected: `200` with JSON payload.
+Expected result with token: `200` and a JSON payload.
 
-## Troubleshooting (Real-World)
+## Public Access / Reverse Proxy
 
-### `pnpm: command not found`
+If the phone reaches Epoch through the public internet, terminate TLS in front of Epoch and pair the app with a `wss://.../ws` URL.
 
-Use:
+Example with Caddy:
 
 ```bash
-corepack enable
-corepack prepare pnpm@10.30.1 --activate
+sudo tee /etc/caddy/Caddyfile >/dev/null <<'CFG'
+hpc.yourdomain.com {
+    reverse_proxy 127.0.0.1:8787
+}
+CFG
+
+sudo systemctl restart caddy
 ```
 
-### Hub QR scans but app still cannot connect
-
-- Confirm QR/manual URL is actually reachable from phone
-- For Docker/bridge environments, auto-detected `172.x.x.x` may be wrong for iPhone
-- Override QR URL generation:
+Then set the pairing URL in `epoch config` to:
 
 ```bash
-EPOCH_PAIR_WS_URL=ws://<reachable-host>:8787/ws node packages/hub/dist/cli.js init
+wss://hpc.yourdomain.com/ws
 ```
 
-### iPhone shows `401 unauthorized`
+## CLI Reference
 
-- This usually means network path is good
-- Re-check and re-paste shared token
+Primary CLI:
 
-### iPhone shows ATS error (`NSURLErrorDomain -1022`)
+```bash
+epoch <init|config|start|restart|stop|status|doctor>
+```
 
-- Use `wss://...` URL
-- Or use an app build that explicitly allows non-TLS dev WS
-
-### iOS install error `CoreDeviceError 3002` (for source-built private app)
-
-Usually signing/provisioning mismatch:
-- Bundle identifier in app must match provisioning profile
-- Development Team must be configured
-- Rebuild and reinstall after fixing signing
-
-## CLI Commands
-
-Hub:
+Repo-local equivalent:
 
 ```bash
 node packages/hub/dist/cli.js <init|config|start|restart|stop|status|doctor>
-```
-
-HPC Bridge:
-
-```bash
-node packages/hpc-bridge/dist/cli.js <init|config|start|restart|stop|status|doctor>
 ```
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `EPOCH_STATE_DIR` | `~/.epoch` | Hub state directory |
-| `EPOCH_HOST` | `0.0.0.0` | Hub listen address |
-| `EPOCH_PORT` | `8787` | Hub listen port |
-| `EPOCH_DB_PATH` | `$EPOCH_STATE_DIR/epoch.sqlite` | DB path |
-| `EPOCH_PAIR_WS_URL` | auto-detected LAN IP | Override pairing WS URL |
-| `OPENAI_API_KEY` | none | Used for OCR/embeddings/transcription features |
+| `EPOCH_STATE_DIR` | `~/.epoch` | State directory |
+| `EPOCH_HOST` | `0.0.0.0` | Listen address |
+| `EPOCH_PORT` | `8787` | Listen port |
+| `EPOCH_DB_PATH` | `$EPOCH_STATE_DIR/epoch.sqlite` | SQLite path |
+| `EPOCH_WORKSPACE_ROOT` | unset | Overrides the configured default workspace root |
+| `EPOCH_HPC_WORKSPACE_ROOT` | unset | Legacy compatibility alias for workspace root |
+| `EPOCH_PAIR_WS_URL` | unset | One-off override for pairing WebSocket output |
+| `OPENAI_API_KEY` | unset | OpenAI credential for OpenAI-backed Epoch features |
+| `EPOCH_PDF_OCR_MODEL` | `gpt-5.2` | Optional OCR model override for PDF OCR flows |
 
 ## Development
 

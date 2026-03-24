@@ -48,7 +48,7 @@ test("config wizard completes step 5 before lifecycle action runs", async () => 
     },
     async confirm(opts) {
       if (opts.message.includes("Run quick Hub connectivity check")) return false;
-      if (opts.message.includes("Start Epoch HPC bridge now?")) return true;
+      if (opts.message.includes("Start legacy Epoch Bridge now?")) return true;
       return true;
     },
     close() {},
