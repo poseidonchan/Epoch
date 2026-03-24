@@ -14,7 +14,7 @@ import { isNodeMethod, isOperatorMethod, type NodeMethod } from "@epoch/protocol
 import { resolveConfiguredWorkspaceRoot, saveHubConfig, type HubConfig } from "./config.js";
 import type { DbPool } from "./db/db.js";
 import { CodexEngineRegistry } from "./codex_rpc/engine_registry.js";
-import { getEnvApiKey, listHubModelsForProvider, resolveHubProvider } from "./model.js";
+import { getEnvApiKey, loadOperatorVisibleModels } from "./model.js";
 import { readOpenAISettingsStatus, resolveOpenAIApiKeyFromConfig, resolveOpenAIOcrModelFromConfig } from "./openai_settings.js";
 import { sendEvent, sendResError, sendResOk, broadcastEvent } from "./transport/frames.js";
 import {
@@ -1183,80 +1183,19 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
         return;
       }
       case "models.current": {
-        const resolved = resolveHubProvider(state.config);
-        const provider = resolved.provider;
-
-        // Try to fetch models dynamically from the Codex app-server engine
-        try {
-          const engine = await state.engines.getEngine(null);
-          if (engine.modelList) {
-            const engineResult = await engine.modelList({});
-            const data = (engineResult as any).data as Array<{
-              id: string;
-              provider?: string;
-              displayName?: string;
-              supportedReasoningEfforts?: Array<{ reasoningEffort: string; description?: string }>;
-              defaultReasoningEffort?: string;
-              isDefault?: boolean;
-            }>;
-            if (Array.isArray(data) && data.length > 0) {
-              const models = data.map((m) => {
-                const efforts = m.supportedReasoningEfforts ?? [];
-                const hasReasoning = efforts.length > 0 && !efforts.every((e) => e.reasoningEffort === "none");
-                const thinkingLevels = hasReasoning
-                  ? efforts.map((e) => e.reasoningEffort).filter((e) => e !== "none")
-                  : [];
-                return {
-                  id: m.id,
-                  provider: typeof m.provider === "string" && m.provider.trim().length > 0 ? m.provider.trim() : provider,
-                  name: m.displayName ?? m.id,
-                  reasoning: hasReasoning,
-                  thinkingLevels,
-                };
-              });
-              let defaultModelId = data.find((m) => m.isDefault)?.id ?? resolved.defaultModelId;
-              if (defaultModelId && !models.some((m) => m.id === defaultModelId)) {
-                defaultModelId = null;
-              }
-              if (!defaultModelId) {
-                defaultModelId = models[0]?.id ?? "";
-              }
-              // Global thinkingLevels = union of all models' levels, preserving order
-              const allLevels = new Map<string, true>();
-              for (const m of models) {
-                for (const l of m.thinkingLevels) allLevels.set(l, true);
-              }
-              sendResOk(ws, id, {
-                provider,
-                defaultModelId,
-                models,
-                thinkingLevels: [...allLevels.keys()],
-              });
-              return;
-            }
-          }
-        } catch {
-          // Fall through to hardcoded registry
-        }
-
-        // Fallback: use hardcoded MODEL_REGISTRY
-        const models = listHubModelsForProvider(provider);
-        let defaultModelId = resolved.defaultModelId;
-        if (defaultModelId && !models.some((m) => m.id === defaultModelId)) {
-          defaultModelId = null;
-        }
-        if (!defaultModelId) {
-          defaultModelId = models[0]?.id ?? "";
+        const visibleModels = await loadOperatorVisibleModels({
+          config: state.config,
+          engines: state.engines,
+        });
+        if (!visibleModels.ok) {
+          sendResError(ws, id, visibleModels.code, visibleModels.message, visibleModels.data);
+          return;
         }
         sendResOk(ws, id, {
-          provider,
-          defaultModelId,
-          models: models.map((m) => ({
-            ...m,
-            provider,
-            thinkingLevels: m.reasoning ? ["minimal", "low", "medium", "high", "xhigh"] : [],
-          })),
-          thinkingLevels: ["minimal", "low", "medium", "high", "xhigh"],
+          provider: visibleModels.provider,
+          defaultModelId: visibleModels.defaultModelId,
+          models: visibleModels.models,
+          thinkingLevels: visibleModels.thinkingLevels,
         });
         return;
       }

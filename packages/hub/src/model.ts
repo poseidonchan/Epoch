@@ -153,6 +153,118 @@ export function listHubModelsForProvider(provider: string): Array<{ id: string; 
   return MODEL_REGISTRY[provider] ?? [];
 }
 
+type ModelListCapableEngine = {
+  name: string;
+  modelList?: (params: Record<string, unknown>) => Promise<Record<string, unknown>>;
+};
+
+type ModelEngineResolver = {
+  getEngine(name: string | null | undefined): Promise<ModelListCapableEngine>;
+};
+
+export type OperatorVisibleModel = {
+  id: string;
+  provider: string;
+  name: string;
+  reasoning: boolean;
+  thinkingLevels: string[];
+};
+
+export type OperatorVisibleModelsSuccess = {
+  ok: true;
+  source: "codex-app-server";
+  provider: string;
+  defaultModelId: string;
+  models: OperatorVisibleModel[];
+  thinkingLevels: string[];
+};
+
+export type OperatorVisibleModelsFailure = {
+  ok: false;
+  code: "MODELS_UNAVAILABLE";
+  message: string;
+  data: {
+    source: "codex-app-server";
+    retryable: true;
+    reason: "unreachable" | "unsupported" | "empty";
+  };
+};
+
+export type OperatorVisibleModelsResult = OperatorVisibleModelsSuccess | OperatorVisibleModelsFailure;
+
+export async function loadOperatorVisibleModels(args: {
+  config?: HubConfig | null;
+  engines: ModelEngineResolver;
+}): Promise<OperatorVisibleModelsResult> {
+  const resolved = resolveHubProvider(args.config);
+
+  let engine: ModelListCapableEngine;
+  try {
+    engine = await args.engines.getEngine("codex-app-server");
+  } catch {
+    return operatorVisibleModelsUnavailable("unreachable");
+  }
+
+  if (!engine.modelList) {
+    return operatorVisibleModelsUnavailable("unsupported");
+  }
+
+  try {
+    const rawResult = await engine.modelList({});
+    const rawData = Array.isArray((rawResult as { data?: unknown }).data)
+      ? ((rawResult as { data?: unknown[] }).data ?? [])
+      : [];
+    const normalizedModels = rawData
+      .map((entry) => normalizeOperatorVisibleModel(entry, resolved.provider))
+      .filter((entry): entry is OperatorVisibleModel & { isDefault: boolean } => entry != null);
+
+    if (normalizedModels.length === 0) {
+      return operatorVisibleModelsUnavailable("empty");
+    }
+
+    let defaultModelId = normalizedModels.find((entry) => entry.isDefault)?.id ?? resolved.defaultModelId;
+    if (!defaultModelId || !normalizedModels.some((entry) => entry.id === defaultModelId)) {
+      defaultModelId = normalizedModels[0]?.id ?? "";
+    }
+
+    const provider = normalizedModels.find((entry) => entry.id === defaultModelId)?.provider
+      ?? normalizedModels[0]?.provider
+      ?? resolved.provider;
+    const thinkingLevels = collectThinkingLevels(normalizedModels);
+
+    return {
+      ok: true,
+      source: "codex-app-server",
+      provider,
+      defaultModelId,
+      models: normalizedModels.map(({ isDefault, ...entry }) => entry),
+      thinkingLevels,
+    };
+  } catch {
+    return operatorVisibleModelsUnavailable("unreachable");
+  }
+}
+
+export async function assertExplicitModelSupportedByCodexAppServer(args: {
+  model: string | null | undefined;
+  config?: HubConfig | null;
+  engines: ModelEngineResolver;
+}): Promise<void> {
+  const model = typeof args.model === "string" ? args.model.trim() : "";
+  if (!model) return;
+
+  const visibleModels = await loadOperatorVisibleModels({
+    config: args.config,
+    engines: args.engines,
+  });
+  if (!visibleModels.ok) {
+    throw new Error("Codex app-server model list is unavailable; cannot validate the selected model.");
+  }
+  if (!visibleModels.models.some((entry) => entry.id === model)) {
+    throw new Error(`Selected model is incompatible with current server model list: ${model}`);
+  }
+}
+
 export function resolveHubModel(config?: HubConfig | null): HubModelResolution {
   const ai = config?.ai;
   if (ai?.provider) {
@@ -187,4 +299,73 @@ export function resolveHubModel(config?: HubConfig | null): HubModelResolution {
 
   const hasApiKey = hasConfiguredCredentials(config, provider) || Boolean(getEnvApiKey(provider));
   return { ok: true, ref: `${provider}/${modelId}`, provider, modelId, hasApiKey };
+}
+
+function operatorVisibleModelsUnavailable(
+  reason: OperatorVisibleModelsFailure["data"]["reason"]
+): OperatorVisibleModelsFailure {
+  return {
+    ok: false,
+    code: "MODELS_UNAVAILABLE",
+    message: "Codex app-server model list is unavailable.",
+    data: {
+      source: "codex-app-server",
+      retryable: true,
+      reason,
+    },
+  };
+}
+
+function normalizeOperatorVisibleModel(
+  raw: unknown,
+  fallbackProvider: string
+): (OperatorVisibleModel & { isDefault: boolean }) | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const id = typeof record.id === "string" ? record.id.trim() : "";
+  if (!id) return null;
+
+  const provider = typeof record.provider === "string" && record.provider.trim()
+    ? record.provider.trim()
+    : fallbackProvider;
+  const name = typeof record.displayName === "string" && record.displayName.trim()
+    ? record.displayName.trim()
+    : typeof record.name === "string" && record.name.trim()
+      ? record.name.trim()
+      : id;
+  const thinkingLevels = normalizeThinkingLevels(record.supportedReasoningEfforts);
+  const reasoning = thinkingLevels.length > 0;
+
+  return {
+    id,
+    provider,
+    name,
+    reasoning,
+    thinkingLevels,
+    isDefault: record.isDefault === true,
+  };
+}
+
+function normalizeThinkingLevels(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const levels = new Set<string>();
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const level = typeof (entry as Record<string, unknown>).reasoningEffort === "string"
+      ? (entry as Record<string, unknown>).reasoningEffort.trim()
+      : "";
+    if (!level || level === "none") continue;
+    levels.add(level);
+  }
+  return [...levels];
+}
+
+function collectThinkingLevels(models: Array<{ thinkingLevels: string[] }>): string[] {
+  const levels = new Set<string>();
+  for (const model of models) {
+    for (const level of model.thinkingLevels) {
+      levels.add(level);
+    }
+  }
+  return [...levels];
 }

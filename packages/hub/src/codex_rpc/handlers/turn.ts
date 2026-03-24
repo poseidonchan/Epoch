@@ -5,7 +5,7 @@ import process from "node:process";
 
 import { buildProjectFileContextStream } from "../../indexing/projectIndexing.js";
 import { loadOrCreateHubConfig, resolveConfiguredWorkspaceRoot } from "../../config.js";
-import { resolveHubProvider } from "../../model.js";
+import { assertExplicitModelSupportedByCodexAppServer, resolveHubProvider } from "../../model.js";
 import { loadOpenAIApiKeyFromStateDir } from "../../openai_settings.js";
 import { normalizeEngineName, type CodexEngineRegistry } from "../engine_registry.js";
 import type { EngineStartTurnResult, EngineStreamEvent } from "../engines/types.js";
@@ -92,6 +92,12 @@ export async function handleTurnStart(
     };
   }
   const modelOverride = normalizeNonEmptyString(params.model);
+  if (modelOverride) {
+    await assertExplicitModelSupportedByCodexAppServer({
+      model: modelOverride,
+      engines: ctx.engines,
+    });
+  }
   const planMode = normalizePlanMode(params.planMode);
   const approvalPolicyOverride = normalizeNonEmptyString(params.approvalPolicy);
   const input = await normalizeUserInputList(ctx.repository, threadRecord.projectId, threadId, params.input);
