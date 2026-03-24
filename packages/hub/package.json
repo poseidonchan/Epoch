@@ -19,7 +19,6 @@
   "dependencies": {
     "@fastify/multipart": "^9.2.1",
     "@epoch/cli-utils": "workspace:*",
-    "@epoch/push-relay": "workspace:*",
     "@epoch/protocol": "workspace:*",
     "better-sqlite3": "^12.4.1",
     "fastify": "^5.5.0",

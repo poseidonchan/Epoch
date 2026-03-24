@@ -182,6 +182,10 @@ export class EpochHpcEngine implements CodexEngineSession {
     if (controller) controller.abort();
   }
 
+  activeTurnCount(): number {
+    return this.activeTurns.size;
+  }
+
   async close(): Promise<void> {
     for (const controller of this.activeTurns.values()) {
       controller.abort();

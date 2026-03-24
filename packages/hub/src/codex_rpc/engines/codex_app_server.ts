@@ -54,6 +54,7 @@ export class CodexAppServerEngine implements CodexEngineSession {
   private requestSeq = 0;
   private pendingRequests = new Map<string, PendingRequest>();
   private subscribers = new Set<ChildSubscriber>();
+  private activeTurnKeys = new Set<string>();
   private initialized = false;
   private initializePromise: Promise<void> | null = null;
 
@@ -97,6 +98,8 @@ export class CodexAppServerEngine implements CodexEngineSession {
 
     const queue = new AsyncPushQueue<EngineStreamEvent>();
     let streamTurnId: string | null = null;
+    let activeTurnKey = this.turnKey(args.threadId, args.turnId);
+    this.activeTurnKeys.add(activeTurnKey);
 
     const unsubscribe = this.subscribe((event) => {
       const method = String((event as any).method ?? "");
@@ -151,6 +154,7 @@ export class CodexAppServerEngine implements CodexEngineSession {
       });
 
       if (method === "turn/completed" && streamTurnId) {
+        this.activeTurnKeys.delete(activeTurnKey);
         unsubscribe();
         queue.finish();
       }
@@ -176,8 +180,15 @@ export class CodexAppServerEngine implements CodexEngineSession {
       };
 
       streamTurnId = turn.id;
+      const nextActiveTurnKey = this.turnKey(args.threadId, turn.id);
+      if (nextActiveTurnKey !== activeTurnKey) {
+        this.activeTurnKeys.delete(activeTurnKey);
+        activeTurnKey = nextActiveTurnKey;
+        this.activeTurnKeys.add(activeTurnKey);
+      }
       return { turn, events: queue };
     } catch (err) {
+      this.activeTurnKeys.delete(activeTurnKey);
       unsubscribe();
       queue.finish();
       throw err;
@@ -270,12 +281,17 @@ export class CodexAppServerEngine implements CodexEngineSession {
     return String(error ?? "").toLowerCase();
   }
 
+  activeTurnCount(): number {
+    return this.activeTurnKeys.size;
+  }
+
   async close(): Promise<void> {
     for (const pending of this.pendingRequests.values()) {
       pending.reject(new Error("codex app-server engine closed"));
     }
     this.pendingRequests.clear();
     this.subscribers.clear();
+    this.activeTurnKeys.clear();
 
     if (this.child) {
       this.child.kill();
@@ -317,6 +333,7 @@ export class CodexAppServerEngine implements CodexEngineSession {
         pending.reject(err);
       }
       this.pendingRequests.clear();
+      this.activeTurnKeys.clear();
       this.initialized = false;
       this.initializePromise = null;
       this.child = null;
@@ -356,6 +373,10 @@ export class CodexAppServerEngine implements CodexEngineSession {
     return () => {
       this.subscribers.delete(listener);
     };
+  }
+
+  private turnKey(threadId: string, turnId: string): string {
+    return `${threadId}::${turnId}`;
   }
 
   private async request(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {

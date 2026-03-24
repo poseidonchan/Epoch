@@ -46,6 +46,10 @@ export class CodexEngineRegistry {
     return this.codexAppServerEngine;
   }
 
+  activeTurnCount(): number {
+    return (this.epochHpcEngine?.activeTurnCount() ?? 0) + (this.codexAppServerEngine?.activeTurnCount() ?? 0);
+  }
+
   async close() {
     if (this.epochHpcEngine) {
       await this.epochHpcEngine.close();

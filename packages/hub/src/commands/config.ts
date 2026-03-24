@@ -7,7 +7,6 @@ import {
   type HubConfig,
 } from "../config.js";
 import { HUB_DEFAULT_MODEL_ID, HUB_DEFAULT_PROVIDER, hubDefaultModelRef } from "../model.js";
-import { summarizeBackgroundPush, configureBackgroundPush } from "./push_setup.js";
 import { resolvePairingWSURL } from "./pair_qr.js";
 import { createWizardPrompter, createWizardUI, type WizardPrompter, type WizardUI } from "./wizard_ui.js";
 
@@ -64,25 +63,18 @@ async function runConfigWizard(args: {
   const previousEmbeddingState = config.providerApiKeys?.openai ? "configured" : "not configured";
   const previousDisplayName = config.displayName ?? "not configured";
   const previousWorkspaceRoot = config.workspaceRoot ?? "not configured";
-  const previousPush = await summarizeBackgroundPush({ stateDir, config });
-  const previousPushRelayEnabled = previousPush.enabled ? "configured" : "disabled";
-  const previousPushRelayUrl = previousPush.encryptedKeyPath ?? "not configured";
-  const previousPushRelaySecret = previousPush.encryptedKeyPresent ? "present" : "missing";
   const pairingWS = await resolvePairingWSURL({ env: process.env, config, defaultPort: 8787 });
   const previousPublicWsUrl = pairingWS.wsURL;
   const previousPublicWsUrlSource = pairingWS.source;
 
-  ui.banner("Epoch Server Configuration", "Guided setup for direct pairing, local runtime defaults, background push, and embedding key");
-  ui.step(1, 6, "Load existing settings", "ok");
+  ui.banner("Epoch Server Configuration", "Guided setup for direct pairing, local runtime defaults, and embedding key");
+  ui.step(1, 5, "Load existing settings", "ok");
   ui.keyValue("State dir", stateDir);
   ui.keyValue("Display name", previousDisplayName);
   ui.keyValue("Current AI config", previousAi);
   ui.keyValue("Default workspace root", previousWorkspaceRoot);
   ui.keyValue("Pairing WS URL", previousPublicWsUrl);
   ui.keyValue("Pairing source", previousPublicWsUrlSource);
-  ui.keyValue("Background push", previousPushRelayEnabled);
-  ui.keyValue("Encrypted APNs key", previousPushRelaySecret);
-  ui.keyValue("Encrypted key path", previousPushRelayUrl);
   ui.keyValue("Current embedding key (openai)", previousEmbeddingState);
   ui.keyValue("Target codex model", hubDefaultModelRef());
   ui.line();
@@ -92,10 +84,10 @@ async function runConfigWizard(args: {
     defaultYes: true,
   });
   if (!wants) {
-    ui.step(2, 6, "No changes requested", "warn");
+    ui.step(2, 5, "No changes requested", "warn");
     return;
   }
-  ui.step(2, 6, "Collect direct-connect settings", "ok");
+  ui.step(2, 5, "Collect direct-connect settings", "ok");
 
   const displayName = await prompter.input({
     message: "Display name shown in EpochApp:",
@@ -111,16 +103,7 @@ async function runConfigWizard(args: {
     allowEmpty: true,
   });
 
-  ui.step(3, 6, "Configure background push", "ok");
-  await configureBackgroundPush({
-    stateDir,
-    config,
-    ui,
-    prompter,
-    defaultYes: config.pushEnabled === true,
-  });
-
-  ui.step(4, 6, "Collect credentials", "ok");
+  ui.step(3, 5, "Collect credentials", "ok");
 
   const existingEmbeddingKey = config.providerApiKeys?.openai?.trim() ?? "";
   const openAiApiKey = await prompter.secret({
@@ -131,7 +114,7 @@ async function runConfigWizard(args: {
   });
   const normalizedEmbeddingKey = openAiApiKey.trim() || existingEmbeddingKey;
 
-  ui.step(5, 6, "Apply direct-connect defaults", "ok");
+  ui.step(4, 5, "Apply direct-connect defaults", "ok");
   config.ai = {
     provider: HUB_DEFAULT_PROVIDER,
     defaultModelId: HUB_DEFAULT_MODEL_ID,
@@ -155,19 +138,12 @@ async function runConfigWizard(args: {
   }
 
   await saveHubConfig({ stateDir, config });
-  ui.step(6, 6, "Persist settings", "ok");
+  ui.step(5, 5, "Persist settings", "ok");
   ui.success("Epoch server configuration saved.");
   ui.summary("Configuration summary", [
     { key: "Display name", before: previousDisplayName, after: config.displayName ?? "not configured" },
     { key: "Default workspace root", before: previousWorkspaceRoot, after: config.workspaceRoot ?? "not configured" },
     { key: "Pairing WS URL", before: previousPublicWsUrl, after: config.publicWsUrl ?? "auto-detect / loopback" },
-    { key: "Background push", before: previousPushRelayEnabled, after: config.pushEnabled === true ? "configured" : "disabled" },
-    { key: "Encrypted APNs key", before: previousPushRelaySecret, after: config.push ? "present" : "not configured" },
-    {
-      key: "Encrypted key path",
-      before: previousPushRelayUrl,
-      after: config.push?.encryptedKeyPath ?? "not configured",
-    },
     { key: "AI backend", before: previousAi, after: describeAiConfig(config.ai) },
     { key: "AI target model", after: hubDefaultModelRef() },
     {
