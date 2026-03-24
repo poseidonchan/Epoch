@@ -3,7 +3,7 @@ import path from "node:path";
 import { v4 as uuidv4 } from "uuid";
 
 import { loadOrCreateHubConfig, resolveConfiguredWorkspaceRoot } from "../../config.js";
-import { resolveHubProvider } from "../../model.js";
+import { assertExplicitModelSupportedByCodexAppServer, resolveHubProvider } from "../../model.js";
 import { normalizeEngineName, type CodexEngineRegistry } from "../engine_registry.js";
 import type { CodexRepository } from "../repository.js";
 import { nowUnixSeconds, previewFromText, type Thread, type ThreadItem, type Turn } from "../types.js";
@@ -55,7 +55,14 @@ export async function handleThreadStart(
   const cwd = normalizeNonEmptyString(params.cwd) ?? resolvedProjectWorkspace ?? process.cwd();
   const modelProvider =
     normalizeNonEmptyString(params.modelProvider) ?? normalizeNonEmptyString(sessionRecord?.codex_model_provider) ?? provider.provider;
-  const model = normalizeNonEmptyString(params.model) ?? normalizeNonEmptyString(sessionRecord?.codex_model) ?? provider.defaultModelId ?? null;
+  const explicitModel = normalizeNonEmptyString(params.model);
+  if (explicitModel) {
+    await assertExplicitModelSupportedByCodexAppServer({
+      model: explicitModel,
+      engines: ctx.engines,
+    });
+  }
+  const model = explicitModel ?? normalizeNonEmptyString(sessionRecord?.codex_model) ?? provider.defaultModelId ?? null;
   const approvalPolicy =
     normalizeApprovalPolicy(params.approvalPolicy) ||
     normalizeApprovalPolicy(sessionRecord?.codex_approval_policy) ||
