@@ -15,7 +15,7 @@ Epoch no longer expects a new deployment to be split across separate public `hub
 For new setups, think about Epoch like this:
 - you run one `epoch` service on the machine you want to work on
 - EpochApp connects directly to that machine over `ws://` or `wss://`
-- pairing, SQLite state, projects, sessions, runtime tools, file indexing, and optional background push all live in that one service
+- pairing, SQLite state, projects, sessions, runtime tools, and file indexing all live in that one service
 - there is no separate public `epoch-hub` or `epoch-bridge` command you need to install for normal direct-connect use
 
 If you have older notes that mention `epoch-hub`, `epoch-bridge`, or a separate bridge deployment, those notes are outdated for the current direct-connect model.
@@ -121,7 +121,6 @@ The wizard asks for:
 | Display name | The server name shown in EpochApp | A machine label users recognize, such as `GPU Login 01` |
 | Default workspace root | Where new Epoch-managed projects will be created on the host | A writable path such as `/data/epoch-workspace` or `~/.epoch/workspace` |
 | Pairing WS URL | The WebSocket URL the phone should connect to | Leave blank if Tailscale auto-detect is correct; otherwise set `ws://host:8787/ws` or `wss://host.example.com/ws` |
-| Background push | Optional APNs silent push support for keeping live sessions synced when the app backgrounds | Skip unless you need iPhone background wakeups |
 | `OPENAI_API_KEY` | OpenAI key used by Epoch's OpenAI-powered runtime paths | Configure this unless you intentionally inject it through the shell environment |
 
 After `epoch config`, the config file normally lives at:
@@ -137,7 +136,7 @@ If someone on your team says "set the APC key", check what they mean.
 In the current Epoch codebase:
 - there is no config field literally named `APC key`
 - the OpenAI credential you usually want is `OPENAI_API_KEY`
-- APNs push uses a separate Apple `.p8` key and is optional
+- there is no Apple push key or `.p8` setup in the current direct-connect product path
 
 ### Option A: Set It In `epoch config` (recommended)
 
@@ -187,30 +186,24 @@ epoch doctor
 
 You should see a model line without the "no credentials detected" warning.
 
-## Optional: Configure APNs Background Push
+## How Live Sessions Behave
 
-This is only needed if you want EpochApp to receive silent background wakeups so live Codex sessions keep syncing while the app is backgrounded.
+Epoch now treats Codex turns as server-owned background work.
 
-You do not need this for:
-- normal pairing
-- foreground use
-- local testing
+That means:
+- once a turn starts, the `epoch` service keeps running it until it reaches `completed`, `failed`, or `waiting for approval`
+- the iPhone app being backgrounded, suspended, disconnected, or fully closed does not stop the server-side turn
+- when EpochApp reconnects, it asks the server what changed and then pulls the latest session/thread state
 
-You do need this if:
-- background session continuity on iPhone matters
-- you want EpochApp to wake up and reconnect after changes while it is in the background
+Current behavior to expect:
+- foreground app: live updates continue over the normal WebSocket stream
+- app backgrounded: connection continuity is best-effort only; iOS may suspend it at any time
+- app killed or fully closed: Epoch does not send APNs, silent pushes, or visible system notifications
+- app reopened later: EpochApp should resync changed sessions and messages from the server
 
-`epoch config` can walk you through this. It asks for:
-- Apple Developer Team ID
-- APNs Key ID
-- EpochApp bundle identifier
-- path to the APNs `.p8` private key
-- a local unlock passphrase used to encrypt that key on disk
-
-Important behavior:
-- the APNs private key is encrypted into `~/.epoch/secrets/`
-- it is not written raw into `config.json`
-- when background push is enabled, `epoch start` asks for the local unlock passphrase so the running process can decrypt the APNs key into memory
+Practical consequence:
+- keep the `epoch` service running on the host if you want long Codex jobs to finish even when the phone is offline
+- do not expect iPhone wakeups or system notifications from Epoch itself
 
 ## Start the Epoch Service
 
@@ -225,6 +218,11 @@ Default listen settings:
 - `EPOCH_PORT=8787`
 
 By default `epoch start` daemonizes the service and writes logs under the Epoch state directory.
+
+Important runtime behavior:
+- `epoch start` runs the service independently from EpochApp
+- active Codex turns keep running on the host even if the phone disconnects
+- reconnecting the app later should resync any finished or changed sessions from server state
 
 Useful commands:
 

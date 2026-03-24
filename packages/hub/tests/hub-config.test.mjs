@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { decryptEncryptedApnsKey, importEncryptedApnsKey, loadOrCreateHubConfig, saveHubConfig } from "../dist/index.js";
+import { loadOrCreateHubConfig, saveHubConfig } from "../dist/index.js";
 
 test("loadOrCreateHubConfig imports workspaceRoot from legacy bridge config on first direct-connect setup", async () => {
   const originalHome = process.env.HOME;
@@ -42,7 +42,7 @@ test("loadOrCreateHubConfig imports workspaceRoot from legacy bridge config on f
   }
 });
 
-test("saveHubConfig persists direct-connect publicWsUrl and embedded push metadata", async () => {
+test("saveHubConfig persists direct-connect publicWsUrl without legacy push metadata", async () => {
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "epoch-config-save-"));
 
   await saveHubConfig({
@@ -53,47 +53,49 @@ test("saveHubConfig persists direct-connect publicWsUrl and embedded push metada
       createdAt: "2026-03-23T00:00:00.000Z",
       workspaceRoot: "/srv/epoch/workspace",
       publicWsUrl: "wss://edge.example/ws",
-      pushEnabled: true,
-      push: {
-        teamId: "TEAM1234",
-        keyId: "KEY1234",
-        bundleId: "dev.epoch.app",
-        encryptedKeyPath: "/srv/epoch/.epoch/secrets/apns-key.enc",
-      },
     },
   });
 
   const raw = JSON.parse(await readFile(path.join(stateDir, "config.json"), "utf8"));
   assert.equal(raw.workspaceRoot, "/srv/epoch/workspace");
   assert.equal(raw.publicWsUrl, "wss://edge.example/ws");
-  assert.equal(raw.pushEnabled, true);
-  assert.deepEqual(raw.push, {
-    teamId: "TEAM1234",
-    keyId: "KEY1234",
-    bundleId: "dev.epoch.app",
-    encryptedKeyPath: "/srv/epoch/.epoch/secrets/apns-key.enc",
-  });
+  assert.equal(raw.pushEnabled, undefined);
+  assert.equal(raw.push, undefined);
 });
 
-test("importEncryptedApnsKey encrypts and decrypts a local APNs private key", async () => {
-  const stateDir = await mkdtemp(path.join(os.tmpdir(), "epoch-push-key-"));
-  const sourcePath = path.join(stateDir, "AuthKey_TEST123.p8");
-  const privateKey = [
-    "-----BEGIN PRIVATE KEY-----",
-    "VGhpcyBpcyBhIHRlc3Qga2V5Lg==",
-    "-----END PRIVATE KEY-----",
-  ].join("\n");
-  await writeFile(sourcePath, privateKey + "\n", "utf8");
+test("loadOrCreateHubConfig ignores legacy push fields from config.json", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "epoch-config-legacy-push-"));
+  await writeFile(
+    path.join(stateDir, "config.json"),
+    JSON.stringify(
+      {
+        serverId: "server_legacy_push_1",
+        token: "token_legacy_push_1",
+        createdAt: "2026-03-23T00:00:00.000Z",
+        displayName: "Legacy Push",
+        workspaceRoot: "/srv/epoch/workspace",
+        publicWsUrl: "wss://edge.example/ws",
+        pushEnabled: true,
+        pushRelayUrl: "https://relay.example/v1",
+        pushRelaySharedSecret: "secret_1",
+        push: {
+          teamId: "TEAM1234",
+          keyId: "KEY1234",
+          bundleId: "dev.epoch.app",
+          encryptedKeyPath: "/srv/epoch/.epoch/secrets/apns-key.enc",
+        },
+      },
+      null,
+      2
+    ) + "\n",
+    "utf8"
+  );
 
-  const imported = await importEncryptedApnsKey({
-    stateDir,
-    sourcePath,
-    passphrase: "local passphrase",
-  });
-  const decrypted = await decryptEncryptedApnsKey({
-    encryptedKeyPath: imported.encryptedKeyPath,
-    passphrase: "local passphrase",
-  });
-
-  assert.equal(decrypted, privateKey);
+  const config = await loadOrCreateHubConfig({ stateDir, allowCreate: false });
+  assert.equal(config?.workspaceRoot, "/srv/epoch/workspace");
+  assert.equal(config?.publicWsUrl, "wss://edge.example/ws");
+  assert.equal("pushEnabled" in config, false);
+  assert.equal("pushRelayUrl" in config, false);
+  assert.equal("pushRelaySharedSecret" in config, false);
+  assert.equal("push" in config, false);
 });

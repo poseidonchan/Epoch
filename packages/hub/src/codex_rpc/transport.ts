@@ -10,10 +10,11 @@ import { CodexRepository } from "./repository.js";
 import type { CodexRuntimeBridge } from "./runtime_bridge.js";
 import { CodexRpcRouter } from "./router.js";
 import { isJsonRpcNotification, isJsonRpcRequest, isJsonRpcResponse, type JsonRpcRequest, type JsonRpcResponse } from "./types.js";
-import type { PushRelayClient } from "../push_relay_client.js";
+import type { CodexEngineSession } from "./engines/types.js";
 
 const OVERLOAD_ERROR_CODE = -32001;
 const OVERLOAD_ERROR_MESSAGE = "Server overloaded; retry later.";
+const DEFAULT_IDLE_TTL_MS = 15 * 60 * 1000;
 
 export type CodexTransportOptions = {
   ws: WebSocket;
@@ -22,17 +23,25 @@ export type CodexTransportOptions = {
   stateDir: string;
   pool: DbPool;
   runtimeBridge?: CodexRuntimeBridge;
-  pushRelayClient?: PushRelayClient;
+  createEngines?: (args: { config: HubConfig; stateDir: string }) => CodexEnginesLike;
+};
+
+type CodexEnginesLike = {
+  getEngine(name: string | null | undefined): Promise<CodexEngineSession>;
+  activeTurnCount(): number;
+  close(): Promise<void>;
 };
 
 type CodexRuntime = {
   token: string;
   connection: CodexConnectionState;
   repository: CodexRepository;
-  engines: CodexEngineRegistry;
+  engines: CodexEnginesLike;
   router: CodexRpcRouter;
   ready: Promise<void>;
   activeSocket: WebSocket | null;
+  idleTimer: NodeJS.Timeout | null;
+  idleSinceMs: number | null;
 };
 
 const runtimesByToken = new Map<string, CodexRuntime>();
@@ -63,19 +72,23 @@ export function extractCodexAuthToken(request: IncomingMessage): string | null {
 }
 
 export function attachCodexTransport(options: CodexTransportOptions) {
-  const { ws, request, config, stateDir, pool, runtimeBridge } = options;
+  const { ws, request, config, stateDir, pool, runtimeBridge, createEngines } = options;
   const token = extractCodexAuthToken(request) ?? "__epoch_default_token__";
-  const runtime = getOrCreateRuntime({ token, ws, config, stateDir, pool, runtimeBridge });
+  const runtime = getOrCreateRuntime({ token, ws, config, stateDir, pool, runtimeBridge, createEngines });
+  const previousSocket = runtime.activeSocket;
+  cancelRuntimeIdleTimer(runtime);
+  runtime.idleSinceMs = null;
 
-  if (runtime.activeSocket && runtime.activeSocket !== ws) {
+  runtime.activeSocket = ws;
+  runtime.connection.attachWebSocket(ws);
+
+  if (previousSocket && previousSocket !== ws) {
     try {
-      runtime.activeSocket.close(1000, "Replaced by a newer connection");
+      previousSocket.close(1000, "Replaced by a newer connection");
     } catch {
       // ignore
     }
   }
-  runtime.activeSocket = ws;
-  runtime.connection.attachWebSocket(ws);
 
   ws.on("message", (data) => {
     if (!runtime.connection.isAttachedWebSocket(ws)) {
@@ -105,21 +118,11 @@ export function attachCodexTransport(options: CodexTransportOptions) {
   });
 
   ws.on("close", () => {
-    if (runtime.connection.isAttachedWebSocket(ws)) {
-      runtime.connection.detachWebSocket(ws);
-    }
-    if (runtime.activeSocket === ws) {
-      runtime.activeSocket = null;
-    }
+    handleSocketDetached(runtime, ws);
   });
 
   ws.on("error", () => {
-    if (runtime.connection.isAttachedWebSocket(ws)) {
-      runtime.connection.detachWebSocket(ws);
-    }
-    if (runtime.activeSocket === ws) {
-      runtime.activeSocket = null;
-    }
+    handleSocketDetached(runtime, ws);
   });
 }
 
@@ -128,17 +131,12 @@ export async function closeAllCodexTransports() {
   runtimesByToken.clear();
 
   for (const runtime of runtimes) {
-    try {
-      runtime.connection.close(new Error("Hub shutdown"));
-    } catch {
-      // ignore
-    }
-    try {
-      await runtime.router.close();
-    } catch {
-      // ignore
-    }
+    await closeRuntime(runtime, new Error("Hub shutdown"));
   }
+}
+
+export function runtimeCountForTesting(): number {
+  return runtimesByToken.size;
 }
 
 function getOrCreateRuntime(args: {
@@ -148,7 +146,7 @@ function getOrCreateRuntime(args: {
   stateDir: string;
   pool: DbPool;
   runtimeBridge?: CodexRuntimeBridge;
-  pushRelayClient?: PushRelayClient;
+  createEngines?: (args: { config: HubConfig; stateDir: string }) => CodexEnginesLike;
 }): CodexRuntime {
   const existing = runtimesByToken.get(args.token);
   if (existing) {
@@ -159,15 +157,14 @@ function getOrCreateRuntime(args: {
     maxIngressQueueDepth: Number(process.env.EPOCH_CODEX_MAX_INGRESS_QUEUE ?? "128"),
   });
   const repository = new CodexRepository({ pool: args.pool, stateDir: args.stateDir });
-  const engines = new CodexEngineRegistry({ config: args.config, stateDir: args.stateDir });
+  const engines = args.createEngines?.({ config: args.config, stateDir: args.stateDir }) ?? new CodexEngineRegistry({ config: args.config, stateDir: args.stateDir });
   const router = new CodexRpcRouter({
     repository,
-    engines,
+    engines: engines as CodexEngineRegistry,
     connection,
     token: args.token,
     serverId: args.config.serverId,
     runtimeBridge: args.runtimeBridge,
-    pushRelayClient: args.pushRelayClient,
   });
   const ready = repository.clearActiveCodexStateForToken(args.token).catch(() => {});
   const runtime: CodexRuntime = {
@@ -178,9 +175,96 @@ function getOrCreateRuntime(args: {
     router,
     ready,
     activeSocket: null,
+    idleTimer: null,
+    idleSinceMs: null,
   };
   runtimesByToken.set(args.token, runtime);
   return runtime;
+}
+
+function handleSocketDetached(runtime: CodexRuntime, ws: WebSocket) {
+  if (runtime.connection.isAttachedWebSocket(ws)) {
+    runtime.connection.detachWebSocket(ws);
+  }
+  if (runtime.activeSocket === ws) {
+    runtime.activeSocket = null;
+  }
+  if (!runtime.activeSocket) {
+    if (runtime.engines.activeTurnCount() > 0) {
+      runtime.idleSinceMs = null;
+      scheduleRuntimeIdleEvaluation(runtime, Math.min(1_000, resolveIdleTtlMs()));
+      return;
+    }
+
+    runtime.idleSinceMs = Date.now();
+    scheduleRuntimeIdleEvaluation(runtime, resolveIdleTtlMs());
+  }
+}
+
+function scheduleRuntimeIdleEvaluation(runtime: CodexRuntime, delayMs?: number) {
+  cancelRuntimeIdleTimer(runtime);
+  const ttlMs = resolveIdleTtlMs();
+  const nextDelayMs = Math.max(1, Math.floor(delayMs ?? ttlMs));
+  runtime.idleTimer = setTimeout(() => {
+    void evaluateRuntimeIdle(runtime);
+  }, nextDelayMs);
+  runtime.idleTimer.unref?.();
+}
+
+async function evaluateRuntimeIdle(runtime: CodexRuntime) {
+  runtime.idleTimer = null;
+  if (runtime.activeSocket) {
+    runtime.idleSinceMs = null;
+    return;
+  }
+
+  const activeTurnCount = runtime.engines.activeTurnCount();
+  if (activeTurnCount > 0) {
+    runtime.idleSinceMs = null;
+    scheduleRuntimeIdleEvaluation(runtime, Math.min(1_000, resolveIdleTtlMs()));
+    return;
+  }
+
+  const now = Date.now();
+  const idleSinceMs = runtime.idleSinceMs ?? now;
+  runtime.idleSinceMs = idleSinceMs;
+  const remainingMs = idleSinceMs + resolveIdleTtlMs() - now;
+  if (remainingMs > 0) {
+    scheduleRuntimeIdleEvaluation(runtime, remainingMs);
+    return;
+  }
+
+  if (runtimesByToken.get(runtime.token) === runtime) {
+    runtimesByToken.delete(runtime.token);
+  }
+  await closeRuntime(runtime, new Error("Codex runtime idle timeout"));
+}
+
+async function closeRuntime(runtime: CodexRuntime, err: Error) {
+  cancelRuntimeIdleTimer(runtime);
+  try {
+    runtime.connection.close(err);
+  } catch {
+    // ignore
+  }
+  try {
+    await runtime.router.close();
+  } catch {
+    // ignore
+  }
+}
+
+function cancelRuntimeIdleTimer(runtime: CodexRuntime) {
+  if (runtime.idleTimer) {
+    clearTimeout(runtime.idleTimer);
+    runtime.idleTimer = null;
+  }
+}
+
+function resolveIdleTtlMs(): number {
+  const raw = Number(process.env.EPOCH_CODEX_RUNTIME_IDLE_TTL_MS ?? DEFAULT_IDLE_TTL_MS);
+  if (!Number.isFinite(raw)) return DEFAULT_IDLE_TTL_MS;
+  return Math.max(1, Math.floor(raw));
 }
 
 async function dispatchInboundMessage(router: CodexRpcRouter, message: unknown) {

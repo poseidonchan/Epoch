@@ -23,9 +23,9 @@ test("exports a stable gateway.json", async () => {
   assert.ok(parsed.operatorMethods.includes("workspace.raw"));
   assert.ok(parsed.operatorMethods.includes("settings.openai.get"));
   assert.ok(parsed.operatorMethods.includes("settings.openai.set"));
-  assert.ok(parsed.operatorMethods.includes("push.device.register"));
-  assert.ok(parsed.operatorMethods.includes("push.device.unregister"));
-  assert.ok(parsed.operatorMethods.includes("push.device.heartbeat"));
+  assert.ok(!parsed.operatorMethods.includes("push.device.register"));
+  assert.ok(!parsed.operatorMethods.includes("push.device.unregister"));
+  assert.ok(!parsed.operatorMethods.includes("push.device.heartbeat"));
   assert.ok(parsed.nodeMethods.includes("slurm.submit"));
   assert.ok(parsed.nodeMethods.includes("runtime.exec.start"));
   assert.ok(parsed.nodeMethods.includes("runtime.fs.applyPatch"));

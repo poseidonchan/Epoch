@@ -14,4 +14,5 @@ test("hub package only exposes the epoch CLI", async () => {
   assert.deepEqual(pkg.bin, {
     epoch: "dist/cli.js",
   });
+  assert.equal(pkg.dependencies?.["@epoch/push-relay"], undefined);
 });

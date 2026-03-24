@@ -48,9 +48,7 @@ import { extractInlineAttachmentTextForPrompt } from "./indexing/extract.js";
 import { fetchUrlContent } from "./indexing/fetchUrl.js";
 import { generateSessionTitle } from "./indexing/summarize.js";
 import { LocalRuntimeBridge } from "./local_runtime.js";
-import { createPushRelayClient } from "./push_relay_client.js";
 import { listWorkspaceDirectories, resolveWorkspaceDirectory } from "./workspace_directories.js";
-import type { SilentPushSender } from "@epoch/push-relay";
 
 type Role = "operator" | "node";
 
@@ -60,7 +58,6 @@ type HubStartOptions = {
   config: HubConfig;
   stateDir: string;
   pool: DbPool;
-  pushSender?: SilentPushSender | null;
 };
 
 type ConnectionContext =
@@ -287,7 +284,6 @@ export async function startHub(opts: HubStartOptions): Promise<HubHandle> {
       config: state.config,
       stateDir: state.stateDir,
       pool: state.pool,
-      pushRelayClient: state.pushRelayClient,
       runtimeBridge: {
         isNodeConnected: () => true,
         listNodeCommands: () => state.localRuntime.listNodeCommands(),
@@ -379,11 +375,6 @@ function createHubState(opts: HubStartOptions) {
     pool: opts.pool,
     repository,
     engines,
-    pushRelayClient: createPushRelayClient({
-      config: opts.config,
-      repository,
-      sender: opts.pushSender ?? null,
-    }),
     localRuntime,
     operators: new Set<OperatorConn>(),
     node: { ws: createNoopSocket(), ctx: localNodeCtx } as NodeConn,
@@ -427,10 +418,6 @@ function createNoopSocket(): WebSocket {
     send() {},
     close() {},
   } as unknown as WebSocket;
-}
-
-function codexRepositoryForState(state: HubState): CodexRepository {
-  return state.repository;
 }
 
 function requireHttpAuth(state: HubState, req: { headers: Record<string, string | string[] | undefined> }) {
@@ -1270,101 +1257,6 @@ async function handleOperatorRequest(state: HubState, ws: WebSocket, ctx: Connec
             thinkingLevels: m.reasoning ? ["minimal", "low", "medium", "high", "xhigh"] : [],
           })),
           thinkingLevels: ["minimal", "low", "medium", "high", "xhigh"],
-        });
-        return;
-      }
-      case "push.device.register": {
-        const installationId = normalizeOptionalString(params.installationId);
-        const apnsToken = normalizeOptionalString(params.apnsToken);
-        const environment = normalizeOptionalString(params.environment);
-        const deviceName = normalizeOptionalString(params.deviceName);
-        const platform = normalizeOptionalString(params.platform);
-        if (!installationId || !apnsToken || !environment || !deviceName || !platform) {
-          sendResError(ws, id, "BAD_REQUEST", "Missing installationId/apnsToken/environment/deviceName/platform");
-          return;
-        }
-        await codexRepositoryForState(state).upsertPushDevice({
-          serverId: state.config.serverId,
-          installationId,
-          apnsToken,
-          environment,
-          deviceName,
-          platform,
-          seenAt: new Date().toISOString(),
-        });
-        void state.pushRelayClient.registerDevice({
-          serverId: state.config.serverId,
-          installationId,
-          apnsToken,
-          environment,
-          deviceName,
-          platform,
-        }).catch(() => {
-          // best effort relay fanout registration
-        });
-        sendResOk(ws, id, {
-          ok: true,
-          serverId: state.config.serverId,
-        });
-        return;
-      }
-      case "push.device.unregister": {
-        const installationId = normalizeOptionalString(params.installationId);
-        if (!installationId) {
-          sendResError(ws, id, "BAD_REQUEST", "Missing installationId");
-          return;
-        }
-        await codexRepositoryForState(state).deletePushDevice({
-          serverId: state.config.serverId,
-          installationId,
-        });
-        void state.pushRelayClient.unregisterDevice({
-          serverId: state.config.serverId,
-          installationId,
-        }).catch(() => {
-          // best effort relay fanout unregister
-        });
-        sendResOk(ws, id, {
-          ok: true,
-          serverId: state.config.serverId,
-        });
-        return;
-      }
-      case "push.device.heartbeat": {
-        const installationId = normalizeOptionalString(params.installationId);
-        if (!installationId) {
-          sendResError(ws, id, "BAD_REQUEST", "Missing installationId");
-          return;
-        }
-        const repository = codexRepositoryForState(state);
-        const registered = (await repository.listPushDevices({ serverId: state.config.serverId }))
-          .find((device) => device.installationId == installationId);
-        if (!registered) {
-          sendResError(ws, id, "NOT_FOUND", "Push device not registered");
-          return;
-        }
-        await repository.upsertPushDevice({
-          serverId: state.config.serverId,
-          installationId,
-          apnsToken: normalizeOptionalString(params.apnsToken) ?? registered.apnsToken,
-          environment: normalizeOptionalString(params.environment) ?? registered.environment,
-          deviceName: normalizeOptionalString(params.deviceName) ?? registered.deviceName,
-          platform: normalizeOptionalString(params.platform) ?? registered.platform,
-          seenAt: new Date().toISOString(),
-        });
-        void state.pushRelayClient.heartbeatDevice({
-          serverId: state.config.serverId,
-          installationId,
-          apnsToken: normalizeOptionalString(params.apnsToken),
-          environment: normalizeOptionalString(params.environment),
-          deviceName: normalizeOptionalString(params.deviceName),
-          platform: normalizeOptionalString(params.platform),
-        }).catch(() => {
-          // best effort relay heartbeat
-        });
-        sendResOk(ws, id, {
-          ok: true,
-          serverId: state.config.serverId,
         });
         return;
       }
