@@ -255,6 +255,210 @@ test("router handles internal runtime/commandExecution/exec serverRequest via ru
   assert.equal(completed.params.item.exitCode, 0);
 });
 
+test("router forwards danger-full-access sandboxMode when session sandbox uses type shape", async () => {
+  const sent = [];
+  const ws = {
+    send(payload) {
+      sent.push(JSON.parse(payload));
+    },
+    close() {},
+  };
+  const conn = new CodexConnectionState(ws, { maxIngressQueueDepth: 8 });
+
+  const turnFinished = deferred();
+
+  const repository = {
+    async query(sql) {
+      const normalized = String(sql);
+      if (normalized.includes("FROM turns") && normalized.includes("WHERE thread_id=$1")) {
+        return [];
+      }
+      if (normalized.includes("FROM projects") && normalized.includes("codex_sandbox_json")) {
+        return [{ codex_sandbox_json: null }];
+      }
+      if (normalized.includes("FROM sessions") && normalized.includes("codex_sandbox_json")) {
+        return [{ codex_sandbox_json: JSON.stringify({ type: "dangerFullAccess" }) }];
+      }
+      return [];
+    },
+    async listPendingInputsForSession() {
+      return [];
+    },
+    async resolvePendingInput() {
+      return true;
+    },
+    async findSessionByThread(threadId) {
+      assert.equal(threadId, "thr_runtime_2");
+      return { projectId: "proj_runtime", sessionId: "sess_runtime" };
+    },
+    async getThreadRecord(threadId) {
+      assert.equal(threadId, "thr_runtime_2");
+      return {
+        id: threadId,
+        projectId: null,
+        cwd: "/hpc/projects/proj_runtime",
+        modelProvider: "openai",
+        modelId: "gpt-5.3-codex",
+        preview: "",
+        createdAt: 1,
+        updatedAt: 1,
+        archived: false,
+        statusJson: JSON.stringify({
+          modelProvider: "openai",
+          model: "gpt-5.3-codex",
+          cwd: "/hpc/projects/proj_runtime",
+          approvalPolicy: "on-request",
+          sandbox: { type: "dangerFullAccess" },
+          reasoningEffort: null,
+          syncState: "ready",
+        }),
+        engine: "epoch-hpc",
+      };
+    },
+    async readThread(threadId) {
+      assert.equal(threadId, "thr_runtime_2");
+      return {
+        id: threadId,
+        preview: "",
+        modelProvider: "openai",
+        createdAt: 1,
+        updatedAt: 1,
+        path: null,
+        cwd: "/hpc/projects/proj_runtime",
+        cliVersion: "epoch/0.1.0",
+        source: "appServer",
+        gitInfo: null,
+        turns: [],
+      };
+    },
+    async appendThreadEvent() {},
+    async createTurn() {},
+    async updateTurn() {},
+    async upsertItem() {},
+    async updateThread() {},
+    async clearPlanSnapshotForSession() {},
+  };
+
+  const engines = {
+    defaultEngineName() {
+      return "epoch-hpc";
+    },
+    async getEngine(name) {
+      assert.equal(name, "epoch-hpc");
+      return {
+        name: "epoch-hpc",
+        async startTurn(args) {
+          const itemId = "item_exec_2";
+          const execResponsePromise = deferred();
+          return {
+            turn: {
+              id: args.turnId,
+              items: [],
+              status: "inProgress",
+              error: null,
+            },
+            events: (async function* stream() {
+              yield {
+                type: "notification",
+                method: "turn/started",
+                params: {
+                  threadId: args.threadId,
+                  turn: { id: args.turnId, items: [], status: "inProgress", error: null },
+                },
+              };
+              yield {
+                type: "serverRequest",
+                id: "srv_exec_2",
+                method: "runtime/commandExecution/exec",
+                params: {
+                  threadId: args.threadId,
+                  turnId: args.turnId,
+                  itemId,
+                  command: ["/bin/bash", "-c", "echo hello"],
+                  cwd: args.cwd,
+                },
+                respond: async (response) => {
+                  execResponsePromise.resolve(response);
+                },
+              };
+
+              await execResponsePromise.promise;
+              yield {
+                type: "notification",
+                method: "turn/completed",
+                params: {
+                  threadId: args.threadId,
+                  turn: { id: args.turnId, items: [], status: "completed", error: null },
+                },
+              };
+              turnFinished.resolve();
+            })(),
+          };
+        },
+      };
+    },
+    async close() {},
+  };
+
+  let capturedRuntimeParams = null;
+  const runtimeBridge = {
+    isNodeConnected() {
+      return true;
+    },
+    listNodeCommands() {
+      return ["runtime.exec.start", "runtime.exec.cancel", "runtime.fs.applyPatch", "runtime.fs.diff"];
+    },
+    async callNode(method, params) {
+      assert.equal(method, "runtime.exec.start");
+      capturedRuntimeParams = params;
+      return {
+        ok: true,
+        exitCode: 0,
+        durationMs: 7,
+        stdout: "hello\n",
+        stderr: "",
+        executionId: "exec_456",
+      };
+    },
+    subscribeNodeEvents() {
+      return () => {};
+    },
+    async getSessionPermissionLevel() {
+      return "default";
+    },
+    async reconcileAgentsFile() {},
+  };
+
+  const router = new CodexRpcRouter({
+    repository,
+    engines,
+    connection: conn,
+    token: "tok_runtime",
+    runtimeBridge,
+  });
+
+  await router.handleRequest({
+    id: "req_init",
+    method: "initialize",
+    params: { clientInfo: { name: "Epoch", version: "0.1.0" }, capabilities: {} },
+  });
+  await router.handleNotification({ method: "initialized", params: {} });
+
+  await router.handleRequest({
+    id: "req_turn_start",
+    method: "turn/start",
+    params: {
+      threadId: "thr_runtime_2",
+      input: [{ type: "text", text: "Run echo", text_elements: [] }],
+      planMode: false,
+    },
+  });
+
+  await turnFinished.promise;
+
+  assert.equal(capturedRuntimeParams?.sandboxMode, "danger-full-access");
+});
+
 function deferred() {
   let resolve;
   let reject;

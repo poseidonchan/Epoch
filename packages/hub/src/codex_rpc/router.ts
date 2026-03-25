@@ -422,7 +422,9 @@ export class CodexRpcRouter {
     const env = normalizeStringRecord(params.env);
     const permissionLevel = await this.resolvePermissionLevel(projectId, sessionId);
     const policy = await this.resolveProjectRuntimePolicy(projectId);
-    const sandboxConfig = await this.resolveSessionSandboxMode(projectId, sessionId);
+    const sandboxConfig = normalizeSandboxModeValue(params.sandboxMode)
+      ? { mode: normalizeSandboxModeValue(params.sandboxMode) as "workspace-write" | "danger-full-access" | "read-only" }
+      : await this.resolveSessionSandboxMode(projectId, sessionId);
     const sandboxMode = sandboxConfig.mode;
 
     let streamedAnyDelta = false;
@@ -528,7 +530,9 @@ export class CodexRpcRouter {
 
     const permissionLevel = await this.resolvePermissionLevel(projectId, sessionId);
     const policy = await this.resolveProjectRuntimePolicy(projectId);
-    const sandboxConfig = await this.resolveSessionSandboxMode(projectId, sessionId);
+    const sandboxConfig = normalizeSandboxModeValue(params.sandboxMode)
+      ? { mode: normalizeSandboxModeValue(params.sandboxMode) as "workspace-write" | "danger-full-access" | "read-only" }
+      : await this.resolveSessionSandboxMode(projectId, sessionId);
     const sandboxMode = sandboxConfig.mode;
     const diffByPath = new Map<string, string>();
 
@@ -650,7 +654,7 @@ export class CodexRpcRouter {
         [projectId, sessionId]
       );
       const parsed = safeParseJsonObject(rows[0]?.codex_sandbox_json ?? "");
-      const mode = normalizeNonEmptyString(parsed?.mode);
+      const mode = normalizeSandboxModeValue(parsed?.type ?? parsed?.mode);
       if (mode === "danger-full-access") return { mode: "danger-full-access" };
       if (mode === "read-only") return { mode: "read-only" };
       return { mode: "workspace-write", networkAccess: Boolean(parsed?.networkAccess ?? true) };
@@ -1485,6 +1489,16 @@ function normalizeNonEmptyString(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeSandboxModeValue(raw: unknown): "read-only" | "workspace-write" | "danger-full-access" | null {
+  const normalized = normalizeNonEmptyString(raw);
+  if (!normalized) return null;
+  const compact = normalized.trim().toLowerCase().replace(/[\s_-]/g, "");
+  if (compact === "readonly") return "read-only";
+  if (compact === "workspacewrite") return "workspace-write";
+  if (compact === "dangerfullaccess") return "danger-full-access";
+  return null;
 }
 
 function normalizePositiveInteger(raw: unknown): number | null {

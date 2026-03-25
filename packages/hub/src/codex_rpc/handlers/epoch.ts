@@ -1902,53 +1902,59 @@ function normalizeSandboxPolicy(raw: unknown): Record<string, unknown> | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     if (raw == null) {
       return {
-        mode: "workspace-write",
+        type: "workspaceWrite",
         networkAccess: true,
         excludeTmpdirEnvVar: false,
-        excludeHomeEnvVar: false,
+        excludeSlashTmp: false,
         writableRoots: [],
       };
     }
     return null;
   }
 
-  const mode = normalizeNonEmptyString((raw as Record<string, unknown>).mode) ?? "workspace-write";
-  const networkAccess = Boolean((raw as Record<string, unknown>).networkAccess ?? true);
-  const excludeTmpdirEnvVar = Boolean((raw as Record<string, unknown>).excludeTmpdirEnvVar ?? false);
-  const excludeHomeEnvVar = Boolean((raw as Record<string, unknown>).excludeHomeEnvVar ?? false);
-  const writableRoots = Array.isArray((raw as Record<string, unknown>).writableRoots)
-    ? ((raw as Record<string, unknown>).writableRoots as unknown[]).map((entry) => String(entry)).filter(Boolean)
+  const obj = raw as Record<string, unknown>;
+  const mode = normalizeSandboxModeValue(obj.mode ?? obj.type) ?? "workspace-write";
+  if (mode === "danger-full-access") {
+    return { type: "dangerFullAccess" };
+  }
+  if (mode === "read-only") {
+    return { type: "readOnly" };
+  }
+
+  const networkAccess = Boolean(obj.networkAccess ?? true);
+  const excludeTmpdirEnvVar = Boolean(obj.excludeTmpdirEnvVar ?? false);
+  const excludeSlashTmp = Boolean(obj.excludeSlashTmp ?? obj.excludeHomeEnvVar ?? false);
+  const writableRoots = Array.isArray(obj.writableRoots)
+    ? (obj.writableRoots as unknown[]).map((entry) => String(entry)).filter(Boolean)
     : [];
 
   return {
-    mode,
+    type: "workspaceWrite",
     networkAccess,
     excludeTmpdirEnvVar,
-    excludeHomeEnvVar,
+    excludeSlashTmp,
     writableRoots,
   };
 }
 
+function normalizeSandboxModeValue(raw: unknown): "read-only" | "workspace-write" | "danger-full-access" | null {
+  const normalized = normalizeNonEmptyString(raw);
+  if (!normalized) return null;
+  const compact = normalized.trim().toLowerCase().replace(/[\s_-]/g, "");
+  if (compact === "readonly") return "read-only";
+  if (compact === "workspacewrite") return "workspace-write";
+  if (compact === "dangerfullaccess") return "danger-full-access";
+  return null;
+}
+
 function toCodexSandboxMode(raw: unknown): "read-only" | "workspace-write" | "danger-full-access" | null {
   if (typeof raw === "string") {
-    const normalized = raw.trim().toLowerCase();
-    if (normalized === "read-only" || normalized === "readonly" || normalized === "read_only") return "read-only";
-    if (normalized === "workspace-write" || normalized === "workspacewrite" || normalized === "workspace_write") {
-      return "workspace-write";
-    }
-    if (
-      normalized === "danger-full-access" ||
-      normalized === "dangerfullaccess" ||
-      normalized === "danger_full_access"
-    ) {
-      return "danger-full-access";
-    }
-    return null;
+    return normalizeSandboxModeValue(raw);
   }
 
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const obj = raw as Record<string, unknown>;
-  return toCodexSandboxMode(normalizeNonEmptyString(obj.mode) ?? normalizeNonEmptyString(obj.type) ?? null);
+  return normalizeSandboxModeValue(obj.mode ?? obj.type);
 }
 
 function normalizeNonEmptyString(raw: unknown): string | null {

@@ -248,6 +248,8 @@ export class EpochHpcEngine implements CodexEngineSession {
     const maxTurnMs = resolveNonNegativeIntegerEnv("EPOCH_HPC_ENGINE_MAX_TURN_MS") ?? 0;
 
     const normalizedApprovalPolicy = String(args.approvalPolicy ?? "").trim().toLowerCase();
+    const sandboxMode = normalizeSandboxMode(args.sandboxPolicy);
+    const skipApprovals = shouldSkipApproval(normalizedApprovalPolicy, sandboxMode);
 
     let accumulatedText = "";
     const onDelta = (delta: string) => {
@@ -293,7 +295,7 @@ export class EpochHpcEngine implements CodexEngineSession {
         break;
       }
 
-      const toolCallConcurrency = normalizedApprovalPolicy !== "never" || toolCalls.some((call) => call.name.toLowerCase() === "request_user_input")
+      const toolCallConcurrency = !skipApprovals || toolCalls.some((call) => call.name.toLowerCase() === "request_user_input")
         ? 1
         : 4;
 
@@ -304,6 +306,7 @@ export class EpochHpcEngine implements CodexEngineSession {
           turnId: args.turnId,
           cwd: args.cwd,
           approvalPolicy: args.approvalPolicy,
+          sandboxMode,
           call,
           queue,
           signal,
@@ -463,6 +466,7 @@ export class EpochHpcEngine implements CodexEngineSession {
     turnId: string;
     cwd: string;
     approvalPolicy: string;
+    sandboxMode: "workspace-write" | "danger-full-access" | "read-only" | null;
     call: OpenAIResponsesToolCall;
     queue: AsyncPushQueue<EngineStreamEvent>;
     signal: AbortSignal;
@@ -488,6 +492,7 @@ export class EpochHpcEngine implements CodexEngineSession {
     turnId: string;
     cwd: string;
     approvalPolicy: string;
+    sandboxMode: "workspace-write" | "danger-full-access" | "read-only" | null;
     call: OpenAIResponsesToolCall;
     queue: AsyncPushQueue<EngineStreamEvent>;
     signal: AbortSignal;
@@ -524,7 +529,7 @@ export class EpochHpcEngine implements CodexEngineSession {
     });
 
     const approvalPolicy = String(args.approvalPolicy ?? "").trim().toLowerCase();
-    if (approvalPolicy !== "never") {
+    if (!shouldSkipApproval(approvalPolicy, args.sandboxMode)) {
       const approvalRequest = makeCommandExecutionApprovalRequest({
         id: `apr_exec_${uuidv4()}`,
         threadId: args.threadId,
@@ -573,6 +578,7 @@ export class EpochHpcEngine implements CodexEngineSession {
             itemId,
             command: [command0, "-c", cmd],
             cwd,
+            ...(args.sandboxMode ? { sandboxMode: args.sandboxMode } : {}),
             ...(timeoutMs != null ? { timeoutMs } : {}),
             ...(env ? { env } : {}),
           },
@@ -638,6 +644,7 @@ export class EpochHpcEngine implements CodexEngineSession {
     turnId: string;
     cwd: string;
     approvalPolicy: string;
+    sandboxMode: "workspace-write" | "danger-full-access" | "read-only" | null;
     call: OpenAIResponsesToolCall;
     queue: AsyncPushQueue<EngineStreamEvent>;
     signal: AbortSignal;
@@ -659,7 +666,7 @@ export class EpochHpcEngine implements CodexEngineSession {
     });
 
     const approvalPolicy = String(args.approvalPolicy ?? "").trim().toLowerCase();
-    if (approvalPolicy !== "never") {
+    if (!shouldSkipApproval(approvalPolicy, args.sandboxMode)) {
       const approvalRequest = makeFileChangeApprovalRequest({
         id: `apr_patch_${uuidv4()}`,
         threadId: args.threadId,
@@ -704,6 +711,7 @@ export class EpochHpcEngine implements CodexEngineSession {
             turnId: args.turnId,
             itemId,
             patch,
+            ...(args.sandboxMode ? { sandboxMode: args.sandboxMode } : {}),
           },
         },
         args.signal
@@ -1226,6 +1234,28 @@ function normalizeStringRecord(raw: unknown): Record<string, string> | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const obj = raw as Record<string, unknown>;
   return Object.fromEntries(Object.entries(obj).map(([k, v]) => [String(k), String(v ?? "")]));
+}
+
+function normalizeSandboxMode(raw: unknown): "workspace-write" | "danger-full-access" | "read-only" | null {
+  if (typeof raw === "string") {
+    const compact = raw.trim().toLowerCase().replace(/[\s_-]/g, "");
+    if (compact === "workspacewrite") return "workspace-write";
+    if (compact === "dangerfullaccess") return "danger-full-access";
+    if (compact === "readonly") return "read-only";
+    return null;
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const obj = raw as Record<string, unknown>;
+  return normalizeSandboxMode(obj.type ?? obj.mode);
+}
+
+function shouldSkipApproval(
+  approvalPolicy: string,
+  sandboxMode: "workspace-write" | "danger-full-access" | "read-only" | null
+): boolean {
+  return approvalPolicy === "never" || sandboxMode === "danger-full-access";
 }
 
 function normalizePositiveInteger(raw: unknown): number | null {
