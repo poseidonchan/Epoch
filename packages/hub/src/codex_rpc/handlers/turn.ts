@@ -424,7 +424,7 @@ function toCodexSandboxMode(raw: unknown): "read-only" | "workspace-write" | "da
 
 function toCodexSandboxParam(
   raw: unknown
-): Record<string, unknown> | string | null {
+): Record<string, unknown> | null {
   if (!raw) return null;
   if (typeof raw === "string") {
     const mode = normalizeSandboxModeValue(raw);
@@ -437,14 +437,15 @@ function toCodexSandboxParam(
         excludeSlashTmp: false,
       };
     }
-    if (mode) return mode;
+    if (mode === "danger-full-access") return { type: "dangerFullAccess" };
+    if (mode === "read-only") return { type: "readOnly" };
     return null;
   }
   if (typeof raw !== "object" || Array.isArray(raw)) return null;
   const obj = raw as Record<string, unknown>;
   const mode = normalizeSandboxModeValue(obj.mode ?? obj.type);
-  if (mode === "danger-full-access") return "danger-full-access";
-  if (mode === "read-only") return "read-only";
+  if (mode === "danger-full-access") return { type: "dangerFullAccess" };
+  if (mode === "read-only") return { type: "readOnly" };
   if (mode === "workspace-write") {
     const writableRoots = Array.isArray(obj.writableRoots)
       ? obj.writableRoots.map((entry) => String(entry)).filter((entry) => entry.trim().length > 0)

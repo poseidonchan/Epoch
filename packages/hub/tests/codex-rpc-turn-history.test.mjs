@@ -1473,7 +1473,7 @@ test("handleTurnStart forwards workspaceWrite sandbox policy and forces network 
   });
 });
 
-test("handleTurnStart forwards dangerFullAccess sandbox policy as danger-full-access mode", async () => {
+test("handleTurnStart forwards persisted danger-full-access sandbox policy as a tagged object", async () => {
   const threadId = "123e4567-e89b-12d3-a456-426614174334";
   const thread = {
     id: threadId,
@@ -1511,7 +1511,7 @@ test("handleTurnStart forwards dangerFullAccess sandbox policy as danger-full-ac
           model: "gpt-5.3-codex",
           cwd: "/tmp/project",
           approvalPolicy: "on-request",
-          sandbox: { type: "dangerFullAccess" },
+          sandbox: { type: "danger-full-access" },
           reasoningEffort: null,
         }),
         engine: "codex-app-server",
@@ -1554,7 +1554,7 @@ test("handleTurnStart forwards dangerFullAccess sandbox policy as danger-full-ac
     }
   );
 
-  assert.equal(capturedStartArgs?.sandboxPolicy, "danger-full-access");
+  assert.deepEqual(capturedStartArgs?.sandboxPolicy, { type: "dangerFullAccess" });
 });
 
 test("handleTurnStart applies updated sandbox immediately across turns in the same session", async () => {
@@ -1573,7 +1573,7 @@ test("handleTurnStart applies updated sandbox immediately across turns in the sa
     turns: [],
   };
 
-  let currentSandbox = { type: "workspaceWrite", networkAccess: false };
+  let currentSandbox = { type: "workspace-write", networkAccess: false };
   const capturedSandboxPolicies = [];
   const repository = withStateDirectory({
     async query() {
@@ -1639,7 +1639,7 @@ test("handleTurnStart applies updated sandbox immediately across turns in the sa
     }
   );
 
-  currentSandbox = { type: "dangerFullAccess" };
+  currentSandbox = { type: "danger-full-access" };
 
   await handleTurnStart(
     { repository, engines },
@@ -1657,7 +1657,7 @@ test("handleTurnStart applies updated sandbox immediately across turns in the sa
     excludeTmpdirEnvVar: false,
     excludeSlashTmp: false,
   });
-  assert.equal(capturedSandboxPolicies[1], "danger-full-access");
+  assert.deepEqual(capturedSandboxPolicies[1], { type: "dangerFullAccess" });
 });
 
 async function* emptyEvents() {}
