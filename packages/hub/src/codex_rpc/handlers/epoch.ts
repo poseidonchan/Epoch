@@ -11,6 +11,7 @@ import { loadOrCreateHubConfig, resolveConfiguredWorkspaceRoot } from "../../con
 import { generateSessionTitle } from "../../indexing/summarize.js";
 import { getEnvApiKey } from "../../model.js";
 import { loadOpenAIApiKeyFromStateDir } from "../../openai_settings.js";
+import { normalizeWorkspacePath, requireWorkspacePath } from "../../workspace_paths.js";
 
 type EpochHandlerContext = {
   repository: CodexRepository;
@@ -1069,7 +1070,7 @@ function mapProjectRow(row: any) {
     codexModel: normalizeNonEmptyString(row.codex_model_id),
     codexApprovalPolicy: normalizeNonEmptyString(row.codex_approval_policy),
     codexSandbox: safeJsonParseObject(row.codex_sandbox_json),
-    hpcWorkspacePath: normalizeNonEmptyString(row.hpc_workspace_path),
+    hpcWorkspacePath: normalizeWorkspacePath(row.hpc_workspace_path),
     hpcWorkspaceState: normalizeNonEmptyString(row.hpc_workspace_state) ?? "ready",
   };
 }
@@ -1848,7 +1849,7 @@ async function resolveProjectWorkspacePath(
 ): Promise<string> {
   const requested = normalizeNonEmptyString(requestedWorkspacePath);
   if (requested) {
-    return path.resolve(requested);
+    return requireWorkspacePath(requested);
   }
 
   try {
@@ -1856,7 +1857,7 @@ async function resolveProjectWorkspacePath(
       `SELECT hpc_workspace_path FROM projects WHERE id=$1 LIMIT 1`,
       [projectId]
     );
-    const persisted = normalizeNonEmptyString(rows[0]?.hpc_workspace_path);
+    const persisted = normalizeWorkspacePath(rows[0]?.hpc_workspace_path);
     if (persisted) return persisted;
   } catch {
     // ignore lookup failures and fall back to configured root

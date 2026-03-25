@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import os from "node:os";
 
 import { handleTurnStart } from "../dist/index.js";
 
@@ -478,6 +479,106 @@ test("handleTurnStart normalizes stale project cwd before engine start", async (
       process.env.EPOCH_HPC_WORKSPACE_ROOT = originalRoot;
     }
   }
+});
+
+test("handleTurnStart repairs legacy embedded-tilde persisted project roots before engine start", async () => {
+  const threadId = "123e4567-e89b-12d3-a456-426614174124";
+  const projectId = "proj_embedded_tilde";
+  const thread = {
+    id: threadId,
+    preview: "",
+    modelProvider: "openai",
+    createdAt: 1,
+    updatedAt: 1,
+    path: null,
+    cwd: `projects/${projectId}`,
+    cliVersion: "epoch/0.1.0",
+    source: "appServer",
+    gitInfo: null,
+    turns: [],
+  };
+
+  let capturedStartArgs = null;
+  let updatedThread = null;
+
+  const repository = withStateDirectory({
+    async query(sql, args = []) {
+      const normalized = String(sql);
+      if (normalized.includes("FROM projects") && normalized.includes("hpc_workspace_path")) {
+        assert.equal(args[0], projectId);
+        return [{ hpc_workspace_path: `${process.cwd()}/~` }];
+      }
+      return [];
+    },
+    async getThreadRecord(id) {
+      assert.equal(id, threadId);
+      return {
+        id: threadId,
+        projectId,
+        cwd: `projects/${projectId}`,
+        modelProvider: "openai",
+        modelId: "gpt-5.3-codex",
+        preview: "",
+        createdAt: 1,
+        updatedAt: 1,
+        archived: false,
+        statusJson: JSON.stringify({
+          modelProvider: "openai",
+          model: "gpt-5.3-codex",
+          cwd: `projects/${projectId}`,
+          approvalPolicy: "on-request",
+          sandbox: { mode: "workspace-write" },
+          reasoningEffort: null,
+        }),
+        engine: "codex-app-server",
+      };
+    },
+    async readThread(id) {
+      assert.equal(id, threadId);
+      return JSON.parse(JSON.stringify(thread));
+    },
+    async updateThread(args) {
+      updatedThread = args;
+    },
+    async createTurn() {},
+    async upsertItem() {},
+  });
+
+  const engines = {
+    async getEngine(name) {
+      assert.equal(name, "codex-app-server");
+      return {
+        async startTurn(args) {
+          capturedStartArgs = args;
+          return {
+            turn: {
+              id: args.turnId,
+              items: [],
+              status: "inProgress",
+              error: null,
+            },
+            events: emptyEvents(),
+          };
+        },
+      };
+    },
+  };
+
+  await handleTurnStart(
+    {
+      repository,
+      engines,
+    },
+    {
+      threadId,
+      input: [{ type: "text", text: "repair legacy tilde path" }],
+    }
+  );
+
+  assert.ok(updatedThread);
+  assert.equal(updatedThread.cwd, os.homedir());
+  assert.ok(capturedStartArgs);
+  assert.equal(capturedStartArgs.cwd, os.homedir());
 });
 
 test("handleTurnStart injects indexed project snippets into turn input", async () => {

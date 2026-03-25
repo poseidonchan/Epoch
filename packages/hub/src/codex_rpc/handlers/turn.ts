@@ -7,6 +7,7 @@ import { buildProjectFileContextStream } from "../../indexing/projectIndexing.js
 import { loadOrCreateHubConfig, resolveConfiguredWorkspaceRoot } from "../../config.js";
 import { assertExplicitModelSupportedByCodexAppServer, resolveHubProvider } from "../../model.js";
 import { loadOpenAIApiKeyFromStateDir } from "../../openai_settings.js";
+import { normalizeWorkspacePath } from "../../workspace_paths.js";
 import { normalizeEngineName, type CodexEngineRegistry } from "../engine_registry.js";
 import type { EngineStartTurnResult, EngineStreamEvent } from "../engines/types.js";
 import type { CodexRepository } from "../repository.js";
@@ -953,9 +954,9 @@ async function resolveProjectWorkspacePath(repository: CodexRepository, projectI
        LIMIT 1`,
       [projectId]
     );
-    const persisted = normalizeNonEmptyString(rows[0]?.hpc_workspace_path);
+    const persisted = normalizeWorkspacePath(rows[0]?.hpc_workspace_path);
     if (persisted) {
-      return path.resolve(persisted);
+      return persisted;
     }
   } catch {
     // ignore lookup failures and fall back to the configured default root

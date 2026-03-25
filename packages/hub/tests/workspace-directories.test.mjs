@@ -5,7 +5,12 @@ import path from "node:path";
 import { mkdtemp, mkdir, writeFile, realpath } from "node:fs/promises";
 
 import { operatorMethods } from "@epoch/protocol";
-import { listWorkspaceDirectories, resolveWorkspaceDirectory } from "../dist/index.js";
+import {
+  listBoundProjectWorkspaceEntries,
+  listWorkspaceDirectories,
+  resolveBoundProjectWorkspacePath,
+  resolveWorkspaceDirectory,
+} from "../dist/index.js";
 
 test("operator methods expose workspace directory browsing endpoints", () => {
   assert.equal(operatorMethods.includes("workspace.directories.list"), true);
@@ -43,4 +48,40 @@ test("workspace directory helpers resolve and list existing directories", async 
   const hiddenListed = await listWorkspaceDirectories(root, { includeHidden: true, limit: 1 });
   assert.equal(hiddenListed.entries.length, 1);
   assert.equal(hiddenListed.truncated, true);
+});
+
+test("workspace directory helpers expand tilde-rooted paths", async () => {
+  const resolvedHome = await realpath(os.homedir());
+
+  const resolved = await resolveWorkspaceDirectory("~");
+
+  assert.equal(resolved.path, resolvedHome);
+  assert.equal(resolved.name, path.basename(resolvedHome));
+});
+
+test("bound project workspace helpers repair legacy embedded-tilde persisted paths", async () => {
+  const resolvedHome = await realpath(os.homedir());
+  const repository = {
+    async query(sql, args = []) {
+      const normalized = String(sql);
+      if (normalized.includes("FROM projects") && normalized.includes("hpc_workspace_path")) {
+        assert.equal(args[0], "proj_legacy_tilde");
+        return [
+          {
+            id: "proj_legacy_tilde",
+            hpc_workspace_path: `${process.cwd()}/~`,
+            hpc_workspace_state: "ready",
+          },
+        ];
+      }
+      throw new Error(`Unexpected SQL: ${normalized}`);
+    },
+  };
+
+  const resolved = await resolveBoundProjectWorkspacePath(repository, "proj_legacy_tilde");
+  assert.equal(resolved, resolvedHome);
+
+  const listed = await listBoundProjectWorkspaceEntries(repository, "proj_legacy_tilde", { limit: 1 });
+  assert.equal(listed.path, ".");
+  assert.ok(Array.isArray(listed.entries));
 });

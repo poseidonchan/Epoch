@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import os from "node:os";
 
 import { handleThreadStart } from "../dist/index.js";
 
@@ -129,4 +130,71 @@ test("handleThreadStart falls back to the default direct-connect workspace root"
       process.env.EPOCH_HPC_WORKSPACE_ROOT = originalLegacyRoot;
     }
   }
+});
+
+test("handleThreadStart repairs legacy embedded-tilde project workspace paths", async () => {
+  const sessionId = "123e4567-e89b-12d3-a456-426614174233";
+  const projectId = "123e4567-e89b-12d3-a456-426614174234";
+  const brokenWorkspacePath = `${process.cwd()}/~`;
+  const expectedWorkspacePath = os.homedir();
+  let createdThread = null;
+
+  const repository = {
+    stateDirectory() {
+      return "/tmp/epoch-thread-tilde-state";
+    },
+    async query(sql, args = []) {
+      const normalized = String(sql);
+      if (normalized.includes("FROM sessions") && normalized.includes("WHERE id=$1")) {
+        assert.equal(args[0], sessionId);
+        return [
+          {
+            id: sessionId,
+            project_id: projectId,
+            backend_engine: "epoch-hpc",
+            codex_model_provider: "openai",
+            codex_model: "gpt-5.3-codex",
+            codex_approval_policy: "on-request",
+            codex_sandbox_json: JSON.stringify({ mode: "workspace-write" }),
+          },
+        ];
+      }
+      if (normalized.includes("FROM projects") && normalized.includes("hpc_workspace_path")) {
+        assert.equal(args[0], projectId);
+        return [{ hpc_workspace_path: brokenWorkspacePath }];
+      }
+      if (normalized.includes("UPDATE sessions SET codex_thread_id=")) {
+        assert.equal(args[2], sessionId);
+        return [];
+      }
+      throw new Error(`Unexpected SQL: ${normalized}`);
+    },
+    async createThread(args) {
+      createdThread = args;
+    },
+    async assignThreadToSession(args) {
+      assert.equal(args.sessionId, sessionId);
+    },
+  };
+
+  const result = await handleThreadStart(
+    {
+      repository,
+      engines: {
+        defaultEngineName() {
+          return "pi";
+        },
+        async getEngine() {
+          assert.fail("Engine should not be requested for local thread start");
+        },
+      },
+    },
+    {
+      sessionId,
+    }
+  );
+
+  assert.equal(result.cwd, expectedWorkspacePath);
+  assert.ok(createdThread);
+  assert.equal(createdThread.cwd, expectedWorkspacePath);
 });
