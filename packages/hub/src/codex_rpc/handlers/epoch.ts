@@ -1902,39 +1902,43 @@ function normalizeSandboxPolicy(raw: unknown): Record<string, unknown> | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     if (raw == null) {
       return {
-        type: "workspaceWrite",
+        type: "workspace-write",
         networkAccess: true,
-        excludeTmpdirEnvVar: false,
-        excludeSlashTmp: false,
-        writableRoots: [],
       };
     }
     return null;
   }
 
   const obj = raw as Record<string, unknown>;
-  const mode = normalizeSandboxModeValue(obj.mode ?? obj.type) ?? "workspace-write";
+  const mode = normalizeSandboxModeValue(obj.mode ?? obj.type);
+  if (!mode) {
+    throw new Error("Invalid codexSandbox");
+  }
   if (mode === "danger-full-access") {
-    return { type: "dangerFullAccess" };
+    return { type: "danger-full-access" };
   }
   if (mode === "read-only") {
-    return { type: "readOnly" };
+    return { type: "read-only" };
   }
 
-  const networkAccess = Boolean(obj.networkAccess ?? true);
-  const excludeTmpdirEnvVar = Boolean(obj.excludeTmpdirEnvVar ?? false);
-  const excludeSlashTmp = Boolean(obj.excludeSlashTmp ?? obj.excludeHomeEnvVar ?? false);
-  const writableRoots = Array.isArray(obj.writableRoots)
-    ? (obj.writableRoots as unknown[]).map((entry) => String(entry)).filter(Boolean)
-    : [];
-
-  return {
-    type: "workspaceWrite",
-    networkAccess,
-    excludeTmpdirEnvVar,
-    excludeSlashTmp,
-    writableRoots,
+  const sandbox: Record<string, unknown> = {
+    type: "workspace-write",
+    networkAccess: Boolean(obj.networkAccess ?? true),
   };
+
+  if (Array.isArray(obj.writableRoots)) {
+    sandbox.writableRoots = (obj.writableRoots as unknown[]).map((entry) => String(entry)).filter(Boolean);
+  }
+  if (Object.prototype.hasOwnProperty.call(obj, "excludeTmpdirEnvVar")) {
+    sandbox.excludeTmpdirEnvVar = Boolean(obj.excludeTmpdirEnvVar);
+  }
+  if (Object.prototype.hasOwnProperty.call(obj, "excludeSlashTmp")) {
+    sandbox.excludeSlashTmp = Boolean(obj.excludeSlashTmp);
+  } else if (Object.prototype.hasOwnProperty.call(obj, "excludeHomeEnvVar")) {
+    sandbox.excludeSlashTmp = Boolean(obj.excludeHomeEnvVar);
+  }
+
+  return sandbox;
 }
 
 function normalizeSandboxModeValue(raw: unknown): "read-only" | "workspace-write" | "danger-full-access" | null {

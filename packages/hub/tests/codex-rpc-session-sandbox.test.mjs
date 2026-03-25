@@ -10,7 +10,7 @@ test("handleEpochSessionCreate inherits type-shaped sandbox config from the proj
   const stateDir = await mkdtemp(path.join(os.tmpdir(), "epoch-session-sandbox-create-"));
   const projectId = "proj_session_sandbox_create";
   const sessionId = "sess_session_sandbox_create";
-  const expectedSandbox = { type: "dangerFullAccess" };
+  const expectedSandbox = { type: "danger-full-access" };
   const createdThreads = [];
 
   const repository = {
@@ -89,7 +89,7 @@ test("handleEpochSessionCreate accepts type-shaped sandbox overrides", async () 
   const projectId = "proj_session_sandbox_override";
   const sessionId = "sess_session_sandbox_override";
   const expectedSandbox = {
-    type: "workspaceWrite",
+    type: "workspace-write",
     networkAccess: true,
     writableRoots: ["/tmp/project-session-sandbox-override"],
     excludeTmpdirEnvVar: false,
@@ -175,7 +175,7 @@ test("handleEpochSessionUpdate accepts type-shaped sandbox updates", async () =>
   const sessionId = "sess_session_sandbox_update";
   const threadId = "thr_session_sandbox_update";
   const expectedSandbox = {
-    type: "workspaceWrite",
+    type: "workspace-write",
     networkAccess: true,
     writableRoots: ["/tmp/project-session-sandbox-update"],
     excludeTmpdirEnvVar: false,
@@ -271,5 +271,30 @@ test("handleEpochSessionUpdate accepts type-shaped sandbox updates", async () =>
   );
 
   assert.deepEqual(JSON.parse(capturedUpdateArgs[0]), expectedSandbox);
+  assert.equal(result.session.codexThreadId, threadId);
   assert.deepEqual(result.session.codexSandbox, expectedSandbox);
+});
+
+test("handleEpochSessionUpdate rejects invalid sandbox payloads instead of downgrading", async () => {
+  const repository = {
+    async query() {
+      throw new Error("query should not be called");
+    },
+  };
+
+  await assert.rejects(
+    () =>
+      handleEpochSessionUpdate(
+        {
+          repository,
+          engines: {},
+        },
+        {
+          projectId: "proj_session_sandbox_invalid",
+          sessionId: "sess_session_sandbox_invalid",
+          codexSandbox: { type: "not-a-real-mode" },
+        }
+      ),
+    /Invalid codexSandbox/
+  );
 });

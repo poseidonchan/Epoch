@@ -277,7 +277,7 @@ test("router forwards danger-full-access sandboxMode when session sandbox uses t
         return [{ codex_sandbox_json: null }];
       }
       if (normalized.includes("FROM sessions") && normalized.includes("codex_sandbox_json")) {
-        return [{ codex_sandbox_json: JSON.stringify({ type: "dangerFullAccess" }) }];
+        return [{ codex_sandbox_json: JSON.stringify({ type: "danger-full-access" }) }];
       }
       return [];
     },
@@ -308,7 +308,7 @@ test("router forwards danger-full-access sandboxMode when session sandbox uses t
           model: "gpt-5.3-codex",
           cwd: "/hpc/projects/proj_runtime",
           approvalPolicy: "on-request",
-          sandbox: { type: "dangerFullAccess" },
+          sandbox: { type: "danger-full-access" },
           reasoningEffort: null,
           syncState: "ready",
         }),

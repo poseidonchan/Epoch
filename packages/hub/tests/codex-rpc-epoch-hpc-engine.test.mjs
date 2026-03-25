@@ -395,7 +395,7 @@ test("epoch-hpc skips approval and forwards danger-full-access sandboxMode for e
         mode: "default",
         settings: { model: "gpt-5.3-codex", reasoning_effort: null, developer_instructions: "DEV" },
       },
-      sandboxPolicy: { type: "dangerFullAccess" },
+      sandboxPolicy: { type: "danger-full-access" },
     });
 
     const iter = started.events[Symbol.asyncIterator]();
