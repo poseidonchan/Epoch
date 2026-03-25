@@ -354,6 +354,65 @@ test("epoch-hpc approval decline returns declined tool result and completes item
   }
 });
 
+test("epoch-hpc skips approval and forwards danger-full-access sandboxMode for exec_command", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+
+  let callIndex = 0;
+  globalThis.fetch = async () => {
+    callIndex += 1;
+    if (callIndex === 1) {
+      return new Response(
+        JSON.stringify({
+          id: "resp_full_access_1",
+          output_text: "",
+          output: [{ type: "function_call", name: "exec_command", call_id: "call_full_access_1", arguments: JSON.stringify({ cmd: "echo ok" }) }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }
+
+    return new Response(
+      JSON.stringify({ id: "resp_full_access_2", output_text: "ok", output: [] }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+  };
+
+  const registry = new CodexEngineRegistry({ config: null, stateDir: "/tmp" });
+  try {
+    const engine = await registry.getEngine("epoch-hpc");
+    const started = await engine.startTurn({
+      threadId: "thr_full_access_1",
+      turnId: "turn_full_access_1",
+      input: [{ type: "text", text: "full access", text_elements: [] }],
+      historyTurns: [],
+      cwd: "/hpc/project",
+      model: "gpt-5.3-codex",
+      modelProvider: "openai",
+      approvalPolicy: "on-request",
+      collaborationMode: {
+        mode: "default",
+        settings: { model: "gpt-5.3-codex", reasoning_effort: null, developer_instructions: "DEV" },
+      },
+      sandboxPolicy: { type: "danger-full-access" },
+    });
+
+    const iter = started.events[Symbol.asyncIterator]();
+    const runtimeReq = await waitForEvent(iter, (evt) => evt.type === "serverRequest");
+    assert.equal(runtimeReq.method, "runtime/commandExecution/exec");
+    assert.equal(runtimeReq.params.sandboxMode, "danger-full-access");
+    await runtimeReq.respond({ result: { ok: true, exitCode: 0, durationMs: 1, stdout: "ok\n", stderr: "", executionId: "exec_full_access" } });
+
+    const completedTurn = await waitForEvent(iter, (evt) => evt.type === "notification" && evt.method === "turn/completed");
+    assert.equal(completedTurn.params.turn.status, "completed");
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.env.OPENAI_API_KEY = originalKey;
+    await registry.close();
+  }
+});
+
 test("epoch-hpc ENOENT runtime error includes additionalDetails hint", async () => {
   const originalFetch = globalThis.fetch;
   const originalKey = process.env.OPENAI_API_KEY;

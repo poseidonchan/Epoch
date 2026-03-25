@@ -7,6 +7,7 @@ import { buildProjectFileContextStream } from "../../indexing/projectIndexing.js
 import { loadOrCreateHubConfig, resolveConfiguredWorkspaceRoot } from "../../config.js";
 import { assertExplicitModelSupportedByCodexAppServer, resolveHubProvider } from "../../model.js";
 import { loadOpenAIApiKeyFromStateDir } from "../../openai_settings.js";
+import { normalizeWorkspacePath } from "../../workspace_paths.js";
 import { normalizeEngineName, type CodexEngineRegistry } from "../engine_registry.js";
 import type { EngineStartTurnResult, EngineStreamEvent } from "../engines/types.js";
 import type { CodexRepository } from "../repository.js";
@@ -424,7 +425,7 @@ function toCodexSandboxMode(raw: unknown): "read-only" | "workspace-write" | "da
 
 function toCodexSandboxParam(
   raw: unknown
-): Record<string, unknown> | string | null {
+): Record<string, unknown> | null {
   if (!raw) return null;
   if (typeof raw === "string") {
     const mode = normalizeSandboxModeValue(raw);
@@ -437,14 +438,15 @@ function toCodexSandboxParam(
         excludeSlashTmp: false,
       };
     }
-    if (mode) return mode;
+    if (mode === "danger-full-access") return { type: "dangerFullAccess" };
+    if (mode === "read-only") return { type: "readOnly" };
     return null;
   }
   if (typeof raw !== "object" || Array.isArray(raw)) return null;
   const obj = raw as Record<string, unknown>;
   const mode = normalizeSandboxModeValue(obj.mode ?? obj.type);
-  if (mode === "danger-full-access") return "danger-full-access";
-  if (mode === "read-only") return "read-only";
+  if (mode === "danger-full-access") return { type: "dangerFullAccess" };
+  if (mode === "read-only") return { type: "readOnly" };
   if (mode === "workspace-write") {
     const writableRoots = Array.isArray(obj.writableRoots)
       ? obj.writableRoots.map((entry) => String(entry)).filter((entry) => entry.trim().length > 0)
@@ -952,9 +954,9 @@ async function resolveProjectWorkspacePath(repository: CodexRepository, projectI
        LIMIT 1`,
       [projectId]
     );
-    const persisted = normalizeNonEmptyString(rows[0]?.hpc_workspace_path);
+    const persisted = normalizeWorkspacePath(rows[0]?.hpc_workspace_path);
     if (persisted) {
-      return path.resolve(persisted);
+      return persisted;
     }
   } catch {
     // ignore lookup failures and fall back to the configured default root

@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from "uuid";
 
 import { loadOrCreateHubConfig, resolveConfiguredWorkspaceRoot } from "../../config.js";
 import { assertExplicitModelSupportedByCodexAppServer, resolveHubProvider } from "../../model.js";
+import { normalizeWorkspacePath } from "../../workspace_paths.js";
 import { normalizeEngineName, type CodexEngineRegistry } from "../engine_registry.js";
 import type { CodexRepository } from "../repository.js";
 import { nowUnixSeconds, previewFromText, type Thread, type ThreadItem, type Turn } from "../types.js";
@@ -458,9 +459,9 @@ async function resolveProjectWorkspacePath(repository: CodexRepository, projectI
        LIMIT 1`,
       [projectId]
     );
-    const persisted = normalizeNonEmptyString(rows[0]?.hpc_workspace_path);
+    const persisted = normalizeWorkspacePath(rows[0]?.hpc_workspace_path);
     if (persisted) {
-      return path.resolve(persisted);
+      return persisted;
     }
   } catch {
     // ignore lookup failures and fall back to the configured default root

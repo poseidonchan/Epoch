@@ -3,6 +3,7 @@ import { access, open, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
 import type { CodexRepository } from "./codex_rpc/repository.js";
+import { normalizeWorkspacePath } from "./workspace_paths.js";
 
 export type ResolvedWorkspaceDirectory = {
   path: string;
@@ -322,14 +323,7 @@ function clampBoundWorkspaceLimit(rawLimit: number | undefined, fallback: number
 }
 
 function normalizeAbsolutePath(rawPath: unknown): string | null {
-  if (typeof rawPath !== "string") {
-    return null;
-  }
-  const value = rawPath.trim();
-  if (!value || !path.isAbsolute(value)) {
-    return null;
-  }
-  return value;
+  return normalizeWorkspacePath(rawPath);
 }
 
 function normalizeBoundWorkspacePath(rawPath: unknown): string | null {

@@ -49,6 +49,7 @@ import { fetchUrlContent } from "./indexing/fetchUrl.js";
 import { generateSessionTitle } from "./indexing/summarize.js";
 import { LocalRuntimeBridge } from "./local_runtime.js";
 import { listWorkspaceDirectories, resolveWorkspaceDirectory } from "./workspace_directories.js";
+import { normalizeWorkspacePath, requireWorkspacePath } from "./workspace_paths.js";
 
 type Role = "operator" | "node";
 
@@ -1556,7 +1557,7 @@ async function listProjects(state: HubState) {
     codexModel: normalizeOptionalString(r.codex_model_id),
     codexApprovalPolicy: normalizeOptionalString(r.codex_approval_policy),
     codexSandbox: safeJsonObject(r.codex_sandbox_json),
-    hpcWorkspacePath: normalizeOptionalString(r.hpc_workspace_path),
+    hpcWorkspacePath: normalizeWorkspacePath(r.hpc_workspace_path),
     hpcWorkspaceState: normalizeOptionalString(r.hpc_workspace_state) ?? "ready",
   }));
 }
@@ -1588,7 +1589,7 @@ async function createProject(state: HubState, name: string, requestedWorkspacePa
     codexModel: null,
     codexApprovalPolicy: "on-request",
     codexSandbox: null,
-    hpcWorkspacePath: workspacePath,
+    hpcWorkspacePath: normalizeWorkspacePath(workspacePath),
     hpcWorkspaceState: "ready",
   };
 }
@@ -1649,7 +1650,7 @@ async function updateProject(
     codexModel: normalizeOptionalString(r.codex_model_id),
     codexApprovalPolicy: normalizeOptionalString(r.codex_approval_policy),
     codexSandbox: safeJsonObject(r.codex_sandbox_json),
-    hpcWorkspacePath: normalizeOptionalString(r.hpc_workspace_path),
+    hpcWorkspacePath: normalizeWorkspacePath(r.hpc_workspace_path),
     hpcWorkspaceState: normalizeOptionalString(r.hpc_workspace_state) ?? "ready",
   };
 }
@@ -1679,7 +1680,7 @@ async function deleteProject(state: HubState, projectId: string) {
     codexModel: normalizeOptionalString(row.codex_model_id),
     codexApprovalPolicy: normalizeOptionalString(row.codex_approval_policy),
     codexSandbox: safeJsonObject(row.codex_sandbox_json),
-    hpcWorkspacePath: normalizeOptionalString(row.hpc_workspace_path),
+    hpcWorkspacePath: normalizeWorkspacePath(row.hpc_workspace_path),
     hpcWorkspaceState: normalizeOptionalString(row.hpc_workspace_state) ?? "ready",
   };
 }
@@ -3615,7 +3616,7 @@ function safeJsonString(raw: unknown): string | null {
 function resolveProjectWorkspacePath(state: HubState, projectId: string, requestedWorkspacePath?: string): string {
   const requested = normalizeOptionalString(requestedWorkspacePath);
   if (requested) {
-    return path.resolve(requested);
+    return requireWorkspacePath(requested);
   }
   return path.join(resolveConfiguredWorkspaceRoot({ stateDir: state.stateDir, config: state.config, env: process.env }), "projects", projectId);
 }
@@ -3778,7 +3779,7 @@ async function assertWorkspaceRuntimeReady(state: HubState, projectId: string) {
   if (row.rows.length === 0) {
     throw new Error("NOT_FOUND: project not found");
   }
-  const persistedPath = normalizeOptionalString(row.rows[0]?.hpc_workspace_path);
+  const persistedPath = normalizeWorkspacePath(row.rows[0]?.hpc_workspace_path);
   if (!persistedPath) {
     throw new Error("BAD_REQUEST: project workspace is not provisioned");
   }
@@ -4009,7 +4010,7 @@ async function attachWorkspacePathForLocalRuntime(state: HubState, params: Recor
     "SELECT hpc_workspace_path FROM projects WHERE id=$1 LIMIT 1",
     [projectId]
   );
-  const workspacePath = normalizeOptionalString(rows.rows[0]?.hpc_workspace_path);
+  const workspacePath = normalizeWorkspacePath(rows.rows[0]?.hpc_workspace_path);
   if (workspacePath) {
     normalized.workspacePath = workspacePath;
   }

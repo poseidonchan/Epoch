@@ -11,6 +11,7 @@ import { loadOrCreateHubConfig, resolveConfiguredWorkspaceRoot } from "../../con
 import { generateSessionTitle } from "../../indexing/summarize.js";
 import { getEnvApiKey } from "../../model.js";
 import { loadOpenAIApiKeyFromStateDir } from "../../openai_settings.js";
+import { normalizeWorkspacePath, requireWorkspacePath } from "../../workspace_paths.js";
 
 type EpochHandlerContext = {
   repository: CodexRepository;
@@ -1069,7 +1070,7 @@ function mapProjectRow(row: any) {
     codexModel: normalizeNonEmptyString(row.codex_model_id),
     codexApprovalPolicy: normalizeNonEmptyString(row.codex_approval_policy),
     codexSandbox: safeJsonParseObject(row.codex_sandbox_json),
-    hpcWorkspacePath: normalizeNonEmptyString(row.hpc_workspace_path),
+    hpcWorkspacePath: normalizeWorkspacePath(row.hpc_workspace_path),
     hpcWorkspaceState: normalizeNonEmptyString(row.hpc_workspace_state) ?? "ready",
   };
 }
@@ -1848,7 +1849,7 @@ async function resolveProjectWorkspacePath(
 ): Promise<string> {
   const requested = normalizeNonEmptyString(requestedWorkspacePath);
   if (requested) {
-    return path.resolve(requested);
+    return requireWorkspacePath(requested);
   }
 
   try {
@@ -1856,7 +1857,7 @@ async function resolveProjectWorkspacePath(
       `SELECT hpc_workspace_path FROM projects WHERE id=$1 LIMIT 1`,
       [projectId]
     );
-    const persisted = normalizeNonEmptyString(rows[0]?.hpc_workspace_path);
+    const persisted = normalizeWorkspacePath(rows[0]?.hpc_workspace_path);
     if (persisted) return persisted;
   } catch {
     // ignore lookup failures and fall back to configured root
@@ -1902,53 +1903,63 @@ function normalizeSandboxPolicy(raw: unknown): Record<string, unknown> | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     if (raw == null) {
       return {
-        mode: "workspace-write",
+        type: "workspace-write",
         networkAccess: true,
-        excludeTmpdirEnvVar: false,
-        excludeHomeEnvVar: false,
-        writableRoots: [],
       };
     }
     return null;
   }
 
-  const mode = normalizeNonEmptyString((raw as Record<string, unknown>).mode) ?? "workspace-write";
-  const networkAccess = Boolean((raw as Record<string, unknown>).networkAccess ?? true);
-  const excludeTmpdirEnvVar = Boolean((raw as Record<string, unknown>).excludeTmpdirEnvVar ?? false);
-  const excludeHomeEnvVar = Boolean((raw as Record<string, unknown>).excludeHomeEnvVar ?? false);
-  const writableRoots = Array.isArray((raw as Record<string, unknown>).writableRoots)
-    ? ((raw as Record<string, unknown>).writableRoots as unknown[]).map((entry) => String(entry)).filter(Boolean)
-    : [];
+  const obj = raw as Record<string, unknown>;
+  const mode = normalizeSandboxModeValue(obj.mode ?? obj.type);
+  if (!mode) {
+    throw new Error("Invalid codexSandbox");
+  }
+  if (mode === "danger-full-access") {
+    return { type: "danger-full-access" };
+  }
+  if (mode === "read-only") {
+    return { type: "read-only" };
+  }
 
-  return {
-    mode,
-    networkAccess,
-    excludeTmpdirEnvVar,
-    excludeHomeEnvVar,
-    writableRoots,
+  const sandbox: Record<string, unknown> = {
+    type: "workspace-write",
+    networkAccess: Boolean(obj.networkAccess ?? true),
   };
+
+  if (Array.isArray(obj.writableRoots)) {
+    sandbox.writableRoots = (obj.writableRoots as unknown[]).map((entry) => String(entry)).filter(Boolean);
+  }
+  if (Object.prototype.hasOwnProperty.call(obj, "excludeTmpdirEnvVar")) {
+    sandbox.excludeTmpdirEnvVar = Boolean(obj.excludeTmpdirEnvVar);
+  }
+  if (Object.prototype.hasOwnProperty.call(obj, "excludeSlashTmp")) {
+    sandbox.excludeSlashTmp = Boolean(obj.excludeSlashTmp);
+  } else if (Object.prototype.hasOwnProperty.call(obj, "excludeHomeEnvVar")) {
+    sandbox.excludeSlashTmp = Boolean(obj.excludeHomeEnvVar);
+  }
+
+  return sandbox;
+}
+
+function normalizeSandboxModeValue(raw: unknown): "read-only" | "workspace-write" | "danger-full-access" | null {
+  const normalized = normalizeNonEmptyString(raw);
+  if (!normalized) return null;
+  const compact = normalized.trim().toLowerCase().replace(/[\s_-]/g, "");
+  if (compact === "readonly") return "read-only";
+  if (compact === "workspacewrite") return "workspace-write";
+  if (compact === "dangerfullaccess") return "danger-full-access";
+  return null;
 }
 
 function toCodexSandboxMode(raw: unknown): "read-only" | "workspace-write" | "danger-full-access" | null {
   if (typeof raw === "string") {
-    const normalized = raw.trim().toLowerCase();
-    if (normalized === "read-only" || normalized === "readonly" || normalized === "read_only") return "read-only";
-    if (normalized === "workspace-write" || normalized === "workspacewrite" || normalized === "workspace_write") {
-      return "workspace-write";
-    }
-    if (
-      normalized === "danger-full-access" ||
-      normalized === "dangerfullaccess" ||
-      normalized === "danger_full_access"
-    ) {
-      return "danger-full-access";
-    }
-    return null;
+    return normalizeSandboxModeValue(raw);
   }
 
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const obj = raw as Record<string, unknown>;
-  return toCodexSandboxMode(normalizeNonEmptyString(obj.mode) ?? normalizeNonEmptyString(obj.type) ?? null);
+  return normalizeSandboxModeValue(obj.mode ?? obj.type);
 }
 
 function normalizeNonEmptyString(raw: unknown): string | null {
